@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Account · NBE PPG lab{% endblock %}
+{% block content %}
+<h1>Your account</h1>
+<div class="sub">{{ user.display or user.username }} · {{ user.role }}</div>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if not auth_enabled %}
+  <div class="card">This server runs in single-user mode (no accounts). Enable <code>[auth]</code> in <code>config/server.toml</code> for logins.</div>
+{% else %}
+<div class="grid2">
+  <div class="card">
+    <h2 style="margin-top:0">Change password</h2>
+    <form class="stack" method="post" action="/account/password">
+      <input type="password" name="current" placeholder="current password" autocomplete="current-password" required>
+      <input type="password" name="new" placeholder="new password (10+ characters)" autocomplete="new-password" minlength="10" required>
+      <input type="password" name="new2" placeholder="new password again" autocomplete="new-password" minlength="10" required>
+      <button class="primary" type="submit">Change password</button>
+      <span class="note">You'll be logged out everywhere and asked to log in again.</span>
+    </form>
+  </div>
+  <div class="card">
+    <h2 style="margin-top:0">API tokens</h2>
+    <div class="note">For scripts / notebooks: send <code>Authorization: Bearer &lt;token&gt;</code>. The node tool
+      (<code>nbe_node.py login</code>) creates one for you. A token has your role – treat it like a password.</div>
+    {% if new_token %}
+      <div class="warn" style="margin-top:10px"><b>Copy this token now – it won't be shown again:</b>
+        <code class="secret">{{ new_token }}</code></div>
+    {% endif %}
+    <form class="row-inline" method="post" action="/account/tokens" style="margin:10px 0">
+      <input type="text" name="label" placeholder="label, e.g. laptop notebook" required>
+      <button type="submit">Create token</button>
+    </form>
+    <table>
+      <thead><tr><th>Label</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+      <tbody>
+      {% for t in tokens %}
+        <tr><td>{{ t.label }}</td><td>{{ (t.created_at or '')[:16] }}</td><td>{{ (t.last_used or '')[:16] }}</td>
+          <td>{% if t.revoked %}<span class="note">revoked</span>{% else %}
+            <form method="post" action="/account/tokens/{{ t.id }}/revoke" style="margin:0"><button class="link">revoke</button></form>{% endif %}</td></tr>
+      {% else %}<tr><td colspan="4" class="note">No tokens.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

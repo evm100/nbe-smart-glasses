@@ -1,0 +1,41 @@
+# Python
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+
+# Data: never commit recordings or derived outputs (back them up separately)
+data/raw/*
+data/processed/*
+data/datasets/*
+data/*.sqlite*
+!data/**/.gitkeep
+!data/README.md
+
+# misc
+layer1_out/
+out/
+synthetic_demo.csv
+.DS_Store
+
+# ESP-IDF build outputs (sdkconfig is generated from sdkconfig.defaults + menuconfig;
+# commit it only if you want everyone to share the exact same settings)
+firmware/esp-idf/*/build/
+firmware/esp-idf/*/sdkconfig
+firmware/esp-idf/*/sdkconfig.old
+firmware/esp-idf/*/managed_components/
+firmware/esp-idf/*/host_test/out_*.txt
+firmware/esp-idf/*/host_test/sim*
+!firmware/esp-idf/*/host_test/sim.c
+
+# Deployment secrets / per-server config (templates live in deploy/)
+config/server.toml
+pki/
+data/.sglab_state.json
+
+# Node credentials written by firmware/tools/nbe_node.py (private keys!)
+firmware/esp-idf/*/main/certs/*
+!firmware/esp-idf/*/main/certs/README.md
+firmware/esp-idf/*/sdkconfig.nbe
+*_credentials.zip
+dev-server/

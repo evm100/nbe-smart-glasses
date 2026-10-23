@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} · NBE PPG lab{% endblock %}
+{% block content %}
+<h1>{% if code == 403 %}Not allowed{% elif code == 404 %}Not found{% else %}Error {{ code }}{% endif %}</h1>
+<div class="error">{{ message }}</div>
+<p><a href="/">← back to sessions</a></p>
+{% endblock %}

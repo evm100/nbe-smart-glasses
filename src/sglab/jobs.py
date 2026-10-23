@@ -1,0 +1,120 @@
+"""Processing job queue for remote workers (`[processing] mode = "remote"`).
+
+The lab server stays the single home of recordings and results; a stronger machine runs
+`sglab worker`, which claims jobs over HTTPS (/api/worker/*), downloads the raw CSVs,
+runs Layers 1-2 and uploads the outputs. Nothing has to reach the worker, so it can sit
+behind NAT.
+
+Stored in the catalog SQLite file (table jobs). A claimed job that hears nothing from its
+worker for LEASE_S goes back to the queue (worker crashed or was rebooted).
+"""
+from __future__ import annotations
+
+import sqlite3
+import threading
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+LEASE_S = 30 * 60
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS jobs (
+    job_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind         TEXT NOT NULL,          -- process
+    session_id   TEXT NOT NULL,
+    force        INTEGER NOT NULL DEFAULT 0,
+    state        TEXT NOT NULL,          -- queued | running | done | error
+    worker       TEXT,
+    created_at   TEXT,
+    claimed_at   TEXT,                   -- also refreshed by every upload (the lease)
+    finished_at  TEXT,
+    error        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state, job_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_session ON jobs(session_id, job_id);
+"""
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(d: datetime) -> str:
+    return d.isoformat(timespec="seconds")
+
+
+class JobQueue:
+    def __init__(self, db_path: Path):
+        self.con = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+        self.con.row_factory = sqlite3.Row
+        self.con.executescript(SCHEMA)
+        self.lock = threading.Lock()
+
+    def close(self):
+        self.con.close()
+
+    def _q(self, sql, args=()) -> list[dict]:
+        return [dict(r) for r in self.con.execute(sql, args).fetchall()]
+
+    def enqueue(self, session_id: str, force: bool = False) -> int:
+        """Queue processing of a session; a job already waiting for it is reused (and upgraded to force)."""
+        with self.lock:
+            r = self._q("SELECT job_id FROM jobs WHERE session_id=? AND kind='process' AND state='queued'",
+                        (session_id,))
+            if r:
+                if force:
+                    self.con.execute("UPDATE jobs SET force=1 WHERE job_id=?", (r[0]["job_id"],))
+                return r[0]["job_id"]
+            return self.con.execute("INSERT INTO jobs (kind, session_id, force, state, created_at) "
+                                    "VALUES ('process', ?, ?, 'queued', ?)",
+                                    (session_id, int(force), _iso(_now()))).lastrowid
+
+    def claim(self, worker: str) -> dict | None:
+        """Oldest queued job (or one whose worker went silent), now marked running for `worker`."""
+        with self.lock:
+            self.con.execute("BEGIN IMMEDIATE")
+            try:
+                stale = _iso(_now() - timedelta(seconds=LEASE_S))
+                r = self._q("SELECT * FROM jobs WHERE state='queued' OR (state='running' AND claimed_at < ?) "
+                            "ORDER BY job_id LIMIT 1", (stale,))
+                if r:
+                    self.con.execute("UPDATE jobs SET state='running', worker=?, claimed_at=? WHERE job_id=?",
+                                     (worker, _iso(_now()), r[0]["job_id"]))
+                self.con.execute("COMMIT")
+            except BaseException:
+                self.con.execute("ROLLBACK")
+                raise
+        return self.get(r[0]["job_id"]) if r else None
+
+    def get(self, job_id: int) -> dict | None:
+        r = self._q("SELECT * FROM jobs WHERE job_id=?", (job_id,))
+        return r[0] if r else None
+
+    def touch(self, job_id: int) -> None:
+        with self.lock:
+            self.con.execute("UPDATE jobs SET claimed_at=? WHERE job_id=?", (_iso(_now()), job_id))
+
+    def finish(self, job_id: int, error: str | None = None) -> None:
+        with self.lock:
+            self.con.execute("UPDATE jobs SET state=?, finished_at=?, error=? WHERE job_id=?",
+                             ("error" if error else "done", _iso(_now()), error, job_id))
+
+    def state(self, session_id: str) -> str | None:
+        """What the session page shows: 'queued', 'running on <worker>' or 'error: ...' (latest job);
+        None once it is done (the results are on the page then)."""
+        r = self._q("SELECT state, worker, error FROM jobs WHERE session_id=? ORDER BY job_id DESC LIMIT 1",
+                    (session_id,))
+        if not r:
+            return None
+        j = r[0]
+        if j["state"] == "error":
+            return f"error: {j['error']}"
+        if j["state"] == "running":
+            return f"running on {j['worker']}"
+        return "queued" if j["state"] == "queued" else None
+
+    def recent(self, limit: int = 50) -> list[dict]:
+        return self._q("SELECT * FROM jobs ORDER BY job_id DESC LIMIT ?", (limit,))
+
+    def pending(self) -> int:
+        return self._q("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('queued', 'running')")[0]["n"]

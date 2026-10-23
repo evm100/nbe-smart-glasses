@@ -1,0 +1,13 @@
+# ---- NBE smart-glasses PPG nodes -------------------------------------------------
+# Nodes and the server authenticate with client certificates from the NBE Device CA;
+# the listener sets use_identity_as_username, so the MQTT username = certificate CN
+# (node ID, or nbe-core for the server). Each node may only publish its own status /
+# data and read its own commands. Unregistered or disabled IDs are ignored by the server.
+
+user nbe-core
+topic readwrite nbe/#
+
+pattern write nbe/dev/%u/status
+pattern write nbe/dev/%u/data
+pattern read nbe/dev/%u/cmd
+pattern read nbe/core/status

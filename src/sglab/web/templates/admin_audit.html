@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Audit log · NBE PPG lab{% endblock %}
+{% block content %}
+<h1>Audit log</h1>
+<div class="sub">Logins, trials, node and user changes, credential downloads – newest first.</div>
+<div class="card scroll">
+  <table>
+    <thead><tr><th>Time (UTC)</th><th>User</th><th>Action</th><th>Target</th><th>Detail</th><th>IP</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr><td>{{ r.ts[:19].replace('T', ' ') }}</td><td>{{ r.username or '' }}</td><td>{{ r.action }}</td><td>{{ r.target }}</td>
+        <td class="note">{{ r.detail if r.detail != '{}' else '' }}</td><td class="note">{{ r.ip }}</td></tr>
+    {% else %}<tr><td colspan="6" class="note">Nothing yet.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% block title %}{{ s.session_id }} · NBE PPG lab{% endblock %}
+{% block head %}
+<script src="/static/plotly.min.js"></script>
+{% endblock %}
+{% block content %}
+<h1>{{ s.session_id }}</h1>
+<div class="sub">
+  {{ s.subject_id }} · {{ s.protocol }} · trial {{ s.trial }} ·
+  {{ '%.0f'|format(s.duration_s or 0) }} s ·
+  <span class="pill {{ s.status }}">{{ s.status }}</span>
+  {% if s.quality %}<span class="pill {{ s.quality }}">{{ s.quality }}</span>{% endif %}
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <dl class="kv">
+      <dt>Started</dt><dd>{{ doc.started_at_local or s.started_at }}</dd>
+      <dt>Operator</dt><dd>{{ s.operator or '–' }}</dd>
+      {% for k, v in s.extra.items() if k not in ('keep',) %}<dt>{{ k }}</dt><dd>{{ v if v is not none else '–' }}</dd>{% endfor %}
+      <dt>Notes</dt><dd>{{ s.notes or '–' }}</dd>
+      <dt>Folder</dt><dd><code>{{ s.path }}</code></dd>
+    </dl>
+  </div>
+  <div class="card scroll">
+    <table>
+      <thead><tr><th>Stream</th><th>Device</th><th class="num">fs</th><th class="num">Samples</th>
+        <th class="num">Dropped</th><th class="num">Bad lines</th><th>Processed</th></tr></thead>
+      <tbody>
+      {% for st in s.streams %}
+        {% set run = (s.runs | selectattr('stream', 'equalto', st.stream) | list | first) %}
+        <tr>
+          <td>{{ st.stream }}</td><td>{{ st.dev }} <span class="note">{{ st.fw }}</span></td>
+          <td class="num">{{ st.fs }}</td><td class="num">{{ st.n_samples }}</td>
+          <td class="num">{{ st.n_dropped or 0 }}</td><td class="num">{{ st.n_bad_lines or 0 }}</td>
+          <td>{% if run %}<span class="pill {{ run.status }}">{{ run.status }}</span>
+              <span class="note">v{{ run.pipeline_version }} · {{ run.config_hash }}</span>{% else %}–{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <form method="post" action="/sessions/{{ s.session_id }}/process" style="margin-top:12px">
+      <button class="primary" type="submit">{% if s.runs %}Process (new/changed only){% else %}Process (Layers 1–2){% endif %}</button>
+      {% if s.runs %}<button type="submit" formaction="/sessions/{{ s.session_id }}/process?force=true">Force re-process</button>{% endif %}
+      {% if processing %}<span class="note">processing: {{ processing }} – refresh in a moment</span>{% endif %}
+    </form>
+  </div>
+</div>
+
+<h2>Signal</h2>
+<div class="card">
+  <div class="controls">
+    <label>Stream <select id="sig-stream">{% for x in streams %}<option>{{ x }}</option>{% endfor %}</select></label>
+    <label>View <select id="sig-source"><option value="filtered">filtered (Layer 1)</option><option value="raw">raw counts</option></select></label>
+    <span class="note">Shaded = windows rejected by Layer 1. Vertical lines = events. Drag to zoom, double-click to reset.</span>
+  </div>
+  <div id="sig" class="plot"></div>
+</div>
+
+<h2>Heart rate</h2>
+<div class="card">
+  <div class="note" style="margin-bottom:6px">Dots = each accepted beat, line = 30 s epoch mean, diamonds = reference devices (cuff pulse / pulse-ox).</div>
+  <div id="hr" class="plot"></div>
+</div>
+
+<h2>Features vs. cuff blood pressure</h2>
+<div class="card">
+  <div class="controls">
+    <label>Stream <select id="feat-stream">{% for x in streams %}<option>{{ x }}</option>{% endfor %}</select></label>
+    <label>Feature <select id="feat-name"></select></label>
+    <span class="note">Epoch medians (valid epochs). This is the relationship Layer 3/4 will learn.</span>
+  </div>
+  <div id="feat" class="plot" style="height:440px"></div>
+</div>
+
+<h2>Events</h2>
+<div class="card scroll">
+<table>
+  <thead><tr><th class="num">t (s)</th><th>Kind</th><th>Source</th><th class="num">SBP</th><th class="num">DBP</th>
+    <th class="num">HR</th><th class="num">SpO2</th><th>Label</th></tr></thead>
+  <tbody>
+  {% for e in s.events %}
+    <tr><td class="num">{{ '%.1f'|format(e.t_s) }}</td><td>{{ e.kind }}</td><td>{{ e.source or '' }}</td>
+      <td class="num">{{ '%g'|format(e.sys_mmhg) if e.sys_mmhg is not none else '' }}</td>
+      <td class="num">{{ '%g'|format(e.dia_mmhg) if e.dia_mmhg is not none else '' }}</td>
+      <td class="num">{{ '%g'|format(e.hr_bpm) if e.hr_bpm is not none else '' }}</td>
+      <td class="num">{{ '%g'|format(e.spo2_pct) if e.spo2_pct is not none else '' }}</td>
+      <td>{{ e.label or '' }}</td></tr>
+  {% else %}<tr><td colspan="8" class="note">No events.</td></tr>{% endfor %}
+  </tbody>
+</table>
+</div>
+
+{% for stream, imgs in images.items() if imgs %}
+<h2>QA figures · {{ stream }}</h2>
+<div class="thumbs">
+  {% for im in imgs %}<a href="{{ im.url }}" target="_blank"><img src="{{ im.url }}" alt="{{ im.title }}" loading="lazy">{{ im.title }}</a>{% endfor %}
+</div>
+{% endfor %}
+
+<script>
+const SID = {{ s.session_id|tojson }};
+const EVENTS = {{ s.events|tojson }};
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const ROLE_COLOR = r => ({finger: css('--s1'), glasses: css('--s2')}[r] || css('--s3'));
+const streamRole = name => name.split('_')[0];
+
+function baseLayout(extra) {
+  return Object.assign({
+    paper_bgcolor: css('--surface'), plot_bgcolor: css('--surface'),
+    font: {color: css('--text-2'), size: 12, family: 'system-ui, sans-serif'},
+    margin: {l: 60, r: 16, t: 10, b: 40}, hovermode: 'x unified', showlegend: true,
+    legend: {orientation: 'h', y: 1.08, x: 1, xanchor: 'right'},
+    xaxis: {title: 'session time (s)', gridcolor: css('--grid'), zeroline: false, linecolor: css('--border')},
+    yaxis: {gridcolor: css('--grid'), zeroline: false, linecolor: css('--border')},
+  }, extra || {});
+}
+const CFG = {responsive: true, displaylogo: false, modeBarButtonsToRemove: ['lasso2d', 'select2d']};
+
+function eventShapes(yref) {
+  return EVENTS.filter(e => e.kind !== 'device' || /BTN|OVF|ERR/.test(e.label || '')).map(e => ({
+    type: 'line', x0: e.t_s, x1: e.t_s, yref: yref || 'paper', y0: 0, y1: 1,
+    line: {color: e.kind === 'bp' ? css('--text') : css('--muted'), width: 1, dash: e.kind === 'bp' ? 'solid' : 'dot'}
+  }));
+}
+function eventAnnotations() {
+  return EVENTS.filter(e => e.kind === 'bp' || e.kind === 'marker').map(e => ({
+    x: e.t_s, y: 1, yref: 'paper', yanchor: 'bottom', showarrow: false, font: {size: 10, color: css('--text-2')},
+    text: e.kind === 'bp' ? `${e.sys_mmhg}/${e.dia_mmhg}` : (e.label || '').slice(0, 18)
+  }));
+}
+function message(div, text) {
+  Plotly.purge(div);
+  document.getElementById(div).innerHTML = `<div class="note" style="padding:24px">${text}</div>`;
+}
+
+async function drawSignal() {
+  const stream = document.getElementById('sig-stream').value;
+  const source = document.getElementById('sig-source').value;
+  const r = await fetch(`/api/sessions/${SID}/signal?stream=${encodeURIComponent(stream)}&source=${source}`);
+  if (!r.ok) { message('sig', r.status === 409 ? 'Not processed yet – press “Process”, or switch to raw counts.' : 'Could not load signal.'); return; }
+  const d = await r.json();
+  document.getElementById('sig').innerHTML = '';
+  const shapes = eventShapes().concat(d.bad_windows.map(([a, b]) => ({
+    type: 'rect', x0: a, x1: b, yref: 'paper', y0: 0, y1: 1, fillcolor: css('--bad-bg'), line: {width: 0}, layer: 'below'})));
+  Plotly.react('sig', [{x: d.t, y: d.y, type: 'scattergl', mode: 'lines', name: `${stream} · ${d.channel}`,
+      line: {width: 1.2, color: ROLE_COLOR(streamRole(stream))}, hovertemplate: '%{y:.4g}<extra></extra>'}],
+    baseLayout({shapes, annotations: eventAnnotations(), yaxis: {title: d.unit, gridcolor: css('--grid'), zeroline: false}, showlegend: false}), CFG);
+}
+
+async function drawHR() {
+  const items = await (await fetch(`/api/sessions/${SID}/hr`)).json();
+  if (!items.length) { message('hr', 'Process the session to see beat-by-beat heart rate.'); return; }
+  document.getElementById('hr').innerHTML = '';
+  const traces = [];
+  for (const it of items) {
+    const c = ROLE_COLOR(it.role);
+    traces.push({x: it.beats_t, y: it.beats_hr, type: 'scattergl', mode: 'markers', name: `${it.stream} beats`,
+                 marker: {size: 4, color: c, opacity: 0.45}, hovertemplate: '%{y:.1f} bpm<extra>beat</extra>'});
+    traces.push({x: it.epoch_t, y: it.epoch_hr, type: 'scatter', mode: 'lines', name: `${it.stream} epoch`,
+                 line: {width: 2.2, color: c}, hovertemplate: '%{y:.1f} bpm<extra>epoch</extra>'});
+  }
+  const ref = EVENTS.filter(e => e.hr_bpm != null);
+  if (ref.length) traces.push({x: ref.map(e => e.t_s), y: ref.map(e => e.hr_bpm), type: 'scatter', mode: 'markers',
+      name: 'reference', marker: {symbol: 'diamond', size: 10, color: css('--text'), line: {color: css('--surface'), width: 2}},
+      text: ref.map(e => e.kind === 'bp' ? 'cuff' : 'pulse-ox'), hovertemplate: '%{y} bpm<extra>%{text}</extra>'});
+  Plotly.react('hr', traces, baseLayout({shapes: eventShapes(), yaxis: {title: 'bpm', gridcolor: css('--grid'), zeroline: false}}), CFG);
+}
+
+let EPOCHS = {};
+async function loadEpochs() {
+  const stream = document.getElementById('feat-stream').value;
+  const r = await fetch(`/api/sessions/${SID}/epochs?stream=${encodeURIComponent(stream)}`);
+  if (!r.ok) { message('feat', 'Process the session to see features.'); return; }
+  EPOCHS = await r.json();
+  const sel = document.getElementById('feat-name');
+  const prev = sel.value || 'dia_rel';
+  sel.innerHTML = (EPOCHS.features || []).map(f => `<option ${f === prev ? 'selected' : ''}>${f}</option>`).join('');
+  drawFeature();
+}
+function drawFeature() {
+  const stream = document.getElementById('feat-stream').value;
+  const f = document.getElementById('feat-name').value;
+  if (!EPOCHS.rows || !EPOCHS.rows.length) { message('feat', 'No epochs (recording shorter than one 30 s epoch?).'); return; }
+  document.getElementById('feat').innerHTML = '';
+  const rows = EPOCHS.rows.filter(r => r.valid);
+  const bp = EVENTS.filter(e => e.kind === 'bp');
+  const c = ROLE_COLOR(streamRole(stream));
+  const traces = [
+    {x: rows.map(r => r.t_center), y: rows.map(r => r[f + '_med']), type: 'scatter', mode: 'lines+markers', name: f,
+     line: {color: c, width: 2}, marker: {size: 8, color: c, line: {color: css('--surface'), width: 2}}, yaxis: 'y'},
+    {x: bp.map(e => e.t_s), y: bp.map(e => e.sys_mmhg), type: 'scatter', mode: 'lines+markers', name: 'cuff SBP',
+     line: {color: css('--s5'), width: 2}, marker: {size: 9, color: css('--s5'), line: {color: css('--surface'), width: 2}}, yaxis: 'y2'},
+    {x: bp.map(e => e.t_s), y: bp.map(e => e.dia_mmhg), type: 'scatter', mode: 'lines+markers', name: 'cuff DBP',
+     line: {color: css('--s3'), width: 2}, marker: {size: 9, color: css('--s3'), line: {color: css('--surface'), width: 2}}, yaxis: 'y2'},
+  ];
+  const ax = {gridcolor: css('--grid'), zeroline: false};
+  Plotly.react('feat', traces, baseLayout({
+    grid: {rows: 2, columns: 1, pattern: 'coupled'},
+    yaxis: Object.assign({title: f, domain: [0.55, 1]}, ax),
+    yaxis2: Object.assign({title: 'mmHg', domain: [0, 0.42]}, ax),
+    shapes: eventShapes(),
+  }), CFG);
+}
+
+document.getElementById('sig-stream').onchange = drawSignal;
+document.getElementById('sig-source').onchange = drawSignal;
+document.getElementById('feat-stream').onchange = loadEpochs;
+document.getElementById('feat-name').onchange = drawFeature;
+drawSignal(); drawHR(); loadEpochs();
+</script>
+{% endblock %}

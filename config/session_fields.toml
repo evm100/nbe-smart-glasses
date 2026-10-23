@@ -1,0 +1,75 @@
+# Metadata asked for every recording. Add / remove fields freely – they are
+# stored in session.json and the catalog (custom fields go in sessions.extra).
+#
+# ask      = "before" (asked before START) | "after" (asked after STOP)
+# type     = "str" | "int" | "float" | "choice" | "bool" | "subject"
+# remember = true  -> last answer is offered as the default next time
+# default  = value, or "auto" for trial (next free number for subject+protocol)
+
+[[field]]
+name = "subject_id"
+prompt = "Subject ID"
+type = "subject"
+ask = "before"
+required = true
+remember = true
+
+[[field]]
+name = "protocol"
+prompt = "Protocol / condition"
+type = "choice"
+choices = ["rest", "paced_breathing", "post_exercise", "cold_pressor", "posture_change", "valsalva", "mental_stress", "other"]
+ask = "before"
+remember = true
+
+[[field]]
+name = "trial"
+prompt = "Trial number"
+type = "int"
+default = "auto"
+ask = "before"
+
+[[field]]
+name = "posture"
+prompt = "Posture"
+type = "choice"
+choices = ["sitting", "standing", "supine"]
+default = "sitting"
+ask = "before"
+remember = true
+
+[[field]]
+name = "operator"
+prompt = "Operator (your initials)"
+type = "str"
+ask = "before"
+remember = true
+
+[[field]]
+name = "room_temp_c"
+prompt = "Room temperature (C, optional)"
+type = "float"
+ask = "before"
+required = false
+remember = true
+
+[[field]]
+name = "quality"
+prompt = "How did the recording go?"
+type = "choice"
+choices = ["good", "usable", "bad"]
+ask = "after"
+
+[[field]]
+name = "notes"
+prompt = "Notes (anything unusual)"
+type = "str"
+ask = "after"
+required = false
+
+[[field]]
+name = "keep"
+prompt = "Keep this recording?"
+type = "bool"
+default = true
+ask = "after"

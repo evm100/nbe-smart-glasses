@@ -1,0 +1,5 @@
+# Managed components (downloaded by `idf.py build` into managed_components/).
+# ESP-IDF v6 moved esp-mqtt out of the core into the component registry.
+dependencies:
+  idf: ">=6.0"
+  espressif/mqtt: "*"

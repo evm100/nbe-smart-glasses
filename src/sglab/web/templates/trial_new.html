@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}New trial · NBE PPG lab{% endblock %}
+{% block content %}
+<h1>New trial</h1>
+<div class="sub">Pick the sensors, fill in the session details, then start.</div>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+<form class="stack" method="post" action="/trial/start" id="trial-form">
+  <fieldset class="devices">
+    <legend>Devices</legend>
+    {% for d in devices %}
+      <label class="{{ '' if d.available else 'disabled' }}">
+        <input type="checkbox" name="devices" value="{{ d.key }}" {% if not d.available %}disabled{% endif %}
+          {% if d.available and ((last_devices and d.key in last_devices) or (not last_devices and loop.first)) %}checked{% endif %}>
+        <b>{{ d.label }}</b> <span class="note">{{ d.role }} · {{ d.node_id or d.port }}</span>
+        {% if d.busy %}<span class="pill busy">in use by {{ d.busy.owner }}</span>
+        {% elif d.kind == 'sim' %}<span class="pill">simulated</span>
+        {% elif d.online %}<span class="pill online">{{ d.state }}{% if d.details.rssi %} · {{ d.details.rssi }} dBm{% endif %}</span>
+        {% else %}<span class="pill offline">{{ d.state }}</span>{% endif %}
+      </label>
+    {% else %}
+      <div class="note">No devices available. Nodes must be registered (admin → Nodes) and powered on.</div>
+    {% endfor %}
+    <div class="note">Live device state is on the <a href="/devices">Devices</a> page. A node that was just switched on needs ~10 s to appear online (reload).</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Session</legend>
+    {% for f in fields %}
+    <div class="field">
+      <label for="f-{{ f.name }}">{{ f.prompt or f.name }}{% if f.required is not defined or f.required %} *{% endif %}</label>
+      {% if f.type == 'subject' %}
+        <select name="{{ f.name }}" id="f-{{ f.name }}">
+          {% for o in f.options %}<option {% if o == f.value %}selected{% endif %}>{{ o }}</option>{% endfor %}
+          <option value="__new__" {% if f.value == '__new__' %}selected{% endif %}>＋ new subject…</option>
+        </select>
+      {% elif f.type == 'choice' %}
+        <select name="{{ f.name }}" id="f-{{ f.name }}">
+          {% for o in f.choices %}<option {% if o == f.value %}selected{% endif %}>{{ o }}</option>{% endfor %}
+        </select>
+      {% elif f.type == 'bool' %}
+        <input type="checkbox" name="{{ f.name }}" id="f-{{ f.name }}" {% if f.value %}checked{% endif %}>
+      {% elif f.type in ('int', 'float') %}
+        <input type="number" step="{{ '1' if f.type == 'int' else 'any' }}" name="{{ f.name }}" id="f-{{ f.name }}" value="{{ f.value if f.value is not none else '' }}">
+      {% else %}
+        <input type="text" name="{{ f.name }}" id="f-{{ f.name }}" value="{{ f.value if f.value is not none else '' }}">
+      {% endif %}
+    </div>
+    {% if f.type == 'subject' %}
+    <fieldset id="new-subject" style="display:none">
+      <legend>New subject (de-identified – no names)</legend>
+      <div class="field"><label>Subject ID *</label><input type="text" name="new_subject_id" value="{{ next_subject_id }}"></div>
+      {% for sf in subject_fields %}
+      <div class="field"><label>{{ sf.prompt.strip() }}</label>
+        {% if sf.choices %}<select name="subj_{{ sf.name }}">{% for o in sf.choices %}<option {% if o == 'na' %}selected{% endif %}>{{ o }}</option>{% endfor %}</select>
+        {% else %}<input type="{{ 'number' if sf.type == 'float' else 'text' }}" step="any" name="subj_{{ sf.name }}">{% endif %}
+      </div>
+      {% endfor %}
+    </fieldset>
+    {% endif %}
+    {% endfor %}
+  </fieldset>
+
+  <div class="btnrow">
+    <button class="primary big" type="submit">● Start recording</button>
+    <span class="note">Recording starts immediately; enter cuff / oximeter readings and markers on the next page.</span>
+  </div>
+</form>
+
+<script>
+const subj = document.getElementById('f-subject_id');
+const proto = document.getElementById('f-protocol');
+const trial = document.getElementById('f-trial');
+const box = document.getElementById('new-subject');
+function toggleNew() { if (subj && box) box.style.display = subj.value === '__new__' ? '' : 'none'; }
+async function nextTrial() {
+  if (!trial || !subj || !proto) return;
+  const s = subj.value === '__new__' ? document.querySelector('[name=new_subject_id]').value : subj.value;
+  const r = await fetch(`/api/next_trial?subject=${encodeURIComponent(s)}&protocol=${encodeURIComponent(proto.value)}`);
+  if (r.ok) trial.value = (await r.json()).trial;
+}
+subj && subj.addEventListener('change', () => { toggleNew(); nextTrial(); });
+proto && proto.addEventListener('change', nextTrial);
+toggleNew();
+</script>
+{% endblock %}

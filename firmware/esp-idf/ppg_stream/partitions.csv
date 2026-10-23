@@ -1,0 +1,10 @@
+# Two app slots for over-the-air updates (8 MB flash). The node downloads a new image into the
+# idle slot, boots it, and the bootloader goes back to the old one if the new one never reaches
+# the broker (CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE, see main/ota.c).
+# Changing this table needs one USB flash with erase (deploy/evmserver/flash.sh does that).
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+phy_init, data, phy,     0x10000,  0x1000,
+ota_0,    app,  ota_0,   0x20000,  0x3e0000,
+ota_1,    app,  ota_1,   0x400000, 0x3e0000,

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Log in · NBE PPG lab{% endblock %}
+{% block content %}
+<div class="card" style="max-width:380px;margin:40px auto">
+  <h1>Log in</h1>
+  <div class="sub">NBE smart-glasses PPG lab</div>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form class="stack" method="post" action="/login">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label>Username<br><input type="text" name="username" autocomplete="username" autocapitalize="none" required autofocus style="width:100%"></label>
+    <label>Password<br><input type="password" name="password" autocomplete="current-password" required style="width:100%"></label>
+    <button class="primary big" type="submit">Log in</button>
+  </form>
+  <p class="note">No account? Ask the lab admin – accounts are created by an admin.</p>
+</div>
+{% endblock %}

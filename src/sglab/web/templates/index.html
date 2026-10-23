@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Sessions</h1>
+<div class="sub">{{ rows|length }} recording{{ '' if rows|length == 1 else 's' }}</div>
+
+<form class="filters" method="get">
+  <label>Subject
+    <select name="subject" onchange="this.form.submit()">
+      <option value="">all</option>
+      {% for s in subjects %}<option {% if s == f_subject %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Protocol
+    <select name="protocol" onchange="this.form.submit()">
+      <option value="">all</option>
+      {% for p in protocols %}<option {% if p == f_protocol %}selected{% endif %}>{{ p }}</option>{% endfor %}
+    </select>
+  </label>
+  <label><input type="checkbox" name="all" value="true" {% if f_all %}checked{% endif %} onchange="this.form.submit()"> include discarded</label>
+  {% if auth_enabled %}<label><input type="checkbox" name="mine" value="true" {% if f_mine %}checked{% endif %} onchange="this.form.submit()"> recorded by me</label>{% endif %}
+</form>
+
+<div class="card scroll">
+<table>
+  <thead><tr>
+    <th>Session</th><th>Subject</th><th>Protocol</th><th class="num">Trial</th><th>Started</th>
+    <th class="num">Duration</th><th class="num">Streams</th><th class="num">Cuff BP</th><th>Processed</th>
+    <th>Quality</th><th>Status</th><th>Recorded by</th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td><a href="/sessions/{{ r.session_id }}">{{ r.session_id }}</a></td>
+      <td>{{ r.subject_id or '' }}</td>
+      <td>{{ r.protocol or '' }}</td>
+      <td class="num">{{ r.trial or '' }}</td>
+      <td>{{ (r.started_at or '')[:16].replace('T', ' ') }}</td>
+      <td class="num">{{ '%.0f'|format(r.duration_s or 0) }} s</td>
+      <td class="num">{{ r.n_streams }}</td>
+      <td class="num">{{ r.n_bp }}</td>
+      <td>{{ r.n_processed }}/{{ r.n_streams }}</td>
+      <td>{% if r.quality %}<span class="pill {{ r.quality }}">{{ r.quality }}</span>{% endif %}</td>
+      <td><span class="pill {{ r.status }}">{{ r.status }}</span></td>
+      <td>{{ r.operator or '' }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="12" class="note">No sessions yet. Start one from <a href="/trial/new">New trial</a>.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

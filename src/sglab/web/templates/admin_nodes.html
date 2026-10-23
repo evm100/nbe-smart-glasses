@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Nodes · NBE PPG lab{% endblock %}
+{% block content %}
+<h1>Sensor nodes</h1>
+<div class="sub">Each ESP32 board has its own client certificate (CN = node ID). Registering issues it; flash it with
+  <code>firmware/tools/nbe_node.py configure &lt;ID&gt;</code> or the credentials zip. Disabled nodes are ignored by the server
+  (block them at the broker too by removing them from the ACL if a key leaks).</div>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if not pki_ready %}<div class="error">No device CA yet. On the server run <code>sglab pki init</code> (see deploy/DEPLOY.md).</div>{% endif %}
+{% if not mqtt %}<div class="warn">MQTT is not configured on this server (<code>[mqtt]</code> in config/server.toml) – nodes can be registered but won't show live state.</div>{% endif %}
+
+<div class="card scroll">
+  <table>
+    <thead><tr><th>Node</th><th>Name</th><th>Role / site</th><th>Notes</th><th>Enabled</th><th></th>
+      <th>State</th><th>Firmware</th><th>Cert expires</th><th>Credentials</th></tr></thead>
+    <tbody>
+    {% for n in nodes %}
+      <tr>
+        <td><b>{{ n.node_id }}</b></td>
+        <td><input type="text" name="name" form="n-{{ loop.index }}" value="{{ n.name or '' }}" style="width:120px"></td>
+        <td><input type="text" name="site" form="n-{{ loop.index }}" value="{{ n.site or '' }}" style="width:90px" list="sites"></td>
+        <td><input type="text" name="notes" form="n-{{ loop.index }}" value="{{ n.notes or '' }}" style="width:160px"></td>
+        <td><input type="checkbox" name="enabled" form="n-{{ loop.index }}" {% if n.enabled %}checked{% endif %}></td>
+        <td><form id="n-{{ loop.index }}" method="post" action="/admin/nodes/{{ n.node_id }}" style="margin:0"><button type="submit">Save</button></form></td>
+        <td>{% if n.busy %}<span class="pill busy">in trial ({{ n.busy.owner }})</span>
+            {% elif n.live.online %}<span class="pill online">online{% if n.live.rssi %} · {{ n.live.rssi }} dBm{% endif %}</span>
+            {% else %}<span class="pill offline">{{ n.live.state or 'offline' }}</span>{% endif %}
+            {% if n.live.streaming and not n.busy %}
+              <form method="post" action="/admin/nodes/{{ n.node_id }}/stop" style="display:inline"><button class="link">stop stream</button></form>{% endif %}
+</td>
+        <td>
+          <div data-fw="{{ n.node_id }}">{% if n.live.fw %}{{ n.live.fw }} <span class="note">{{ n.live.build or '' }}</span>{% endif %}</div>
+          <div class="note" data-ota="{{ n.node_id }}">{% if n.live.ota %}update: {{ n.live.ota }}{% endif %}</div>
+          {% if n.image %}
+            <div class="note" title="uploaded by {{ n.image.uploaded_by }}, built {{ n.image.built }}">image {{ n.image.version }} {{ n.image.build }}
+              · {{ (n.image.uploaded_at or '')[:16] | replace('T', ' ') }}</div>
+            {% set same = n.live.build and n.live.build == n.image.build %}
+            <form method="post" action="/admin/nodes/{{ n.node_id }}/ota" style="margin:2px 0"
+                  onsubmit="return confirm('{{ 'Reinstall' if same else 'Install' }} {{ n.image.version }} ({{ n.image.build }}) on {{ n.node_id }} over Wi-Fi? It reboots when done (about a minute).')">
+              <button type="submit" {% if not n.live.online or n.busy or not ota_url %}disabled
+                title="{{ 'in a trial' if n.busy else ('offline' if not n.live.online else 'needs an https public_url') }}"{% endif %}>
+                {{ 'Reinstall' if same else 'Update' }}</button></form>
+          {% endif %}
+          <details><summary class="note">upload image</summary>
+            <form method="post" action="/admin/nodes/{{ n.node_id }}/firmware" enctype="multipart/form-data" class="row-inline" style="margin:2px 0">
+              <input type="file" name="image" accept=".bin" required style="width:180px"><button type="submit">Upload</button></form>
+          </details>
+        </td>
+        <td class="note">{{ (n.cert_expires or '')[:10] }}</td>
+        <td class="row-inline">
+          <a href="/admin/nodes/{{ n.node_id }}/credentials.zip">zip</a>
+          <form method="post" action="/admin/nodes/{{ n.node_id }}/rotate" style="margin:0"
+                onsubmit="return confirm('Issue a new key + certificate for {{ n.node_id }}? The board must be re-flashed with it.')">
+            <button class="link">rotate</button></form>
+        </td></tr>
+    {% else %}
+      <tr><td colspan="10" class="note">No nodes yet – register one below.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="note">Firmware updates go over Wi-Fi: <code>deploy/evmserver/build-firmware.sh</code> uploads each node's new image
+  (or upload <code>build/ppg_stream.bin</code> here), then <b>Update</b> tells the node to fetch it from
+  <code>{{ ota_url or '(needs [web] public_url = https://…)' }}</code>. A new build that can't get back on the broker is rolled back
+  by the node itself. Boards flashed before firmware 0.4.0 need one USB flash first (new partition table).</p>
+<script>
+// live firmware / update progress without reloading the form
+async function pollFw() {
+  try {
+    const r = await fetch('/api/nodes'); if (!r.ok) return;
+    for (const n of (await r.json()).nodes) {
+      const l = n.live || {}, ota = document.querySelector(`[data-ota="${n.node_id}"]`), fw = document.querySelector(`[data-fw="${n.node_id}"]`);
+      if (ota) ota.textContent = l.ota ? 'update: ' + l.ota : '';
+      if (fw && l.fw) fw.innerHTML = '';
+      if (fw && l.fw) { fw.append(l.fw + ' '); const s = document.createElement('span'); s.className = 'note'; s.textContent = l.build || ''; fw.append(s); }
+    }
+  } catch (e) {}
+}
+setInterval(pollFw, 3000);
+</script>
+<datalist id="sites"><option>finger</option><option>glasses</option><option>ear</option><option>wrist</option></datalist>
+{% if unknown %}<div class="warn">Seen on the broker but not registered / enabled: {{ unknown | join(', ') }}</div>{% endif %}
+
+<h2>Register a node</h2>
+<form class="card row-inline" method="post" action="/admin/nodes">
+  <input type="text" name="node_id" placeholder="ID, e.g. FNG02" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{1,31}" required style="width:130px">
+  <input type="text" name="name" placeholder="name (optional)">
+  <input type="text" name="site" placeholder="role / site" list="sites" value="finger" style="width:110px">
+  <input type="text" name="notes" placeholder="notes (sensor, owner…)">
+  <button class="primary" type="submit" {% if not pki_ready %}disabled{% endif %}>Register</button>
+</form>
+<p class="note">Nodes are given: broker <code>{{ prov.broker_uri or '(set [provisioning] broker_uri)' }}</code>,
+  topic prefix <code>{{ prov.topic_prefix }}</code>, broker CA: <code>{{ 'ESP-IDF bundle (public CA)' if prov.broker_ca in ('', 'bundle') else prov.broker_ca }}</code>.
+  The <i>role / site</i> names the stream in recordings (e.g. finger_FNG02.csv).</p>
+{% endblock %}

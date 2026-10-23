@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Subjects</h1>
+<div class="sub">De-identified codes only. Keep names and consent forms outside this repository.</div>
+<div class="card scroll">
+<table>
+  <thead><tr><th>Subject</th><th>Sex</th><th class="num">Age</th><th class="num">Height (cm)</th>
+    <th class="num">Weight (kg)</th><th>Skin type</th><th class="num">Sessions</th><th>Notes</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td><a href="/?subject={{ r.subject_id }}">{{ r.subject_id }}</a></td>
+      <td>{{ r.sex or '' }}</td><td class="num">{{ r.age_years or '' }}</td>
+      <td class="num">{{ r.height_cm or '' }}</td><td class="num">{{ r.weight_kg or '' }}</td>
+      <td>{{ r.fitzpatrick or '' }}</td><td class="num">{{ r.n_sessions }}</td><td>{{ r.notes or '' }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="8" class="note">No subjects yet (<code>sglab subject add</code>).</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

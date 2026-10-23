@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Devices · NBE PPG lab{% endblock %}
+{% block content %}
+<h1>Devices</h1>
+<div class="sub">Sensor nodes (ESP32 over Wi-Fi/MQTT) and sensors plugged into the server. Updates every 3 s.
+  {% if is_admin %}Register or edit nodes under <a href="/admin/nodes">Nodes</a>.{% endif %}</div>
+<div class="card scroll">
+  <table>
+    <thead><tr><th>Device</th><th>Kind</th><th>Role</th><th>State</th><th>Trial</th><th class="num">RSSI</th>
+      <th class="num">Last seen</th><th>Firmware</th><th>Details</th></tr></thead>
+    <tbody id="rows">
+    {% for d in devices %}
+      <tr><td><b>{{ d.label }}</b>{% if d.node_id and d.node_id != d.label %} <span class="note">{{ d.node_id }}</span>{% endif %}</td>
+        <td>{{ d.kind }}</td><td>{{ d.role }}</td>
+        <td><span class="pill {{ 'busy' if d.busy else ('online' if d.online else 'offline') }}">{{ 'in use' if d.busy else d.state }}</span></td>
+        <td>{{ d.busy.owner if d.busy else '' }}</td><td class="num">{{ d.details.rssi or '' }}</td>
+        <td class="num">{{ d.details.last_seen_s or '' }}</td><td>{{ d.details.fw or '' }}</td><td></td></tr>
+    {% else %}
+      <tr><td colspan="9" class="note">No devices. Nodes appear here once an admin registers them.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="note">A node shows <i>online</i> while it publishes its status (every ~15 s). <i>stale</i> = it said it was online
+  but hasn't been heard for 45 s (Wi-Fi or power lost, the broker will mark it offline shortly).</p>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+function ago(s) { if (s == null) return ''; if (s < 90) return Math.round(s) + ' s'; if (s < 5400) return Math.round(s / 60) + ' min'; return Math.round(s / 3600) + ' h'; }
+async function poll() {
+  const r = await fetch('/api/devices'); if (!r.ok) return;
+  const d = await r.json();
+  document.getElementById('rows').innerHTML = d.devices.map(x => {
+    const cls = x.busy ? 'busy' : (x.online ? 'online' : 'offline');
+    const extra = Object.entries(x.details).filter(([k]) => !['rssi', 'last_seen_s', 'fw'].includes(k)).map(([k, v]) => `${k}=${v}`).join(' ');
+    return `<tr><td><b>${esc(x.label)}</b>${x.node_id && x.node_id !== x.label ? ' <span class="note">' + esc(x.node_id) + '</span>' : ''}</td>
+      <td>${esc(x.kind)}</td><td>${esc(x.role)}</td>
+      <td><span class="pill ${cls}">${x.busy ? 'in use' : esc(x.state)}${x.streaming && !x.busy ? ' · streaming!' : ''}</span></td>
+      <td>${x.busy ? esc(x.busy.owner) : ''}</td><td class="num">${esc(x.details.rssi)}</td>
+      <td class="num">${ago(x.details.last_seen_s)}</td><td>${esc(x.details.fw)}</td><td class="note">${esc(extra)}</td></tr>`;
+  }).join('') || '<tr><td colspan="9" class="note">No devices.</td></tr>';
+}
+poll(); setInterval(poll, 3000);
+</script>
+{% endblock %}

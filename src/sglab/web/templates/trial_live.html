@@ -1,0 +1,253 @@
+{% extends "base.html" %}
+{% block title %}Recording · NBE PPG lab{% endblock %}
+{% block content %}
+<div class="grid2" style="align-items:start">
+  <div>
+    <h1>Recording</h1>
+    <div class="sub">{{ t.metadata.subject_id }} · {{ t.metadata.protocol }} · trial {{ t.metadata.trial }} · started by {{ t.owner }} · <code>{{ t.folder }}</code></div>
+  </div>
+  <div class="btnrow" style="justify-content:flex-end">
+    <span class="clock" id="clock">0:00</span>
+    <button class="danger big" id="stop">■ Stop</button>
+  </div>
+</div>
+{% for w in t.warnings %}<div class="warn">{{ w }}</div>{% endfor %}
+
+<div class="card scroll" style="margin-top:12px">
+  <table>
+    <thead><tr><th>Stream</th><th>Device</th><th class="num">Rate (Hz)</th><th class="num">fs</th>
+      <th class="num">Samples</th><th class="num">Dropped</th><th class="num">Bad lines</th><th>State</th><th>Device report</th></tr></thead>
+    <tbody id="streams"></tbody>
+  </table>
+</div>
+
+<h2>Live signal <span class="note">(last 8 s, first channel, raw counts)</span></h2>
+<div class="card"><canvas id="live" style="display:block; width:100%; height:340px"></canvas></div>
+
+<h2>Log readings &amp; markers</h2>
+<div class="card stack" style="display:grid; gap:14px">
+  <div class="row-inline">
+    <button id="cuff">Cuff inflation started</button>
+    <span class="note">press when the cuff starts; enter the result below when it finishes</span>
+  </div>
+  <form class="row-inline" id="bp-form">
+    <b style="width:90px">Cuff BP</b>
+    <input type="number" name="sys_mmhg" placeholder="SYS" required> /
+    <input type="number" name="dia_mmhg" placeholder="DIA" required>
+    <input type="number" name="hr_bpm" placeholder="pulse">
+    <button class="primary" type="submit">Log BP</button>
+  </form>
+  <form class="row-inline" id="ox-form">
+    <b style="width:90px">Pulse-ox</b>
+    <input type="number" name="spo2_pct" placeholder="SpO2 %" required>
+    <input type="number" name="hr_bpm" placeholder="HR">
+    <button class="primary" type="submit">Log SpO2</button>
+  </form>
+  <form class="row-inline" id="mk-form">
+    <b style="width:90px">Marker</b>
+    <input type="text" name="label" placeholder="e.g. hand into ice water" required>
+    <button class="primary" type="submit">Add</button>
+    {% for q in quick_markers %}<button type="button" class="quick">{{ q }}</button>{% endfor %}
+  </form>
+  <div class="flash" id="flash"></div>
+</div>
+
+<h2>Event log</h2>
+<div class="card scroll">
+  <table>
+    <thead><tr><th class="num">t (s)</th><th>Kind</th><th>Source</th><th class="num">SBP</th><th class="num">DBP</th>
+      <th class="num">HR</th><th class="num">SpO2</th><th>Label</th></tr></thead>
+    <tbody id="events"></tbody>
+  </table>
+</div>
+
+<script>
+const API = '/api/trials/{{ t.id }}', PAGE = '/trials/{{ t.id }}';
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const ROLE_COLOR = r => ({finger: css('--s1'), glasses: css('--s2')}[r] || css('--s3'));
+const fmt = v => v == null ? '' : v;
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+
+function flash(msg, err) {
+  const f = document.getElementById('flash'); f.textContent = msg; f.className = 'flash' + (err ? ' err' : '');
+}
+async function send(kind, values) {
+  const r = await fetch(API + '/event', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                                  body: JSON.stringify(Object.assign({kind}, values))});
+  const d = await r.json();
+  if (!r.ok) { flash(d.error || 'error', true); return false; }
+  flash(`logged ${d.kind} at ${d.t_s.toFixed(1)} s`); poll(); return true;
+}
+function formValues(f) { return Object.fromEntries(new FormData(f).entries()); }
+for (const [id, kind] of [['bp-form', 'bp'], ['ox-form', 'spo2'], ['mk-form', 'marker']]) {
+  const f = document.getElementById(id);
+  f.addEventListener('submit', async e => { e.preventDefault(); if (await send(kind, formValues(f))) f.reset(); });
+}
+document.getElementById('cuff').onclick = () => send('cuff_start', {});
+document.querySelectorAll('.quick').forEach(b => b.onclick = () => send('marker', {label: b.textContent}));
+document.getElementById('stop').onclick = async () => {
+  if (!confirm('Stop the recording?')) return;
+  const r = await fetch(API + '/stop', {method: 'POST'});
+  if (r.ok) location.reload(); else flash((await r.json()).error, true);
+};
+
+const stalled = {};  // role -> seconds without samples (from the status poll)
+async function poll() {
+  const r = await fetch(API);
+  if (r.status === 404 || r.status === 410) { location.href = PAGE; return; }  // saved elsewhere -> redirect
+  if (!r.ok) return;
+  const s = await r.json();
+  if (s.state !== 'recording') { location.reload(); return; }
+  const m = Math.floor(s.elapsed_s / 60), sec = Math.floor(s.elapsed_s % 60);
+  document.getElementById('clock').textContent = `${m}:${String(sec).padStart(2, '0')}`;
+  document.getElementById('streams').innerHTML = s.streams.map(x => {
+    const rateOk = x.fs && Math.abs(x.rate_hz - x.fs) < 0.1 * x.fs;
+    const restarts = x.device_restarts ? ` <span class="note">· resumed ${x.device_restarts}×</span>` : '';
+    const state = x.error ? `<span style="color:var(--bad)">✕ ${esc(x.error)}</span>` :
+                  !x.alive ? 'stopped' :
+                  x.stall_s > 3 ? `<span style="color:var(--warn)">▲ no data for ${x.stall_s.toFixed(0)} s – reconnecting</span>` :
+                  (rateOk ? '<span class="ok-dot">● streaming</span>' : '<span style="color:var(--warn)">▲ rate off</span>') + restarts;
+    stalled[x.role] = x.alive && x.stall_s > 3 ? x.stall_s : 0;
+    return `<tr><td>${esc(x.role)}</td><td>${esc(x.dev)}</td><td class="num">${x.rate_hz.toFixed(0)}</td><td class="num">${fmt(x.fs)}</td>
+      <td class="num">${x.samples}</td><td class="num">${x.dropped}</td><td class="num">${x.bad_lines}</td><td>${state}</td>
+      <td class="note">${esc(Object.entries(x.device || {}).filter(([k]) => ['fs_meas', 'ovf', 'alc_ovf', 'i2c_err', 'tx_drop', 'temp_c'].includes(k)).map(([k, v]) => k + '=' + v).join(' '))}</td></tr>`;
+  }).join('');
+  document.getElementById('events').innerHTML = s.events.slice().reverse().map(e =>
+    `<tr><td class="num">${e.t_s.toFixed(1)}</td><td>${esc(e.kind)}</td><td>${esc(e.source)}</td><td class="num">${fmt(e.sys_mmhg)}</td>
+     <td class="num">${fmt(e.dia_mmhg)}</td><td class="num">${fmt(e.hr_bpm)}</td><td class="num">${fmt(e.spo2_pct)}</td><td>${esc(e.label)}</td></tr>`).join('');
+}
+
+// ---- live plot: incremental fetch + continuous scrolling on a canvas ------------------------
+// The server sends only new points (cursor `after`). The page keeps the last WINDOW seconds,
+// estimates the server's session clock, and draws every animation frame at
+// (server time - DELAY), so the trace glides instead of jumping on each fetch. DELAY follows the
+// link's latency (MQTT nodes deliver ~1 s bursts); the y-axes ease towards their targets.
+const WINDOW = 8, FETCH_MS = 150;
+const cv = document.getElementById('live'), g = cv.getContext('2d');
+const lanes = [];             // {role, label, fs, t: [], y: [], lo, hi}
+let cursors = null, clockOff = null, delay = 0.6, lagMax = 0.4, colors = {};
+
+function readColors() {
+  colors = {grid: css('--grid'), text: css('--text-2'), muted: css('--muted'), surface: css('--surface'), warn: css('--warn')};
+}
+readColors();
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', readColors);
+setInterval(readColors, 2000);  // the theme toggle
+
+async function fetchLive() {
+  try {
+    const q = cursors ? `?after=${cursors.join(',')}` : '';
+    const r = await fetch(API + '/live' + q);
+    if (r.ok) ingest(await r.json(), performance.now() / 1000);
+  } catch (e) { /* network blip: try again */ }
+  setTimeout(fetchLive, document.hidden ? 1000 : FETCH_MS);
+}
+
+function ingest(d, arrived) {
+  if (!d.length) return;
+  const est = d[0].now - arrived;           // server session clock = performance clock + offset
+  clockOff = clockOff == null ? est : clockOff + 0.1 * (est - clockOff);
+  if (!cursors || cursors.length !== d.length) {  // first reply (or stream list changed): reseed
+    lanes.length = 0;
+    for (const s of d) lanes.push({role: s.role, t: [], y: [], lo: null, hi: null});
+  }
+  d.forEach((s, i) => {
+    const L = lanes[i];
+    L.label = `${s.role} ${s.channel}`.trim(); L.fs = s.fs;
+    for (let k = 0; k < s.t.length; k++) { L.t.push(s.t[k]); L.y.push(s.y[k]); }
+    let cut = 0; const old = s.now - WINDOW - 1;
+    while (cut < L.t.length && L.t[cut] < old) cut++;
+    if (cut) { L.t.splice(0, cut); L.y.splice(0, cut); }
+    if (s.t.length) lagMax = Math.max(s.now - s.t[s.t.length - 1], lagMax);
+  });
+  lagMax *= 0.97;                           // forget old latency spikes slowly
+  cursors = d.map(s => s.next);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) cursors = null; });  // reseed after a background tab
+
+function fmtCount(v) {
+  const a = Math.abs(v);
+  return a >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : a >= 1e4 ? (v / 1e3).toFixed(1) + 'k' : v.toFixed(0);
+}
+
+function frame() {
+  requestAnimationFrame(frame);
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  if (clockOff == null || !lanes.length) return;
+
+  delay += (Math.min(Math.max(lagMax + 0.12, 0.25), 2.5) - delay) * 0.02;
+  const head = performance.now() / 1000 + clockOff - delay, t0 = head - WINDOW;
+  const L0 = 64, R0 = 10, T0 = 6, B0 = 24, gap = 14;
+  const pw = W - L0 - R0, laneH = (H - T0 - B0 - gap * (lanes.length - 1)) / lanes.length;
+  const X = t => L0 + (t - t0) / WINDOW * pw;
+  g.font = '11px system-ui, sans-serif';
+  g.lineWidth = 1;
+
+  // time grid (1 s), labels along the bottom
+  g.strokeStyle = colors.grid; g.fillStyle = colors.text; g.textAlign = 'center'; g.textBaseline = 'top';
+  for (let s = Math.ceil(t0); s <= head; s++) {
+    const x = Math.round(X(s)) + 0.5;
+    g.beginPath(); g.moveTo(x, T0); g.lineTo(x, H - B0); g.stroke();
+    if (x > L0 + 12 && x < W - R0 - 12) g.fillText(`${s} s`, x, H - B0 + 6);
+  }
+
+  lanes.forEach((L, i) => {
+    const top = T0 + i * (laneH + gap), bot = top + laneH;
+    // visible range -> eased y-axis
+    let mn = Infinity, mx = -Infinity, first = 0;
+    while (first < L.t.length && L.t[first] < t0 - 0.2) first++;
+    for (let k = first; k < L.t.length && L.t[k] <= head; k++) { const v = L.y[k]; if (v < mn) mn = v; if (v > mx) mx = v; }
+    if (mn <= mx) {
+      const pad = Math.max((mx - mn) * 0.1, 1);
+      if (L.lo == null) { L.lo = mn - pad; L.hi = mx + pad; }
+      L.lo += (mn - pad - L.lo) * 0.08; L.hi += (mx + pad - L.hi) * 0.08;
+    }
+    g.save();
+    g.beginPath(); g.rect(L0, top, pw, laneH); g.clip();
+    g.strokeStyle = colors.grid;
+    for (let k = 0; k <= 4; k++) {
+      const y = Math.round(top + k * laneH / 4) + 0.5;
+      g.beginPath(); g.moveTo(L0, y); g.lineTo(L0 + pw, y); g.stroke();
+    }
+    if (L.lo != null) {
+      const Y = v => bot - (v - L.lo) / (L.hi - L.lo) * laneH;
+      const brk = Math.max(0.25, L.fs ? 5 / L.fs : 0);  // break the line over real gaps
+      g.strokeStyle = ROLE_COLOR(L.role); g.lineWidth = 1.5; g.lineJoin = 'round';
+      g.beginPath();
+      let prev = null;
+      for (let k = Math.max(0, first - 1); k < L.t.length && L.t[k] <= head + 0.05; k++) {
+        const x = X(L.t[k]), y = Y(L.y[k]);
+        if (prev == null || L.t[k] - prev > brk) g.moveTo(x, y); else g.lineTo(x, y);
+        prev = L.t[k];
+      }
+      g.stroke();
+    }
+    g.restore();
+    // y labels + lane title
+    g.fillStyle = colors.text; g.textAlign = 'right'; g.textBaseline = 'middle';
+    if (L.lo != null) {
+      g.fillText(fmtCount(L.hi), L0 - 6, top + 6);
+      g.fillText(fmtCount((L.lo + L.hi) / 2), L0 - 6, (top + bot) / 2);
+      g.fillText(fmtCount(L.lo), L0 - 6, bot - 6);
+    }
+    g.textAlign = 'left'; g.textBaseline = 'top';
+    g.fillStyle = colors.surface; const title = L.label || L.role;
+    g.fillRect(L0 + 4, top + 3, g.measureText(title).width + 8, 15);
+    g.fillStyle = colors.text; g.fillText(title, L0 + 8, top + 5);
+    if (stalled[L.role]) {
+      const msg = `no data for ${stalled[L.role].toFixed(0)} s – waiting for the node (auto-restart)`;
+      g.fillStyle = colors.warn; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(msg, L0 + pw / 2, (top + bot) / 2);
+    }
+  });
+}
+
+poll(); fetchLive(); requestAnimationFrame(frame);
+setInterval(poll, 1000);
+</script>
+{% endblock %}

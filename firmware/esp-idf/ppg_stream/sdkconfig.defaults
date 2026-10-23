@@ -1,0 +1,39 @@
+# Defaults applied the first time `sdkconfig` is generated.
+# (Delete sdkconfig and run `idf.py reconfigure` to re-apply after editing.)
+CONFIG_IDF_TARGET="esp32s3"
+
+# 1 ms tick so short FIFO poll periods are honoured
+CONFIG_FREERTOS_HZ=1000
+
+# Keep ESP_LOG / boot console on UART0 (XIAO D6/D7) so the USB-C port carries
+# only protocol lines. Flashing over USB-C still works.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# ---- XIAO ESP32-S3: 8 MB flash, 8 MB octal PSRAM -------------------------------
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+# two ~4 MB app slots for over-the-air updates (Wi-Fi + TLS + MQTT need > 1 MB each)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# a new image that never reaches the broker is undone at the next reboot (main/ota.c)
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+# boards without PSRAM still boot (smaller store-and-forward buffer)
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+CONFIG_SPIRAM_USE_MALLOC=y
+# allocations > 4 kB (MQTT outbox batches) go to PSRAM, keeping internal RAM for Wi-Fi/TLS
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+
+# ---- MQTT link -------------------------------------------------------------------
+# keep unacknowledged batches for up to 5 min of Wi-Fi outage (default 30 s)
+CONFIG_MQTT_OUTBOX_EXPIRED_TIMEOUT_MS=300000
+# CONFIG_LWIP_TCP_SND_BUF_DEFAULT stays at ESP-IDF's 5.7 kB: 0.5.0 tried 32 kB, and through a phone
+# hotspot the larger in-flight bursts stalled TCP (2-5 kB/s, 10 s without progress, reconnects).
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
+CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=y

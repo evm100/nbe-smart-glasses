@@ -1,0 +1,36 @@
+# NBE PPG lab server – deployment config.
+# Copy to /etc/nbe/server.toml (chmod 640, group nbe) and point the service at it with
+# SGLAB_SERVER_CONFIG (deploy/systemd/nbe-lab.service does). Never commit the real one.
+
+[paths]
+data_root = "/srv/nbe/ppg-data"        # raw/, processed/, catalog.sqlite (users, nodes, audit too)
+
+[web]
+host = "0.0.0.0"                       # split layout: the LXC's LAN address is fine; single VM: "127.0.0.1"
+port = 8000
+public_url = "https://ppg.example.org" # what browsers use (cookies get the Secure flag for https)
+trusted_proxies = "10.0.0.10"          # nginx host(s), comma separated (X-Forwarded-* only trusted from these)
+allow_local_devices = false            # hide lab.toml serial/simulated devices on the headless server
+
+[auth]
+enabled = true
+session_hours = 12                     # browser login lifetime
+
+[pki]
+dir = "/srv/nbe/pki"                   # NBE Device CA (ca.key!) + node / core certificates; back it up
+
+[mqtt]                                 # the server's own broker connection
+host = "mqtt.example.org"              # must match the broker certificate's name (add an /etc/hosts entry
+port = 8884                            #   pointing at the broker's LAN IP when the server is on the LAN)
+# ca_file = ""                         # omit = system CAs (Let's Encrypt); set for a private broker CA
+cert_file = "/srv/nbe/pki/core.crt"    # sglab pki core-cert
+key_file = "/srv/nbe/pki/core.key"
+topic_prefix = "nbe"
+client_id = "nbe-core"
+
+[provisioning]                         # what nbe_node.py writes into each node's firmware
+broker_uri = "mqtts://mqtt.example.org:8884"
+broker_ca = "bundle"                   # "bundle" = public CA (ESP-IDF CA bundle); or a PEM path for a private CA
+
+[processing]
+mode = "local"                         # "remote" = queue jobs for `sglab worker` on another machine (deploy/worker)
