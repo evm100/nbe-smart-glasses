@@ -1,0 +1,4 @@
+[console_scripts]
+ppg-layer1 = ppg.cli:main
+ppg-layer2 = ppg.cli:main2
+sglab = sglab.cli:main

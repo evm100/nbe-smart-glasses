@@ -1,0 +1,25 @@
+Metadata-Version: 2.4
+Name: smart-glasses
+Version: 0.4.0
+Summary: NBE smart-glasses: PPG acquisition, data catalog, processing pipeline and lab UI
+Requires-Python: >=3.10
+Requires-Dist: numpy>=1.24
+Requires-Dist: scipy>=1.10
+Requires-Dist: pandas>=2.0
+Requires-Dist: matplotlib>=3.7
+Requires-Dist: pyserial>=3.5
+Requires-Dist: rich>=13
+Requires-Dist: tomli>=2; python_version < "3.11"
+Provides-Extra: web
+Requires-Dist: fastapi>=0.110; extra == "web"
+Requires-Dist: uvicorn>=0.27; extra == "web"
+Requires-Dist: jinja2>=3.1; extra == "web"
+Requires-Dist: python-multipart>=0.0.9; extra == "web"
+Provides-Extra: server
+Requires-Dist: smart-glasses[web]; extra == "server"
+Requires-Dist: paho-mqtt>=2.0; extra == "server"
+Requires-Dist: cryptography>=42; extra == "server"
+Provides-Extra: dev
+Requires-Dist: smart-glasses[server]; extra == "dev"
+Requires-Dist: pytest>=7; extra == "dev"
+Requires-Dist: httpx2; extra == "dev"
