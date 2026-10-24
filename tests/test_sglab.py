@@ -178,6 +178,24 @@ def test_process_and_web_api(lab):
     assert c.get("/files/../config/lab.toml").status_code == 404
 
 
+def test_startup_glitch_rows():
+    import numpy as np
+
+    from sglab.processing import startup_glitch_rows
+
+    # fw <= 0.6.0 START with FIFO_OVF (as FNG01 in T12): one read of 32 slots stamped back from the read
+    # time, then the next read (7 samples) repeats the newest slots, stamped earlier than seq 31
+    bad = [1000 + 2500 * (k - 31) for k in range(32)] + [1000 - 6500 + 2500 * k for k in range(7)]
+    bad += [bad[-1] + 2500 * (k + 1) for k in range(20)]
+    good = [500_000 + 2500 * k for k in range(60)]  # a clean START (as HED01)
+    seq = np.array(list(range(59)) + list(range(60)) + list(range(59)))
+    t = np.array(bad + good + [2_000_000 + v for v in bad])  # second bad epoch after an auto-restart
+    drop = startup_glitch_rows(seq, t)
+    assert drop.sum() == 64
+    assert drop[:32].all() and not drop[32:59 + 60].any() and drop[119:151].all() and not drop[151:].any()
+    assert (np.diff(t[~drop][:59 - 32]) > 0).all()  # what is left runs forward in time
+
+
 # ---------------------------------------------------------------- web-controlled trial
 def test_web_trial_lifecycle(lab):
     pytest.importorskip("fastapi")

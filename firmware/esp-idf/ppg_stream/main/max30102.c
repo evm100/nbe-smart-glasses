@@ -123,12 +123,17 @@ esp_err_t max30102_configure(max30102_t *s, const max30102_config_t *cfg)
         {REG_LED2_PA, cfg->mode == MAX30102_MODE_SPO2 ? led_pa(cfg->ir_ma_x10) : 0},
         {REG_INT_ENABLE1, cfg->int_a_full ? MAX30102_INT_A_FULL : 0},
         {REG_INT_ENABLE2, INT2_DIE_TEMP_RDY},
+        // empty FIFO, before conversions start: resetting the pointers of a running sensor can leave
+        // OVF_COUNTER set, and the next read then returns 32 slots, mostly stale (fw <= 0.6.0 at START)
+        {REG_FIFO_WR_PTR, 0},
+        {REG_OVF_COUNTER, 0},
+        {REG_FIFO_RD_PTR, 0},
         {REG_MODE_CONFIG, (uint8_t)cfg->mode},
     };
     for (size_t i = 0; i < sizeof seq / sizeof seq[0]; i++) {
         if ((err = wr(s, seq[i][0], seq[i][1])) != ESP_OK) return err;
     }
-    return max30102_clear_fifo(s);
+    return ESP_OK;
 }
 
 esp_err_t max30102_init(max30102_t *s, i2c_master_bus_handle_t bus, uint32_t scl_hz,
@@ -150,14 +155,6 @@ esp_err_t max30102_init(max30102_t *s, i2c_master_bus_handle_t bus, uint32_t scl
         return err != ESP_OK ? err : ESP_ERR_NOT_FOUND;
     }
     return max30102_configure(s, cfg);
-}
-
-esp_err_t max30102_clear_fifo(max30102_t *s)
-{
-    esp_err_t err;
-    if ((err = wr(s, REG_FIFO_WR_PTR, 0)) != ESP_OK) return err;
-    if ((err = wr(s, REG_OVF_COUNTER, 0)) != ESP_OK) return err;
-    return wr(s, REG_FIFO_RD_PTR, 0);
 }
 
 esp_err_t max30102_read_fifo(max30102_t *s, uint32_t *red, uint32_t *ir, int *n, uint8_t *ovf)

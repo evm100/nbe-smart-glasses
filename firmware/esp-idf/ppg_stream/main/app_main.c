@@ -271,7 +271,12 @@ static void note_state(void)
 
 static void start_streaming(void)
 {
-    max30102_clear_fifo(&s_sensor);
+    // drop what has collected since the last idle read (the stream starts with fresh samples);
+    // the sensor keeps converting, so its FIFO pointers are not reset here (see max30102_configure)
+    static uint32_t red[MAX30102_FIFO_DEPTH], ir[MAX30102_FIFO_DEPTH];
+    int n;
+    uint8_t ovf;
+    max30102_read_fifo(&s_sensor, red, ir, &n, &ovf);
     s_seq = 0;
     s_ovf_events = s_i2c_errors = s_alc_ovf_events = 0;
     send_header();
