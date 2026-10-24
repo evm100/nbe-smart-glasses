@@ -1,0 +1,54 @@
+{
+  "io": {
+    "time_col": null,
+    "time_unit": "auto",
+    "channels": {},
+    "fs_nominal": null,
+    "read_csv_kwargs": {}
+  },
+  "timing": {
+    "fs_target": null,
+    "max_gap_s": 0.25
+  },
+  "artifacts": {
+    "adc_max": 262143,
+    "sat_frac": 0.995,
+    "adc_min": 0.0,
+    "flatline_s": 0.1,
+    "min_dc": null,
+    "mask_dilate_s": 0.25
+  },
+  "filters": {
+    "invert": true,
+    "dc_cutoff_hz": 0.4,
+    "hr_band_hz": [
+      0.5,
+      4.0
+    ],
+    "morph_band_hz": [
+      0.5,
+      8.0
+    ],
+    "order": 4,
+    "pad_s": 2.0,
+    "min_segment_s": 4.0,
+    "deriv_window_s": 0.09,
+    "deriv_polyorder": 3
+  },
+  "quality": {
+    "primary_channel": null,
+    "window_s": 8.0,
+    "step_s": 2.0,
+    "hr_min_bpm": 40.0,
+    "hr_max_bpm": 200.0,
+    "min_valid_frac": 0.95,
+    "min_acf_peak": 0.5,
+    "max_hr_disagreement_bpm": 6.0,
+    "min_skew": 0.0,
+    "amp_ratio_range": [
+      0.33,
+      3.0
+    ],
+    "min_spec_purity": 0.3
+  }
+}

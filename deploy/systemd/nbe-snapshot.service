@@ -1,0 +1,11 @@
+# /etc/systemd/system/nbe-snapshot.service – consistent copy of the catalog DB for the nightly backup
+[Unit]
+Description=NBE catalog snapshot
+
+[Service]
+Type=oneshot
+User=nbe
+Group=nbe
+Environment=SGLAB_ROOT=/opt/nbe/smart-glasses
+Environment=SGLAB_SERVER_CONFIG=/etc/nbe/server.toml
+ExecStart=/opt/nbe/venv/bin/sglab snapshot --keep 14

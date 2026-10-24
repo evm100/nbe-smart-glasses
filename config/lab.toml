@@ -1,0 +1,40 @@
+# Lab-wide settings for `sglab`. Paths are relative to the repository root.
+
+[paths]
+data_root = "data"            # raw/, processed/, datasets/, catalog.sqlite live here
+
+[serial]
+baud = 921600                 # must match the firmware (ignored for native USB-CDC)
+start_timeout_s = 3.0         # how long to wait for the H line after START
+
+# Named devices so you can type `sglab record glasses finger` instead of ports.
+# `role` is stored with every stream and used for file names.
+[devices.finger]
+port = "/dev/ttyUSB0"         # Windows: "COM5"; macOS: "/dev/cu.usbserial-0001"
+role = "finger"
+
+[devices.glasses]
+port = "/dev/ttyUSB1"
+role = "glasses"
+
+# Simulated devices for practising / testing without hardware:
+#   sglab record sim                 (one fake finger sensor)
+#   sglab record sim sim_glasses     (fake finger + weaker fake glasses signal)
+[devices.sim]
+port = "sim://SIMF01"
+role = "finger"
+sim = { fs = 100, hr_bpm = 72, seed = 1 }
+
+[devices.sim_glasses]
+port = "sim://SIMG01"
+role = "glasses"
+sim = { fs = 100, hr_bpm = 72, seed = 1, dc = 40000, perfusion = 0.004, noise_frac = 0.06, dia_amp = [0.25, 0.15] }
+
+# Reference instruments, saved into every session's metadata.
+[reference]
+bp_cuff = "TBD (model of arm cuff)"
+pulse_oximeter = "TBD (model of commercial finger PPG / pulse-ox)"
+
+# Web UI
+[ui]
+quick_markers = ["start task", "end task", "subject moved", "talking", "glasses adjusted"]

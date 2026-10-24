@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Users · NBE PPG lab{% endblock %}
+{% block content %}
+<h1>Users</h1>
+<div class="sub"><b>viewer</b> browses sessions and plots · <b>operator</b> also runs trials · <b>admin</b> also manages users and nodes.
+  Users can't be deleted (the audit trail refers to them) – untick <i>active</i> instead.</div>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<div class="card scroll">
+  <table>
+    <thead><tr><th>User</th><th>Name</th><th>Role</th><th>Active</th><th>Reset password</th><th></th><th>Created</th></tr></thead>
+    <tbody>
+    {% for u in users %}
+      <tr>
+        <td><b>{{ u.username }}</b></td><td>{{ u.display }}</td>
+        <td><select name="role" form="u-{{ loop.index }}">{% for r in roles %}<option {% if r == u.role %}selected{% endif %}>{{ r }}</option>{% endfor %}</select></td>
+        <td><input type="checkbox" name="active" form="u-{{ loop.index }}" {% if u.active %}checked{% endif %}></td>
+        <td><input type="password" name="password" form="u-{{ loop.index }}" placeholder="new password (optional)" autocomplete="new-password" minlength="10"></td>
+        <td><form id="u-{{ loop.index }}" method="post" action="/admin/users/{{ u.username }}" style="margin:0"><button type="submit">Save</button></form></td>
+        <td class="note">{{ (u.created_at or '')[:10] }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>Add user</h2>
+<form class="card row-inline" method="post" action="/admin/users">
+  <input type="text" name="username" placeholder="username (e.g. jdoe)" autocapitalize="none" required>
+  <input type="text" name="display" placeholder="display name">
+  <select name="role">{% for r in roles %}<option {% if r == 'operator' %}selected{% endif %}>{{ r }}</option>{% endfor %}</select>
+  <input type="password" name="password" placeholder="initial password (10+)" minlength="10" autocomplete="new-password" required>
+  <button class="primary" type="submit">Add</button>
+  <span class="note">Send the initial password privately; they can change it under their name (top right).</span>
+</form>
+
+<h2>API tokens (all users)</h2>
+<div class="card scroll">
+  <table>
+    <thead><tr><th>User</th><th>Label</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+    <tbody>
+    {% for t in tokens %}
+      <tr><td>{{ t.username }}</td><td>{{ t.label }}</td><td>{{ (t.created_at or '')[:16] }}</td><td>{{ (t.last_used or '')[:16] }}</td>
+        <td>{% if t.revoked %}<span class="note">revoked</span>{% else %}
+          <form method="post" action="/account/tokens/{{ t.id }}/revoke" style="margin:0"><button class="link">revoke</button></form>{% endif %}</td></tr>
+    {% else %}<tr><td colspan="5" class="note">No tokens.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

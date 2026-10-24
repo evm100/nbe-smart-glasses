@@ -1,0 +1,499 @@
+menu "PPG stream (MAX30102)"
+
+    # ------------------------------------------------------------------
+    menu "Identity"
+        config PPG_DEVICE_ID
+            string "Device ID"
+            default "FNG01"
+            help
+                Unique per board (write it on the label). Sent as dev= in the H
+                header line and used by sglab to name the stream, e.g. FNG01, GLS01.
+                With the MQTT link it is also the node ID: MQTT client ID, topic name and
+                the CN of the node certificate - nbe_node.py sets it, don't edit by hand.
+
+        config PPG_SITE
+            string "Measurement site"
+            default "finger"
+            help
+                Free text sent as site= in the header (finger, glasses_nose, temple...).
+
+        config PPG_BOARD_NAME
+            string "Board name"
+            default "XIAO_ESP32S3"
+    endmenu
+
+    # ------------------------------------------------------------------
+    menu "Wiring"
+        config PPG_I2C_PORT
+            int "I2C port number"
+            range 0 1
+            default 0
+
+        config PPG_I2C_SDA_GPIO
+            int "I2C SDA GPIO"
+            range 0 48
+            default 5
+            help
+                XIAO ESP32-S3: D4 = GPIO5.
+
+        config PPG_I2C_SCL_GPIO
+            int "I2C SCL GPIO"
+            range 0 48
+            default 6
+            help
+                XIAO ESP32-S3: D5 = GPIO6.
+
+        config PPG_I2C_FREQ_HZ
+            int "I2C clock (Hz)"
+            range 100000 400000
+            default 400000
+            help
+                MAX30102 supports up to 400 kHz. 400 kHz is needed for high sample rates.
+
+        config PPG_I2C_INTERNAL_PULLUPS
+            bool "Enable ESP32 internal I2C pull-ups"
+            default y
+            help
+                Weak (~45 kOhm). Most MAX30102 breakouts already have pull-ups; keeping
+                these on as well is harmless.
+
+        config PPG_INT_GPIO
+            int "MAX30102 INT pin GPIO (-1 = poll the FIFO instead)"
+            range -1 48
+            default -1
+            help
+                Optional. INT is open-drain, active low. With it connected the firmware
+                wakes on the FIFO-almost-full interrupt; without it, it polls every
+                "FIFO poll period". Polling is fine for all sample rates up to 3200 sps.
+
+        config PPG_BUTTON_GPIO
+            int "Marker button GPIO (-1 = none)"
+            range -1 48
+            default -1
+            help
+                Push button to GND. Each press sends an E,...,BTN event (shows up as a
+                marker in sglab). XIAO suggestion: D1 = GPIO2.
+
+        config PPG_STATUS_LED_GPIO
+            int "Status LED GPIO (-1 = none)"
+            range -1 48
+            default 21
+            help
+                XIAO ESP32-S3 user LED = GPIO21. LED is on while streaming.
+
+        config PPG_STATUS_LED_ACTIVE_LOW
+            bool "Status LED is active low"
+            default y
+            help
+                If the LED is on when it should be off (and vice versa), flip this.
+    endmenu
+
+    # ------------------------------------------------------------------
+    menu "Sensor"
+        choice PPG_LED_MODE
+            prompt "LED mode"
+            default PPG_LED_MODE_SPO2
+            config PPG_LED_MODE_SPO2
+                bool "SpO2 mode: red + IR (channels ir|red)"
+            config PPG_LED_MODE_HR
+                bool "Heart-rate mode: red only (channel red)"
+        endchoice
+
+        choice PPG_SAMPLE_RATE
+            prompt "Sensor sample rate (samples/s, before averaging)"
+            default PPG_SR_400
+            help
+                The output rate sent to the PC is (sample rate / averaging).
+                Not every rate works with every pulse width (each sample needs time
+                for the LED pulses): check the datasheet's allowed-settings tables.
+                The firmware measures the real rate and reports it as fs_meas= in the
+                once-per-second S status line - compare it with fs.
+            config PPG_SR_50
+                bool "50"
+            config PPG_SR_100
+                bool "100"
+            config PPG_SR_200
+                bool "200"
+            config PPG_SR_400
+                bool "400"
+            config PPG_SR_800
+                bool "800"
+            config PPG_SR_1000
+                bool "1000"
+            config PPG_SR_1600
+                bool "1600"
+            config PPG_SR_3200
+                bool "3200"
+        endchoice
+
+        config PPG_SAMPLE_RATE_HZ
+            int
+            default 50 if PPG_SR_50
+            default 100 if PPG_SR_100
+            default 200 if PPG_SR_200
+            default 400 if PPG_SR_400
+            default 800 if PPG_SR_800
+            default 1000 if PPG_SR_1000
+            default 1600 if PPG_SR_1600
+            default 3200 if PPG_SR_3200
+
+        choice PPG_SAMPLE_AVG
+            prompt "On-chip sample averaging"
+            default PPG_AVG_1
+            help
+                Averages N samples inside the sensor (less noise, lower output rate).
+            config PPG_AVG_1
+                bool "1 (off)"
+            config PPG_AVG_2
+                bool "2"
+            config PPG_AVG_4
+                bool "4"
+            config PPG_AVG_8
+                bool "8"
+            config PPG_AVG_16
+                bool "16"
+            config PPG_AVG_32
+                bool "32"
+        endchoice
+
+        config PPG_SAMPLE_AVG_N
+            int
+            default 1 if PPG_AVG_1
+            default 2 if PPG_AVG_2
+            default 4 if PPG_AVG_4
+            default 8 if PPG_AVG_8
+            default 16 if PPG_AVG_16
+            default 32 if PPG_AVG_32
+
+        choice PPG_PULSE_WIDTH
+            prompt "LED pulse width (sets ADC resolution)"
+            default PPG_PW_411
+            config PPG_PW_69
+                bool "69 us (15-bit)"
+            config PPG_PW_118
+                bool "118 us (16-bit)"
+            config PPG_PW_215
+                bool "215 us (17-bit)"
+            config PPG_PW_411
+                bool "411 us (18-bit)"
+        endchoice
+
+        config PPG_PULSE_WIDTH_US
+            int
+            default 69 if PPG_PW_69
+            default 118 if PPG_PW_118
+            default 215 if PPG_PW_215
+            default 411 if PPG_PW_411
+
+        choice PPG_ADC_RANGE
+            prompt "ADC full-scale range"
+            default PPG_RANGE_16384
+            help
+                Larger range = less chance of saturating on bright reflections, less
+                resolution per count. Lower it if the signal is very weak.
+            config PPG_RANGE_2048
+                bool "2048 nA"
+            config PPG_RANGE_4096
+                bool "4096 nA"
+            config PPG_RANGE_8192
+                bool "8192 nA"
+            config PPG_RANGE_16384
+                bool "16384 nA"
+        endchoice
+
+        config PPG_ADC_RANGE_NA
+            int
+            default 2048 if PPG_RANGE_2048
+            default 4096 if PPG_RANGE_4096
+            default 8192 if PPG_RANGE_8192
+            default 16384 if PPG_RANGE_16384
+
+        config PPG_LED_RED_MA_X10
+            int "Red LED current (units of 0.1 mA, 0-510)"
+            range 0 510
+            default 64
+            help
+                64 = 6.4 mA. The sensor's step is 0.2 mA, so the value is rounded to
+                an even number. Raise it for weak signals (glasses), lower it if the raw
+                counts saturate near 262143.
+
+        config PPG_LED_IR_MA_X10
+            int "IR LED current (units of 0.1 mA, 0-510)"
+            range 0 510
+            default 64
+            depends on PPG_LED_MODE_SPO2
+
+        config PPG_FIFO_POLL_MS
+            int "FIFO poll period (ms)"
+            range 1 50
+            default 5
+            help
+                How often the FIFO is read when INT is not used (and the maximum wait
+                when it is). The 32-sample FIFO lasts 32/fs seconds (80 ms at 400 sps),
+                so keep this well below that.
+
+        config PPG_FIFO_A_FULL
+            int "FIFO almost-full threshold (empty slots left when INT fires)"
+            range 0 15
+            default 15
+            help
+                Only used when the INT pin is connected. 15 = interrupt when 17 samples
+                are waiting.
+    endmenu
+
+    # ------------------------------------------------------------------
+    menu "Link"
+        choice PPG_LINK
+            prompt "Data link"
+            default PPG_LINK_USB_SERIAL_JTAG
+            help
+                USB Serial/JTAG = the XIAO's USB-C port to a PC running sglab (no baud rate, fast).
+                UART = a separate USB-UART adapter on the pins below.
+                Wi-Fi + MQTT = node of the NBE server (needs credentials: run
+                firmware/tools/nbe_node.py configure <ID>, which also selects this).
+            config PPG_LINK_USB_SERIAL_JTAG
+                bool "USB Serial/JTAG (USB-C)"
+            config PPG_LINK_UART
+                bool "UART"
+            config PPG_LINK_MQTT
+                bool "Wi-Fi + MQTT (TLS) to the NBE server"
+        endchoice
+
+        menu "Wi-Fi"
+            depends on PPG_LINK_MQTT
+
+            config PPG_WIFI_SSID
+                string "SSID"
+                default "UCSD-DEVICE"
+                help
+                    UCSD: register the board's Wi-Fi MAC for UCSD-DEVICE (the MAC is
+                    printed at boot and by `idf.py monitor`); you get a per-device
+                    password. 2.4 GHz only (ESP32-S3).
+
+            choice PPG_WIFI_AUTH
+                prompt "Authentication"
+                default PPG_WIFI_AUTH_PSK
+                config PPG_WIFI_AUTH_PSK
+                    bool "Password (WPA2/WPA3-Personal, UCSD-DEVICE, home Wi-Fi) or open"
+                config PPG_WIFI_AUTH_EAP
+                    bool "WPA2-Enterprise PEAP (username + password)"
+            endchoice
+
+            config PPG_WIFI_PASSWORD
+                string "Password"
+                default ""
+                help
+                    Empty = open network. Kept only in sdkconfig / sdkconfig.nbe (not committed).
+
+            config PPG_WIFI_EAP_IDENTITY
+                string "EAP outer identity"
+                default "anonymous"
+                depends on PPG_WIFI_AUTH_EAP
+
+            config PPG_WIFI_EAP_USERNAME
+                string "EAP username"
+                default ""
+                depends on PPG_WIFI_AUTH_EAP
+
+            config PPG_WIFI_EAP_VALIDATE_SERVER
+                bool "Check the RADIUS server certificate against the CA bundle"
+                default y
+                depends on PPG_WIFI_AUTH_EAP
+                help
+                    Without it, a fake access point with the same SSID can capture the password.
+
+            config PPG_WIFI_EAP_DOMAIN
+                string "Expected RADIUS server certificate name (empty = any name)"
+                default ""
+                depends on PPG_WIFI_EAP_VALIDATE_SERVER
+                help
+                    With only the CA check, any access point holding *some* publicly signed
+                    certificate passes. Set the RADIUS server's certificate name to pin it.
+
+            config PPG_WIFI_POWER_SAVE
+                bool "Wi-Fi modem sleep (saves power, adds latency / stalls)"
+                default n
+
+            config PPG_WIFI_TX_POWER_DBM
+                int "Maximum transmit power (dBm, 2-20)"
+                range 2 20
+                default 20
+                help
+                    20 = the ESP32-S3's maximum (and the ESP-IDF default). Lower power means smaller
+                    current spikes on the 3.3 V rail the MAX30102 shares, but RSSI only shows how
+                    well the node hears the access point, not how well it is heard: lower it only
+                    while watching the data rate. The PHY rounds down to 2, 5, 7, 8.5, 11, 13, 14,
+                    15, 16.5, 18 or 20 dBm.
+
+            config PPG_WIFI_HT20
+                bool "Use a 20 MHz channel only (no 40 MHz)"
+                default n
+                help
+                    40 MHz on 2.4 GHz overlaps most of the band and suffers more from neighbours;
+                    our ~20 kB/s needs nowhere near its extra speed.
+
+            config PPG_SNTP_SERVER
+                string "SNTP server"
+                default "pool.ntp.org"
+                help
+                    UTC time for the SYNC events (cross-node alignment) and status timestamps.
+        endmenu
+
+        menu "MQTT"
+            depends on PPG_LINK_MQTT
+
+            config PPG_MQTT_BROKER_URI
+                string "Broker URI"
+                default "mqtts://mqtt.example.org:8883"
+                help
+                    Written by nbe_node.py from the server's [provisioning] broker_uri.
+
+            config PPG_MQTT_TOPIC_PREFIX
+                string "Topic prefix"
+                default "nbe"
+
+            choice PPG_MQTT_BROKER_CA
+                prompt "Broker certificate check"
+                default PPG_MQTT_CA_BUNDLE
+                config PPG_MQTT_CA_BUNDLE
+                    bool "Public CA (ESP-IDF certificate bundle, e.g. Let's Encrypt)"
+                config PPG_MQTT_CA_PEM
+                    bool "Private CA from main/certs/broker_ca.crt"
+            endchoice
+
+            config PPG_OTA_URL
+                string "Firmware update URL (empty = no over-the-air updates)"
+                default ""
+                help
+                    Written by nbe_node.py: the server's public URL + /ota. On an "OTA <token>"
+                    command the node downloads <this URL>/<token> over HTTPS (server certificate
+                    checked against the ESP-IDF CA bundle) and reboots into it.
+
+            config PPG_MQTT_BATCH_MS
+                int "Send new data every (ms)"
+                range 50 5000
+                default 250
+                help
+                    What arrived since the last send goes out as one frame (several if more).
+                    Every sample keeps its own sensor timestamp, so this only changes delivery,
+                    not timing; the live view lags by about this much.
+
+            config PPG_MQTT_BATCH_BUFFER_BYTES
+                int "Largest frame (bytes)"
+                range 4096 65536
+                default 8192
+                help
+                    Upper limit of one MQTT message. At 400 sps x 2 ch the binary records take
+                    ~1-2 kB/s, so a backlog goes out as several frames.
+
+            config PPG_MQTT_WINDOW_KB
+                int "Unacknowledged data in flight (kB)"
+                range 8 1024
+                default 64
+                help
+                    The node sends ahead of the server's ACKs by at most this much: enough to keep
+                    a slow link busy, small enough that a resend after a lost connection is quick.
+
+            config PPG_MQTT_RING_KB
+                int "Store-and-forward buffer (kB)"
+                range 32 6144
+                default 2048 if SPIRAM
+                default 64
+                help
+                    Everything the server hasn't acknowledged stays here (PSRAM): ~15-30 min of
+                    400 sps data in 2 MB. The sensor never waits for the network; only an outage
+                    longer than this loses data. Without PSRAM the node falls back to 64 kB.
+
+            config PPG_MQTT_OUTBOX_LIMIT_KB
+                int "esp-mqtt outbox limit (kB)"
+                range 16 4096
+                default 64
+                help
+                    Only status messages use esp-mqtt's outbox now (data has its own buffer and
+                    acknowledgements, see "Store-and-forward buffer").
+
+            config PPG_MQTT_STATUS_PERIOD_S
+                int "Status message period (s)"
+                range 5 300
+                default 15
+                help
+                    The server marks a node stale after 45 s without a status or data.
+
+            config PPG_MQTT_STOP_WHEN_SERVER_GONE
+                bool "Stop streaming when the server goes offline"
+                default y
+
+            config PPG_NET_REBOOT_S
+                int "Reboot after this long without a broker connection (s, 0 = never)"
+                range 0 3600
+                default 300
+                help
+                    Last resort when Wi-Fi or the broker connection does not come back by itself.
+                    A trial that is running on the server resumes when the node is back (the
+                    server sends START again).
+        endmenu
+
+        config PPG_UART_NUM
+            int "UART number"
+            range 1 2
+            default 1
+            depends on PPG_LINK_UART
+
+        config PPG_UART_BAUD
+            int "UART baud rate"
+            default 921600
+            depends on PPG_LINK_UART
+            help
+                Must match config/lab.toml [serial] baud. 400 sps needs >= 230400;
+                921600 recommended.
+
+        config PPG_UART_TX_GPIO
+            int "UART TX GPIO"
+            range 0 48
+            default 7
+            depends on PPG_LINK_UART
+            help
+                XIAO D8 = GPIO7. Avoid GPIO43/44 (D6/D7) - they carry the boot/log console.
+
+        config PPG_UART_RX_GPIO
+            int "UART RX GPIO"
+            range 0 48
+            default 8
+            depends on PPG_LINK_UART
+            help
+                XIAO D9 = GPIO8.
+
+        config PPG_TX_BUFFER_BYTES
+            int "Transmit buffer (bytes)"
+            range 1024 65536
+            default 8192
+            help
+                Absorbs short PC/USB stalls. 8192 B is ~0.5 s of data at 400 sps.
+    endmenu
+
+    # ------------------------------------------------------------------
+    menu "Behaviour"
+        config PPG_AUTOSTART
+            bool "Start streaming at boot (don't wait for START)"
+            default n
+            help
+                Normally the PC sends START. Enable for testing with a plain serial
+                terminal.
+
+        config PPG_STATUS_PERIOD_MS
+            int "Status (S line) period in ms (0 = off)"
+            range 0 60000
+            default 1000
+
+        config PPG_REPORT_DIE_TEMP
+            bool "Report sensor die temperature in the S line"
+            default y
+            help
+                Non-blocking: a conversion is started each status period and read at the next.
+
+        config PPG_QUIET_LOGS_AFTER_BOOT
+            bool "Reduce ESP_LOG output to warnings after boot"
+            default y
+    endmenu
+
+endmenu

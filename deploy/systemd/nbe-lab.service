@@ -1,0 +1,36 @@
+# /etc/systemd/system/nbe-lab.service – the NBE PPG lab server (web UI, trials, MQTT, processing)
+[Unit]
+Description=NBE PPG lab server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=nbe
+Group=nbe
+Environment=SGLAB_ROOT=/opt/nbe/smart-glasses
+Environment=SGLAB_SERVER_CONFIG=/etc/nbe/server.toml
+Environment=MPLBACKEND=Agg
+Environment=MPLCONFIGDIR=/tmp/matplotlib
+ExecStart=/opt/nbe/venv/bin/sglab serve
+Restart=on-failure
+RestartSec=5
+# stop gives running trials time to flush their files (recover them with `sglab recover`)
+TimeoutStopSec=30
+UMask=0027
+
+# hardening: the service can only write its data
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/nbe
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

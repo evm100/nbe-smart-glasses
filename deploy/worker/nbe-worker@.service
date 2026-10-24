@@ -1,0 +1,35 @@
+# /etc/systemd/system/nbe-worker@.service – NBE processing worker (instance = slot number)
+#   systemctl enable --now nbe-worker@1 nbe-worker@2      two jobs at a time
+# Server URL: /etc/nbe-worker/worker.env (NBE_SERVER=...); token: /etc/nbe-worker/token (root, 600)
+[Unit]
+Description=NBE processing worker %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=nbe-worker
+Group=nbe-worker
+EnvironmentFile=/etc/nbe-worker/worker.env
+Environment=MPLBACKEND=Agg
+Environment=MPLCONFIGDIR=/tmp/matplotlib
+LoadCredential=token:/etc/nbe-worker/token
+ExecStart=/opt/nbe/venv/bin/sglab worker ${NBE_SERVER} --token-file %d/token --name %H-%i
+Restart=always
+RestartSec=10
+Nice=5
+
+# hardening: it only needs outbound HTTPS and a private /tmp
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

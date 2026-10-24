@@ -1,0 +1,10 @@
+# /etc/systemd/system/nbe-snapshot.timer – runs before the backup host pulls (deploy/backup/)
+[Unit]
+Description=Nightly NBE catalog snapshot
+
+[Timer]
+OnCalendar=*-*-* 02:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

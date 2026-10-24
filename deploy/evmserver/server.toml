@@ -1,0 +1,35 @@
+# /etc/nbe/server.toml for evmserver (single VM next to UltraLights).
+# UltraLights already owns :8000 (uvicorn) and :1883 (Docker mosquitto), so NBE uses
+# :8001 (localhost only, behind nginx) and the host's own mosquitto on :8884 (mTLS only).
+
+[paths]
+data_root = "/srv/nbe/ppg-data"
+
+[web]
+host = "127.0.0.1"
+port = 8001
+public_url = "https://nbe.evm100.org"
+trusted_proxies = "127.0.0.1"
+allow_local_devices = false
+
+[auth]
+enabled = true
+session_hours = 12
+
+[pki]
+dir = "/srv/nbe/pki"
+
+[mqtt]
+host = "nbe.evm100.org"                # /etc/hosts pins it to 127.0.0.1 (no NAT hairpin needed)
+port = 8884
+cert_file = "/srv/nbe/pki/core.crt"
+key_file = "/srv/nbe/pki/core.key"
+topic_prefix = "nbe"
+client_id = "nbe-core"
+
+[provisioning]
+broker_uri = "mqtts://nbe.evm100.org:8884"
+broker_ca = "bundle"                   # Let's Encrypt -> ESP-IDF certificate bundle
+
+[processing]
+mode = "remote"                        # Layers 1-2 run on the nbe-proc LXC (deploy/worker), not here

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Finish trial · NBE PPG lab{% endblock %}
+{% block content %}
+<h1>Finish &amp; save</h1>
+<div class="sub">{{ t.metadata.subject_id }} · {{ t.metadata.protocol }} · trial {{ t.metadata.trial }} · started by {{ t.owner }} · <code>{{ t.folder }}</code></div>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+<div class="card scroll">
+  <table>
+    <thead><tr><th>Stream</th><th>Device</th><th class="num">fs</th><th class="num">Samples</th>
+      <th class="num">Dropped</th><th class="num">Bad lines</th><th>Problems</th></tr></thead>
+    <tbody>
+    {% for x in t.streams %}
+      <tr><td>{{ x.role }}</td><td>{{ x.dev }}</td><td class="num">{{ x.fs }}</td><td class="num">{{ x.samples }}</td>
+        <td class="num">{{ x.dropped }}</td><td class="num">{{ x.bad_lines }}</td><td>{{ x.error or '' }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <div class="note" style="margin-top:8px">{{ t.events | selectattr('source', 'equalto', 'operator') | list | length }} operator events logged
+    ({{ t.events | selectattr('kind', 'equalto', 'bp') | list | length }} cuff readings).</div>
+</div>
+
+<h2>After-recording questions</h2>
+<form class="stack card" method="post" action="/trials/{{ t.id }}/finish">
+  {% for f in fields %}
+  <div class="field">
+    <label for="f-{{ f.name }}">{{ f.prompt or f.name }}{% if f.required is not defined or f.required %}{% if f.type != 'bool' %} *{% endif %}{% endif %}</label>
+    {% if f.type == 'choice' %}
+      <select name="{{ f.name }}" id="f-{{ f.name }}">{% for o in f.choices %}<option {% if o == f.value %}selected{% endif %}>{{ o }}</option>{% endfor %}</select>
+    {% elif f.type == 'bool' %}
+      <input type="checkbox" name="{{ f.name }}" id="f-{{ f.name }}" {% if f.value %}checked{% endif %}>
+    {% elif f.type in ('int', 'float') %}
+      <input type="number" step="any" name="{{ f.name }}" id="f-{{ f.name }}">
+    {% else %}
+      <input type="text" name="{{ f.name }}" id="f-{{ f.name }}" style="max-width:600px">
+    {% endif %}
+  </div>
+  {% endfor %}
+  <div class="field"><label for="process">Process now (Layers 1–2)</label><input type="checkbox" name="process" id="process" checked></div>
+  <div class="btnrow"><button class="primary big" type="submit">Save session</button>
+    <span class="note">Unchecking “keep” saves it as <i>discard</i> (kept on disk, hidden from lists).</span></div>
+</form>
+{% endblock %}
