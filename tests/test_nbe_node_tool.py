@@ -96,6 +96,21 @@ def test_tool_login_register_configure(live_server, tmp_path, monkeypatch, capsy
     assert "CONFIG_PPG_WIFI_AUTH_EAP=y" in sdk and "# CONFIG_PPG_WIFI_AUTH_PSK is not set" in sdk
     assert 'CONFIG_PPG_WIFI_EAP_USERNAME="jdoe"' in sdk and 'CONFIG_PPG_WIFI_EAP_IDENTITY="jdoe"' in sdk
     assert 'CONFIG_PPG_WIFI_PASSWORD="eap-secret"' in sdk
+    assert 'CONFIG_PPG_WIFI_SSID2=""' in sdk and 'CONFIG_PPG_WIFI_SSID3=""' in sdk
+
+    # fallback networks: #2 password from the environment, #3 asked; kept on the next run, "" removes one
+    monkeypatch.setenv("NBE_WIFI2_PASSWORD", "hotspot-pw")
+    assert t.main(["configure", "FNG07", "--project", str(proj), "--wifi-ssid", "UCSD-PROTECTED",
+                   "--wifi-eap-user", "jdoe", "--wifi2-ssid", "Lab Hotspot", "--wifi3-ssid", "home"]) == 0
+    sdk = (proj / "sdkconfig").read_text()
+    assert 'CONFIG_PPG_WIFI_SSID2="Lab Hotspot"' in sdk and 'CONFIG_PPG_WIFI_PASSWORD2="hotspot-pw"' in sdk
+    assert 'CONFIG_PPG_WIFI_SSID3="home"' in sdk and 'CONFIG_PPG_WIFI_PASSWORD3="wifipass123"' in sdk
+    monkeypatch.delenv("NBE_WIFI2_PASSWORD")
+    assert t.main(["configure", "FNG07", "--project", str(proj), "--wifi-ssid", "UCSD-PROTECTED",
+                   "--wifi-eap-user", "jdoe", "--wifi3-ssid", ""]) == 0
+    sdk = (proj / "sdkconfig").read_text()
+    assert 'CONFIG_PPG_WIFI_SSID2="Lab Hotspot"' in sdk and 'CONFIG_PPG_WIFI_PASSWORD2="hotspot-pw"' in sdk
+    assert 'CONFIG_PPG_WIFI_SSID3=""' in sdk and 'CONFIG_PPG_WIFI_PASSWORD3=""' in sdk
     monkeypatch.delenv("NBE_WIFI_PASSWORD")
 
     # unknown node without --register -> clear error

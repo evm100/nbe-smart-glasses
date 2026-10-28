@@ -150,6 +150,7 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
     if hub is not None:
         from ..mqtt_hub import set_hub
         set_hub(hub)
+        hub.on_mac = registry.set_mac
     directory = DeviceDirectory(settings, registry, hub)
     ctx = Ctx(settings=settings, templates=Jinja2Templates(directory=str(HERE / "templates")), auth=auth,
               registry=registry, hub=hub, directory=directory, manager=TrialManager(settings, directory),

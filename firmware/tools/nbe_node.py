@@ -10,6 +10,7 @@ build / flash for you; otherwise run `idf.py build flash` yourself afterwards.
   python nbe_node.py configure FNG02                      certs + sdkconfig for that node (asks for Wi-Fi)
   python nbe_node.py configure FNG02 --build --flash -p /dev/ttyACM0
   python nbe_node.py configure FNG02 --wifi-ssid UCSD-PROTECTED --wifi-eap-user <login>   (WPA2-Enterprise)
+  python nbe_node.py configure FNG02 --wifi2-ssid <hotspot> --wifi3-ssid <home>   fallbacks if #1 isn't found
   python nbe_node.py mac -p /dev/ttyACM0                  board MAC (for UCSD-DEVICE registration)
   python nbe_node.py upload FNG02 build/ppg_stream.bin    store a new firmware image on the server
   python nbe_node.py ota FNG02                            tell the node to install it over Wi-Fi
@@ -136,7 +137,7 @@ def patch_sdkconfig(path: Path, vals: dict) -> int:
 
 
 def node_values(b: dict, ssid: str, password: str, eap_user: str = "", eap_identity: str = "",
-                eap_domain: str = "") -> dict:
+                eap_domain: str = "", fallbacks: tuple = ()) -> dict:
     eap = {
         # WPA2-Enterprise PEAP (UCSD-PROTECTED, eduroam...): personal login, password = PPG_WIFI_PASSWORD
         "PPG_WIFI_AUTH_EAP": True, "PPG_WIFI_AUTH_PSK": False, "PPG_WIFI_EAP_USERNAME": eap_user,
@@ -149,6 +150,9 @@ def node_values(b: dict, ssid: str, password: str, eap_user: str = "", eap_ident
         "PPG_MQTT_BROKER_URI": b["broker_uri"], "PPG_MQTT_TOPIC_PREFIX": b["topic_prefix"],
         "PPG_MQTT_CA_BUNDLE": b["broker_ca_mode"] == "bundle", "PPG_MQTT_CA_PEM": b["broker_ca_mode"] == "pem",
         "PPG_WIFI_SSID": ssid, "PPG_WIFI_PASSWORD": password,
+        # fallback networks 2 and 3 (PSK/open), tried when the first isn't found; "" = none
+        **{f"PPG_WIFI_{k}{i}": v for i, fb in enumerate((tuple(fallbacks) + (("", ""),) * 2)[:2], start=2)
+           for k, v in zip(("SSID", "PASSWORD"), fb)},
         "PPG_OTA_URL": b.get("ota_url") or "",  # empty with an old server: no over-the-air updates
         # USB-C no longer carries data: put the log console there so `idf.py monitor` shows Wi-Fi/MQTT logs
         "ESP_CONSOLE_USB_SERIAL_JTAG": True, "ESP_CONSOLE_UART_DEFAULT": False,
@@ -250,6 +254,18 @@ def cmd_configure(a):
         pw = getpass.getpass(f"Wi-Fi password for {ssid}{hint}: ")
         if not pw and cur_pw and ssid == cur_ssid:
             pw = cur_pw
+    # fallback networks: flags > current sdkconfig (--wifi2-ssid "" removes one)
+    fallbacks = []
+    for i in (2, 3):
+        cur = [read_sdkconfig_value(sdk, f"PPG_WIFI_{k}{i}") or read_sdkconfig_value(proj / "sdkconfig.nbe", f"PPG_WIFI_{k}{i}")
+               for k in ("SSID", "PASSWORD")]
+        fs = getattr(a, f"wifi{i}_ssid")
+        fs = cur[0] or "" if fs is None else fs
+        fp = getattr(a, f"wifi{i}_password")
+        fp = fp if fp is not None else os.environ.get(f"NBE_WIFI{i}_PASSWORD")
+        if fp is None and fs:
+            fp = cur[1] if fs == cur[0] and cur[1] else getpass.getpass(f"Wi-Fi password for {fs} (Enter = open network): ")
+        fallbacks.append((fs, fp or "" if fs else ""))
 
     certs = proj / "main" / "certs"
     write_private(certs / "client.crt", b["client_cert"])
@@ -258,7 +274,8 @@ def cmd_configure(a):
         (certs / "broker_ca.crt").write_text(b["broker_ca_pem"])
     elif (certs / "broker_ca.crt").exists():
         (certs / "broker_ca.crt").unlink()
-    vals = node_values(b, ssid, pw, a.wifi_eap_user or "", a.wifi_eap_identity or "", a.wifi_eap_domain or "")
+    vals = node_values(b, ssid, pw, a.wifi_eap_user or "", a.wifi_eap_identity or "", a.wifi_eap_domain or "",
+                       tuple(fallbacks))
     text = ["# Written by firmware/tools/nbe_node.py for node " + node + " - do not commit (Wi-Fi password)."]
     text += kconfig_lines(vals).values()
     write_private(proj / "sdkconfig.nbe", "\n".join(text) + "\n")
@@ -266,6 +283,7 @@ def cmd_configure(a):
 
     print(f"node {node}: site={b['site']} broker={b['broker_uri']} (CA: {b['broker_ca_mode']}) "
           f"wifi={ssid} ({'PEAP as ' + a.wifi_eap_user if a.wifi_eap_user else 'PSK/open'}) "
+          + "".join(f"then {fs} " for fs, _ in fallbacks if fs) +
           f"cert expires {str(b['cert_expires'])[:10]}")
     print(f"  wrote main/certs/client.crt, client.key, sdkconfig.nbe in {proj}")
     print(f"  {'updated sdkconfig (' + str(changed) + ' lines)' if changed is not None else 'sdkconfig will be created from sdkconfig.defaults + sdkconfig.nbe'}")
@@ -335,6 +353,10 @@ def main(argv=None) -> int:
     s.add_argument("--wifi-eap-user", help="WPA2-Enterprise PEAP username (UCSD-PROTECTED: your UCSD login)")
     s.add_argument("--wifi-eap-identity", help="PEAP outer identity (default: the username)")
     s.add_argument("--wifi-eap-domain", help="pin the RADIUS server certificate name (default: CA check only)")
+    for i in (2, 3):
+        s.add_argument(f"--wifi{i}-ssid", help=f"fallback network {i}, tried when the ones before it aren't found "
+                                               "(PSK/open; default: keep current, \"\" = none)")
+        s.add_argument(f"--wifi{i}-password", help=f"or env NBE_WIFI{i}_PASSWORD (else asked)")
     s.add_argument("--register", action="store_true", help="register the node first if it doesn't exist")
     s.add_argument("--site", help="with --register")
     s.add_argument("--build", action="store_true", help="run idf.py build afterwards")

@@ -43,6 +43,7 @@ class MqttHub:
         self.sinks: dict[str, Callable[[bytes], None]] = {}
         self.idle_cbs: dict[str, Callable[[bool], None]] = {}  # node reports streaming true/false
         self.receivers: dict[str, FrameReceiver] = {}  # binary frame reassembly + ACKs per node
+        self.on_mac: Callable[[str, str], None] | None = None  # node reported a (new) MAC -> registry
         self.connected = False
         self.last_error: str | None = None
         self.stats = {"data_msgs": 0, "data_bytes": 0, "unrouted": 0, "ignored": 0, "orphan_stops": 0}
@@ -118,6 +119,11 @@ class MqttHub:
                 st["_retained"] = retain
                 self.status[node_id] = {**prev, **st}
                 idle_cb = self.idle_cbs.get(node_id)
+            if self.on_mac and st.get("mac") and st["mac"] != prev.get("mac"):
+                try:
+                    self.on_mac(node_id, st["mac"])
+                except Exception:
+                    log.exception("storing MAC of %s", node_id)
             if idle_cb and isinstance(st.get("streaming"), bool):
                 # retained too: after the hub reconnects, that is how it learns a node went idle
                 idle_cb(not st["streaming"])

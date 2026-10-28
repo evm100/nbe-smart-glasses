@@ -52,7 +52,7 @@ class DeviceDirectory:
             if self.hub and not self.hub.connected:
                 st = {**st, "online": False, "state": "server not connected to broker"}
             state = st.get("state") or ("online" if st.get("online") else "offline")
-            details = {k: st[k] for k in ("fw", "sensor", "rssi", "txp", "uptime_s", "reset", "ip", "batt_mv", "buf", "unacked", "rtx", "tx_drop", "fs")
+            details = {k: st[k] for k in ("fw", "sensor", "rssi", "txp", "uptime_s", "reset", "ip", "mac", "ssid", "batt_mv", "buf", "unacked", "rtx", "tx_drop", "fs")
                        if k in st}
             if st.get("age_s") is not None:
                 details["last_seen_s"] = st["age_s"]

@@ -14,5 +14,7 @@ void net_watchdog(void);                // call every few 100 ms: restarts a stu
 int net_rssi(void);                     // dBm, 0 if not connected
 int net_tx_power_dbm(void);             // Wi-Fi transmit power limit in effect
 void net_ip_str(char *out, int len);    // "" if none
+void net_mac_str(char *out, int len);   // Wi-Fi station MAC "aa:bb:cc:dd:ee:ff", "" if unknown
+void net_ssid_str(char *out, int len);  // saved network in use (JSON-safe), "" if none
 bool net_time_synced(void);
 int64_t net_epoch_ms(void);

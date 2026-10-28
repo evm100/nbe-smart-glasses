@@ -135,7 +135,7 @@ The same messages travel over MQTT (TLS, client certificate per node) instead of
 |---|---|---|
 | `nbe/dev/<ID>/data` | node → server, QoS 0 | binary frames (below), every 250 ms; firmware < 0.6 sent text lines (QoS 1), still accepted |
 | `nbe/dev/<ID>/cmd` | server → node | `INFO` / `START` / `STOP` / `OTA <token>` (QoS 1); `ACK <boot> <offset>` / `RESEND <boot> <offset>` (QoS 0) |
-| `nbe/dev/<ID>/status` | node → server, retained | JSON: online, fw, sensor_ok, streaming, fs, rssi, ip, uptime_s, ts, heap, buf (most bytes held for the server since the last status), unacked, rtx (resends), tx_drop, txp (Wi-Fi dBm), reset (why the board last reset); last will `{"online":false}` |
+| `nbe/dev/<ID>/status` | node → server, retained | JSON: online, fw, sensor_ok, streaming, fs, rssi, ip, mac (Wi-Fi station MAC, fw ≥ 0.6.2), ssid (saved network in use, fw ≥ 0.6.2), uptime_s, ts, heap, buf (most bytes held for the server since the last status), unacked, rtx (resends), tx_drop, txp (Wi-Fi dBm), reset (why the board last reset); last will `{"online":false}` |
 | `nbe/core/status` | server → nodes, retained | `{"online":true}`; last will `{"online":false}` → nodes stop streaming |
 
 ### MQTT data frames (firmware ≥ 0.6)

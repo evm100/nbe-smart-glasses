@@ -39,7 +39,6 @@ typedef struct {
 esp_err_t max30102_init(max30102_t *s, i2c_master_bus_handle_t bus, uint32_t scl_hz,
                         const max30102_config_t *cfg);
 esp_err_t max30102_configure(max30102_t *s, const max30102_config_t *cfg);
-esp_err_t max30102_clear_fifo(max30102_t *s);
 
 // Read every sample waiting in the FIFO (max MAX30102_FIFO_DEPTH), oldest first.
 // red[]/ir[] receive raw 18-bit counts (ir[] untouched in HR mode).

@@ -85,7 +85,7 @@ class SimNode:
 
     def publish_status(self):
         st = {"online": True, "fw": "sim-0.2", "sensor": "SIM", "site": self.site, "streaming": self.src._streaming,
-              "fs": self.src.fs, "rssi": -55, "uptime_s": int(time.monotonic() - self.t0), "ts": int(time.time()),
+              "fs": self.src.fs, "rssi": -55, "mac": "02:00:00:00:00:01", "uptime_s": int(time.monotonic() - self.t0), "ts": int(time.time()),
               "link": "mqtt"}
         self.client.publish(f"{self.base}/status", json.dumps(st), qos=1, retain=True)
 

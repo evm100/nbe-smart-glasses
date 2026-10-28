@@ -128,17 +128,19 @@ static void publish_status(void)
     s_peak = s_head - s_acked;
     uint32_t dropped = s_dropped, resends = s_resends;
     xSemaphoreGive(s_lock);
-    char ip[20], js[640];
+    char ip[20], mac[18], ssid[33], js[720];
     net_ip_str(ip, sizeof ip);
+    net_mac_str(mac, sizeof mac);
+    net_ssid_str(ssid, sizeof ssid);
     int64_t ts = net_time_synced() ? net_epoch_ms() / 1000 : 0;
     // buf = most bytes held for the server since the last status (a few kB = the link keeps up)
     int n = snprintf(js, sizeof js,
                      "{\"online\":true,\"fw\":\"%s\",\"sensor\":\"MAX30102\",\"sensor_ok\":%s,\"site\":\"%s\","
-                     "\"streaming\":%s,\"fs\":%lu.%03lu,\"rssi\":%d,\"ip\":\"%s\",\"uptime_s\":%lld,\"ts\":%lld,"
+                     "\"streaming\":%s,\"fs\":%lu.%03lu,\"rssi\":%d,\"ip\":\"%s\",\"mac\":\"%s\",\"ssid\":\"%s\",\"uptime_s\":%lld,\"ts\":%lld,"
                      "\"heap\":%lu,\"buf\":%lu,\"unacked\":%lu,\"rtx\":%lu,\"tx_drop\":%lu,\"txp\":%d,"
                      "\"reset\":\"%s\",\"link\":\"mqtt\",\"build\":\"%s\",\"ota\":\"%s\"}",
                      PPG_FW_VERSION, s_sensor_ok ? "true" : "false", CONFIG_PPG_SITE, s_streaming ? "true" : "false",
-                     (unsigned long)(s_fs_mhz / 1000), (unsigned long)(s_fs_mhz % 1000), net_rssi(), ip,
+                     (unsigned long)(s_fs_mhz / 1000), (unsigned long)(s_fs_mhz % 1000), net_rssi(), ip, mac, ssid,
                      (long long)(esp_timer_get_time() / 1000000), (long long)ts,
                      (unsigned long)esp_get_free_heap_size(), buf, unacked, (unsigned long)resends,
                      (unsigned long)dropped, net_tx_power_dbm(), diag_reset_reason(), ota_build_id(), ota_state());
