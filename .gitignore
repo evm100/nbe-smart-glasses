@@ -17,6 +17,7 @@ layer1_out/
 out/
 synthetic_demo.csv
 .DS_Store
+.vscode
 
 # ESP-IDF build outputs (sdkconfig is generated from sdkconfig.defaults + menuconfig;
 # commit it only if you want everyone to share the exact same settings)

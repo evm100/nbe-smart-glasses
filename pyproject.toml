@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smart-glasses"
-version = "0.4.0"
+dynamic = ["version"]
 description = "NBE smart-glasses: PPG acquisition, data catalog, processing pipeline and lab UI"
 requires-python = ">=3.10"
 dependencies = [
@@ -27,6 +27,9 @@ dev = ["smart-glasses[server]", "pytest>=7", "httpx2"]  # starlette >= 1.0 TestC
 ppg-layer1 = "ppg.cli:main"
 ppg-layer2 = "ppg.cli:main2"
 sglab = "sglab.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "ppg.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
