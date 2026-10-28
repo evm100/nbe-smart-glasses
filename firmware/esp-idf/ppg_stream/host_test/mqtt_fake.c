@@ -124,6 +124,8 @@ void esp_restart(void) { abort(); }
 int net_rssi(void) { return -55; }
 int net_tx_power_dbm(void) { return 11; }
 void net_ip_str(char *out, int len) { snprintf(out, (size_t)len, "10.0.0.2"); }
+void net_mac_str(char *out, int len) { snprintf(out, (size_t)len, "dc:da:0c:12:34:56"); }
+void net_ssid_str(char *out, int len) { snprintf(out, (size_t)len, "UCSD-DEVICE"); }
 bool net_time_synced(void) { return true; }
 uint32_t esp_random(void) { return 0x5eed1234u; }
 int64_t net_epoch_ms(void) { return 1790000000000LL + esp_timer_get_time() / 1000; }

@@ -310,6 +310,26 @@ menu "PPG stream (MAX30102)"
                     With only the CA check, any access point holding *some* publicly signed
                     certificate passes. Set the RADIUS server's certificate name to pin it.
 
+            config PPG_WIFI_SSID2
+                string "Fallback network 2: SSID (empty = none)"
+                default ""
+                help
+                    Tried when the network above isn't found (or keeps refusing the node), e.g. a
+                    phone hotspot. Password or open only (no PEAP). The node cycles 1 -> 2 -> 3 -> 1
+                    until one connects, and stays on it until it drops.
+
+            config PPG_WIFI_PASSWORD2
+                string "Fallback network 2: password (empty = open)"
+                default ""
+
+            config PPG_WIFI_SSID3
+                string "Fallback network 3: SSID (empty = none)"
+                default ""
+
+            config PPG_WIFI_PASSWORD3
+                string "Fallback network 3: password (empty = open)"
+                default ""
+
             config PPG_WIFI_POWER_SAVE
                 bool "Wi-Fi modem sleep (saves power, adds latency / stalls)"
                 default n

@@ -70,7 +70,7 @@ then mix with the data (sglab ignores non-`$` lines, but a log line can split a 
 | Wiring | I2C port, SDA/SCL GPIO, I2C clock, internal pull-ups, INT GPIO, marker button GPIO, status LED GPIO + polarity | 0, 5/6, 400 kHz, on, −1, −1, 21 active-low |
 | Sensor | LED mode (SpO2 red+IR / HR red-only), sample rate 50–3200, on-chip averaging 1–32, pulse width 69–411 µs, ADC range 2048–16384 nA, red/IR LED current (0.1 mA units), FIFO poll period, FIFO almost-full level | SpO2, 400 sps, 1, 411 µs, 16384 nA, 6.4 mA, 5 ms |
 | Link | USB Serial/JTAG (USB-C), UART (+ number, baud, TX/RX GPIO), or Wi-Fi + MQTT; TX buffer size | USB, 8192 B |
-| Link → Wi-Fi | SSID, password / WPA2-Enterprise (PEAP), modem sleep, max transmit power, 20 MHz only, SNTP server | UCSD-DEVICE, PSK, off, 20 dBm, off, pool.ntp.org |
+| Link → Wi-Fi | SSID, password / WPA2-Enterprise (PEAP), fallback networks 2 + 3 (password/open, tried in order when the one before isn't found or keeps refusing), modem sleep, max transmit power, 20 MHz only, SNTP server | UCSD-DEVICE, PSK, off, 20 dBm, off, pool.ntp.org |
 | Link → MQTT | broker URI, topic prefix, broker CA (public bundle / private PEM), send period, largest frame, unacknowledged window, store-and-forward buffer, outbox limit (status only), status period, stop when the server goes offline | written by nbe_node.py; 250 ms, 8 kB, 64 kB, 2 MB with PSRAM, 64 kB, 15 s, on |
 | Behaviour | Autostart without `START`, status-line period, die-temperature reporting, quiet logs after boot | off, 1000 ms, on, on |
 
@@ -172,7 +172,7 @@ main/link.h             transport interface used by app_main
 main/link.c             USB Serial/JTAG or UART transport
 main/link_mqtt.c        MQTT transport: batching, store-and-forward, status/LWT, commands
 main/ota.c/.h           over-the-air update ("OTA <token>" command), rollback if the new build can't reach the broker
-main/net.c/.h           Wi-Fi station (PSK or PEAP), reconnect back-off, SNTP
+main/net.c/.h           Wi-Fi station (PSK or PEAP, up to 3 saved networks), reconnect back-off, SNTP
 main/certs/             (generated, not committed) node certificate + key
 host_test/              PC build + simulator (USB, UART, MQTT batching) + output checker
 ```

@@ -199,6 +199,8 @@ def test_node_web_admin_and_zip(server):
                  follow_redirects=False)
     assert r.status_code == 303
     assert "GLS01" in ada.get("/admin/nodes").text
+    app.state.ctx.registry.set_mac("GLS01", "dc:da:0c:12:34:56")  # as reported by firmware >= 0.6.2
+    assert "dc:da:0c:12:34:56" in ada.get("/admin/nodes").text
     z = zipfile.ZipFile(io.BytesIO(ada.get("/admin/nodes/GLS01/credentials.zip").content))
     names = set(z.namelist())
     assert {"main/certs/client.crt", "main/certs/client.key", "sdkconfig.nbe"} <= names
@@ -223,6 +225,28 @@ def test_node_registry_rules(tmp_path):
     assert (tmp_path / "pki" / "nodes" / "FNG01.key").stat().st_mode & 0o777 == 0o600
     with pytest.raises(NodeError):
         reg.register("FNG01")
+
+
+def test_node_mac_is_remembered(tmp_path):
+    import sqlite3
+    PKI(tmp_path / "pki").init_ca()
+    db = tmp_path / "c.sqlite"
+    # a DB from before 0.6.2 (no mac column) gets the column added
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE nodes (node_id TEXT PRIMARY KEY, name TEXT, site TEXT, notes TEXT, enabled INTEGER NOT NULL"
+                " DEFAULT 1, created_by TEXT, created_at TEXT, cert_fp TEXT, cert_expires TEXT)")
+    con.close()
+    reg = NodeRegistry(db, tmp_path / "pki")
+    reg.register("FNG01")
+    assert reg.node("FNG01")["mac"] is None
+    hub = MqttHub({"topic_prefix": "nbe"}, allowed=lambda: {"FNG01"}, client=FakeClient())
+    hub.on_mac = reg.set_mac
+    hub.handle("nbe/dev/FNG01/status", b'{"online": true, "mac": "DC:DA:0C:12:34:56"}')
+    assert reg.node("FNG01")["mac"] == "dc:da:0c:12:34:56"
+    hub.handle("nbe/dev/FNG01/status", b'{"online": false}', retain=True)  # last will: MAC kept
+    assert reg.node("FNG01")["mac"] == "dc:da:0c:12:34:56"
+    reg.set_mac("FNG01", "<script>")  # not a MAC -> ignored
+    assert reg.node("FNG01")["mac"] == "dc:da:0c:12:34:56"
 
 
 # ---------------------------------------------------------------- MQTT hub logic (no broker)

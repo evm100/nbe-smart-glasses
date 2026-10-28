@@ -32,6 +32,7 @@ esp_err_t esp_wifi_set_ps(wifi_ps_type_t t);
 esp_err_t esp_wifi_set_bandwidth(wifi_interface_t i, wifi_bandwidth_t bw);
 esp_err_t esp_wifi_set_max_tx_power(int8_t power);
 esp_err_t esp_wifi_get_max_tx_power(int8_t *power);
+esp_err_t esp_wifi_get_mac(wifi_interface_t i, uint8_t mac[6]);
 esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *ap);
 esp_err_t esp_wifi_scan_start(const wifi_scan_config_t *c, bool block);
 esp_err_t esp_wifi_scan_get_ap_num(uint16_t *n);

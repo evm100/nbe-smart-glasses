@@ -16,7 +16,8 @@
     <tbody>
     {% for n in nodes %}
       <tr>
-        <td><b>{{ n.node_id }}</b></td>
+        <td><b>{{ n.node_id }}</b>{% set mac = n.live.mac or n.mac %}
+            {% if mac %}<div class="note" title="Wi-Fi MAC (register this one for UCSD-DEVICE)"><code>{{ mac }}</code></div>{% endif %}</td>
         <td><input type="text" name="name" form="n-{{ loop.index }}" value="{{ n.name or '' }}" style="width:120px"></td>
         <td><input type="text" name="site" form="n-{{ loop.index }}" value="{{ n.site or '' }}" style="width:90px" list="sites"></td>
         <td><input type="text" name="notes" form="n-{{ loop.index }}" value="{{ n.notes or '' }}" style="width:160px"></td>

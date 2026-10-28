@@ -32,9 +32,11 @@ CREATE TABLE IF NOT EXISTS nodes (
     created_by   TEXT,
     created_at   TEXT,
     cert_fp      TEXT,          -- SHA-256 fingerprint of the current client cert
-    cert_expires TEXT
+    cert_expires TEXT,
+    mac          TEXT           -- Wi-Fi MAC as last reported in the node's status (firmware >= 0.6.2)
 );
 """
+MAC_RE = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
 
 
 class NodeError(ValueError):
@@ -48,6 +50,9 @@ class NodeRegistry:
         self.con.row_factory = sqlite3.Row
         self.con.execute("PRAGMA journal_mode=WAL")
         self.con.executescript(SCHEMA)
+        if "mac" not in {r[1] for r in self.con.execute("PRAGMA table_info(nodes)")}:  # DBs from before 0.6.2
+            self.con.execute("ALTER TABLE nodes ADD COLUMN mac TEXT")
+            self.con.commit()
         self.pki = PKI(pki_dir)
         self.lock = threading.RLock()
         self._enabled: tuple[float, set[str]] = (0.0, set())
@@ -96,7 +101,8 @@ class NodeRegistry:
             raise NodeError(f"node {node_id} already exists (use credentials / rotate)")
         key_p, crt_p = self._paths(node_id)
         cert = self.pki.issue_to(node_id, key_p, crt_p)
-        self._w("INSERT INTO nodes VALUES (?,?,?,?,1,?,?,?,?)",
+        self._w("INSERT INTO nodes (node_id, name, site, notes, enabled, created_by, created_at, cert_fp, cert_expires)"
+                " VALUES (?,?,?,?,1,?,?,?,?)",
                 (node_id, name or node_id, site, notes, by, datetime.now(timezone.utc).isoformat(timespec="seconds"),
                  fingerprint(cert), cert.not_valid_after_utc.isoformat(timespec="seconds")))
         return self.node(node_id)
@@ -123,6 +129,12 @@ class NodeRegistry:
         if sets:
             self._w(f"UPDATE nodes SET {', '.join(f'{k}=?' for k in sets)} WHERE node_id=?", (*sets.values(), node_id))
         return self.node(node_id)
+
+    def set_mac(self, node_id: str, mac: str) -> None:
+        """Remember the MAC a node reports (MqttHub.on_mac), so it is known while the node is offline."""
+        mac = str(mac).strip().lower()
+        if MAC_RE.match(mac):
+            self._w("UPDATE nodes SET mac=? WHERE node_id=? AND mac IS NOT ?", (mac, str(node_id).strip().upper(), mac))
 
     def credentials(self, node_id: str) -> dict:
         node_id = str(node_id).strip().upper()

@@ -36,6 +36,8 @@ nano ~/.config/nbe-node/wifi.env
 #   WIFI_SSID=UCSD-PROTECTED
 #   WIFI_EAP_USER=<UCSD username, without @ucsd.edu>
 #   WIFI_PASSWORD='<UCSD password>'
+#   WIFI2_SSID=<phone hotspot>   WIFI2_PASSWORD='...'    optional: tried when #1 isn't found
+#   WIFI3_SSID=<other network>   WIFI3_PASSWORD='...'    optional: then this one (password/open only)
 deploy/evmserver/build-firmware.sh             # GLS01 HED01 FNG01 -> ~/nbe-firmware/out/
 ```
 
