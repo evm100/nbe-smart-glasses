@@ -7,4 +7,4 @@ from .io import load_csv
 from .pipeline import Layer1Result, process_file, run_layer1
 
 __all__ = ["Layer1Config", "Layer1Result", "load_csv", "process_file", "run_layer1"]
-__version__ = "0.3.0"
+__version__ = "0.4.0"
