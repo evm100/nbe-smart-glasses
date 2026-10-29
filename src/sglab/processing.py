@@ -6,7 +6,9 @@ always know which code + settings produced a file, and re-running only
 happens when something changed.
 
 Pipeline settings: config/pipeline_layer1.json and config/pipeline_layer2.json
-(created by `sglab init`). Per-stream I/O settings (columns, time units, fs)
+(created by `sglab init`), plus optional per-site overrides in config/sites/<role>.json
+(e.g. glasses.json, written by `sglab tune apply`): partial {"layer1": {...}, "layer2": {...}}
+dicts for streams of that role. Per-stream I/O settings (columns, time units, fs)
 come from session.json, so the configs stay device-independent.
 """
 from __future__ import annotations
@@ -20,7 +22,7 @@ from pathlib import Path
 import numpy as np
 
 import ppg
-from ppg.config import Layer1Config, Layer2Config
+from ppg.config import Layer1Config, Layer2Config, with_overrides
 
 # Bump when the clean-up of the raw CSV before the pipeline (_prepared_csv) changes: it is part of
 # config_hash, so existing runs count as out of date and get processed again.
@@ -33,6 +35,29 @@ def pipeline_configs(settings) -> tuple[Layer1Config, Layer2Config]:
     cfg1 = Layer1Config.from_json(c1) if c1.exists() else Layer1Config()
     cfg2 = Layer2Config.from_json(c2) if c2.exists() else Layer2Config()
     return cfg1, cfg2
+
+
+def site_overrides(settings) -> dict:
+    """{role: {"layer1": {...}, "layer2": {...}}} from config/sites/*.json."""
+    d = settings.root / "config" / "sites"
+    return {p.stem: json.loads(p.read_text()) for p in sorted(d.glob("*.json"))} if d.is_dir() else {}
+
+
+def stream_configs(base1: Layer1Config, base2: Layer2Config, sites: dict, stream: dict
+                   ) -> tuple[Layer1Config, Layer2Config]:
+    """The configs for one stream: the base ones with its role's site overrides on top."""
+    o = sites.get(stream.get("role") or "", {})
+    return with_overrides(base1, o.get("layer1")), with_overrides(base2, o.get("layer2"))
+
+
+def stream_layer1(cfg1: Layer1Config, stream: dict) -> Layer1Config:
+    """cfg1 with the stream's own I/O settings (columns, time unit) and sample rate from session.json."""
+    cfg1 = copy.deepcopy(cfg1)
+    for k, v in (stream.get("io") or {}).items():
+        setattr(cfg1.io, k, v)
+    if stream.get("fs") and cfg1.timing.fs_target is None:
+        cfg1.timing.fs_target = float(stream["fs"])
+    return cfg1
 
 
 def config_hash(cfg1: Layer1Config, cfg2: Layer2Config) -> str:
@@ -48,20 +73,22 @@ def process_session(settings, catalog, session_id: str, force: bool = False, plo
     sid = s["session_id"]
     folder = settings.data_root / s["path"]
     doc = json.loads((folder / "session.json").read_text())
-    base1, cfg2 = pipeline_configs(settings)
-    h = config_hash(base1, cfg2)
+    base1, base2 = pipeline_configs(settings)
+    sites = site_overrides(settings)
     results = []
     for st in doc.get("streams", []):
         name = st.get("stream")
         if not st.get("file") or not (folder / st["file"]).exists():
             log(f"  [skip] {sid}/{name}: no data file")
             continue
+        cfg1, cfg2 = stream_configs(base1, base2, sites, st)
+        h = config_hash(cfg1, cfg2)
         if not force and catalog.has_run(sid, name, h):
             log(f"  [up-to-date] {sid}/{name}")
             continue
         out_dir = settings.processed_dir / sid / name
         try:
-            summary = process_stream(folder / st["file"], st, base1, cfg2, out_dir, plot=plot)
+            summary = process_stream(folder / st["file"], st, cfg1, cfg2, out_dir, plot=plot)
             catalog.add_run(sid, name, ppg.__version__, h, str(out_dir.relative_to(settings.data_root)), "ok", summary)
             s2 = summary["layer2"]
             log(f"  [ok] {sid}/{name}: {s2.get('n_good_beats', 0)}/{s2.get('n_beats', 0)} good beats, "
@@ -81,11 +108,7 @@ def process_stream(csv_path: Path, stream: dict, base1: Layer1Config, cfg2: Laye
     Shared by local processing and the remote worker (sglab.worker)."""
     from ppg.layer2 import process_file_layer2
 
-    cfg1 = copy.deepcopy(base1)
-    for k, v in (stream.get("io") or {}).items():
-        setattr(cfg1.io, k, v)
-    if stream.get("fs") and cfg1.timing.fs_target is None:
-        cfg1.timing.fs_target = float(stream["fs"])
+    cfg1 = stream_layer1(base1, stream)
     with tempfile.TemporaryDirectory(prefix="sglab-prep-") as tmp:
         csv_path, prep = _prepared_csv(Path(csv_path), Path(tmp))
         l1, l2 = process_file_layer2(csv_path, cfg1, cfg2, out_dir, plot=plot)

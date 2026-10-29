@@ -210,3 +210,27 @@ class Layer2Config:
     @classmethod
     def from_json(cls, path: str | Path) -> "Layer2Config":
         return cls.from_dict(json.loads(Path(path).read_text()))
+
+
+# =============================================================================
+# Partial overrides (per-site configs, tuner trials)
+# =============================================================================
+def deep_merge(base: dict, over: dict) -> dict:
+    """Copy of base with over's values on top; nested dicts merge, everything else is replaced."""
+    out = dict(base)
+    for k, v in (over or {}).items():
+        out[k] = deep_merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+def with_overrides(cfg, over: dict | None):
+    """cfg (Layer1Config / Layer2Config) with a partial dict applied, e.g. {"quality": {"min_skew": -1}}."""
+    return cfg if not over else type(cfg).from_dict(deep_merge(cfg.to_dict(), over))
+
+
+def set_path(d: dict, path: str, value) -> None:
+    """Set a dotted path in a nested dict, creating levels as needed: set_path(d, "quality.min_skew", -1)."""
+    *head, last = path.split(".")
+    for k in head:
+        d = d.setdefault(k, {})
+    d[last] = value

@@ -115,7 +115,7 @@ async def claim(request: Request, wait: float = 0, user=worker):
         if time.monotonic() >= deadline or await request.is_disconnected():
             return Response(status_code=204)
         await asyncio.sleep(1)
-    from ..processing import pipeline_configs
+    from ..processing import pipeline_configs, site_overrides
 
     try:
         s, doc = _session(ctx, j["session_id"])
@@ -126,7 +126,7 @@ async def claim(request: Request, wait: float = 0, user=worker):
     folder = ctx.settings.data_root / s["path"]
     return {"job_id": j["job_id"], "session_id": s["session_id"], "force": bool(j["force"]),
             "streams": [st for st in doc.get("streams", []) if st.get("file") and (folder / st["file"]).exists()],
-            "configs": {"layer1": cfg1.to_dict(), "layer2": cfg2.to_dict()},
+            "configs": {"layer1": cfg1.to_dict(), "layer2": cfg2.to_dict(), "sites": site_overrides(ctx.settings)},
             "ok_runs": s["ok_runs"]}
 
 

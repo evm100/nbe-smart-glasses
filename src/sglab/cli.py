@@ -12,6 +12,7 @@
   sglab reindex | sglab recover
   sglab serve [--lan] [--token auto]  web UI (run trials + browse) at http://<ip>:8000
   sglab worker URL --token-file F    process the server's queued jobs on this computer
+  sglab tune fetch|run|report|apply  tune Layer 1-2 settings per sensor site against the finger
 
 Server administration (multi-user deployment, MQTT nodes – see deploy/DEPLOY.md):
   sglab user add|list|passwd|set|token   sglab pki init|core-cert|show   sglab jobs
@@ -397,6 +398,52 @@ def cmd_worker(a):
     return serve(a.url, tok, a.name, once=a.once, log=lambda m: print(m, flush=True))
 
 
+def cmd_tune(a):
+    import pandas as pd
+
+    from . import tune
+    from .settings import find_root
+
+    if a.sub == "fetch":
+        n = tune.fetch(Path(a.out), a.server, None, a.sessions)
+        console.print(f"{n} session(s) with a finger stream in {a.out}")
+    elif a.sub == "run":
+        out = Path(a.out or f"runs/tune/{a.site}-{a.stage}")
+        tune.run(Path(a.data), a.site, a.stage, out, a.trials, a.hours, a.jobs, a.holdout_every, a.sessions,
+                 Path(a.base) if a.base else None, a.f1_slack, not a.include_bad, find_root(),
+                 log=lambda m: print(m, flush=True))
+        console.print(f"done. next: sglab tune report {out}")
+    elif a.sub == "report":
+        r = tune.report(Path(a.study), a.jobs)
+        short = {"f1": "F1", "sensitivity": "sens", "ppv": "PPV", "ibi_mae_ms": "IBI err ms",
+                 "foot_jitter_ms": "foot jit ms", "jitter": "feat jitter", "shape_err": "shape err",
+                 "n_good_beats": "good beats"}
+        if r["meta"]["stage"] == "beats":
+            short = {k: v for k, v in short.items() if k not in ("jitter", "shape_err")}
+        elif r["meta"]["stage"] == "morph":
+            short = {k: v for k, v in short.items() if k not in ("sensitivity", "ppv", "n_good_beats")}
+        tab = r["table"]
+        cols = [(f"{pre}{k}", f"{lab} {pre[:-1]}") for k, lab in short.items() for pre in ("tune_", "hold_")
+                if f"{pre}{k}" in tab]
+        t = Table("trial", "", *[lab for _, lab in cols],
+                  title=f"{r['meta']['site']} / {r['meta']['stage']}   (tune = searched sessions, hold = held out)")
+        for _, row in tab.iterrows():
+            mark = " ".join(m for m, on in (("start", row["baseline"]),
+                                            ("★", row["trial"] == r["recommended"]["trial"])) if on)
+            t.add_row(str(row["trial"]), mark, *[("" if pd.isna(row[c]) else f"{row[c]:.4g}") for c, _ in cols])
+        console.print(t)
+        rec = r["recommended"]
+        console.print(f"{r['n_trials']} trials. recommended: trial {rec['trial']} (★), "
+                      f"settings in {a.study}/recommended.json, plot in {a.study}/pareto.png")
+        console.print(f"apply with: sglab tune apply {a.study}")
+    elif a.sub == "apply":
+        path, new = tune.apply(Path(a.study), find_root(), a.trial)
+        console.print(f"wrote {path}:")
+        console.print(json.dumps(new, indent=2, default=list))
+        console.print("Copy it to the server's config/sites/ too; changed settings re-process on the next Process.")
+    return 0
+
+
 # --------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sglab", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -458,6 +505,30 @@ def build_parser() -> argparse.ArgumentParser:
     wk.add_argument("--name", help="worker name shown on the server (default: hostname)")
     wk.add_argument("--once", action="store_true", help="exit when the queue is empty (testing)")
     wk.set_defaults(func=cmd_worker)
+
+    tn = sub.add_parser("tune", help="tune Layer 1-2 settings per sensor site (no BP labels; see sglab/tune.py)")
+    ts = tn.add_subparsers(dest="sub", required=True)
+    tf = ts.add_parser("fetch", help="download sessions that have a finger stream (nbe_node.py admin login)")
+    tf.add_argument("--out", default="tune-data"); tf.add_argument("--server")
+    tf.add_argument("--sessions", nargs="*", help="only session ids containing one of these")
+    tr = ts.add_parser("run", help="search settings (resumable; Ctrl-C keeps finished trials)")
+    tr.add_argument("--data", required=True, help="folder of session folders (tune-data, or the server's data/raw)")
+    tr.add_argument("--site", required=True, choices=["glasses", "head"])
+    tr.add_argument("--stage", default="beats", choices=["beats", "morph", "all"])
+    tr.add_argument("--out", help="study folder (default runs/tune/<site>-<stage>)")
+    tr.add_argument("--trials", type=int, default=500, help="total trial budget (default 500)")
+    tr.add_argument("--hours", type=float, default=0, help="stop after this many hours (0 = trials only)")
+    tr.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1), help="worker processes")
+    tr.add_argument("--holdout-every", type=int, default=4, help="hold out every Nth session (default 4)")
+    tr.add_argument("--sessions", nargs="*", help="only session ids containing one of these")
+    tr.add_argument("--base", help="earlier study whose recommended settings are the starting point")
+    tr.add_argument("--f1-slack", type=float, default=0.02, help="morph: allowed F1 drop vs. the start")
+    tr.add_argument("--include-bad", action="store_true", help="also use sessions marked quality=bad")
+    tp = ts.add_parser("report", help="Pareto front + held-out check + recommended settings")
+    tp.add_argument("study"); tp.add_argument("--jobs", type=int, default=4)
+    ta = ts.add_parser("apply", help="write a trial's settings to config/sites/<site>.json")
+    ta.add_argument("study"); ta.add_argument("--trial", type=int, help="default: the recommended one")
+    tn.set_defaults(func=cmd_tune)
 
     from .cli_server import add_parsers
     add_parsers(sub)

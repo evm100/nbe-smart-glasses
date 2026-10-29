@@ -17,7 +17,8 @@ smart-glasses/
 │   ├── lab.toml               devices/ports, baud, reference instruments
 │   ├── session_fields.toml    metadata asked for every recording (edit freely)
 │   ├── pipeline_layer1.json   signal-processing settings (created by `sglab init`)
-│   └── pipeline_layer2.json   beat/feature settings
+│   ├── pipeline_layer2.json   beat/feature settings
+│   └── sites/<role>.json      per-site overrides (glasses, head), from `sglab tune apply`
 ├── data/                      (git-ignored – back it up separately!)
 │   ├── raw/<session_id>/      IMMUTABLE recordings: session.json, events.csv, <stream>.csv, .rawlog
 │   ├── processed/<session_id>/<stream>/   Layer 1–2 outputs + QA figures (re-creatable)
@@ -120,3 +121,4 @@ buttons for cuff/pulse-ox/markers, Stop) → **Finish** (after-questions, save, 
 - `firmware/PROTOCOL.md` – the ESP32 packet format (USB and MQTT)
 - `firmware/esp-idf/ppg_stream/README.md` – build, flash, menuconfig, wiring, first hardware test
 - `docs/pipeline/PIPELINE.md` – Layers 1–2: what every step does and why
+- `docs/pipeline/TUNING.md` – tuning Layers 1–2 per sensor site without BP labels (`sglab tune`), with references

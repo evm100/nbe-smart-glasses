@@ -25,7 +25,7 @@ from pathlib import Path
 import ppg
 from ppg.config import Layer1Config, Layer2Config
 
-from .processing import config_hash, process_stream
+from .processing import config_hash, process_stream, stream_configs
 
 
 class Api:
@@ -66,14 +66,16 @@ class Api:
 
 def run_job(api: Api, job: dict, log=print) -> None:
     jid, sid = job["job_id"], job["session_id"]
-    cfg1 = Layer1Config.from_dict(job["configs"]["layer1"])
-    cfg2 = Layer2Config.from_dict(job["configs"]["layer2"])
-    h = config_hash(cfg1, cfg2)
+    base1 = Layer1Config.from_dict(job["configs"]["layer1"])
+    base2 = Layer2Config.from_dict(job["configs"]["layer2"])
+    sites = job["configs"].get("sites") or {}
     done = {(r["stream"], r["config_hash"]) for r in job.get("ok_runs", [])}
     q = urllib.parse.quote
     errors = []
     for st in job["streams"]:
         name = st["stream"]
+        cfg1, cfg2 = stream_configs(base1, base2, sites, st)
+        h = config_hash(cfg1, cfg2)
         if not job["force"] and (name, h) in done:
             log(f"  [up-to-date] {sid}/{name}")
             continue
