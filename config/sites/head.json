@@ -1,0 +1,35 @@
+{
+  "layer1": {
+    "quality": {
+      "amp_ratio_range": [
+        0.33,
+        3.0
+      ],
+      "max_hr_disagreement_bpm": 6.0,
+      "min_acf_peak": 0.5,
+      "min_skew": 0.0,
+      "min_spec_purity": 0.3,
+      "window_s": 8.0
+    }
+  },
+  "layer2": {
+    "beats": {
+      "beta": 0.02,
+      "foot_search_s": 0.5,
+      "w_beat_s": 0.667,
+      "w_peak_s": 0.111
+    },
+    "quality": {
+      "amp_ratio_range": [
+        0.5,
+        2.0
+      ],
+      "ibi_ratio_range": [
+        0.7,
+        1.3
+      ],
+      "min_template_corr": 0.86,
+      "require_layer1_good": true
+    }
+  }
+}
