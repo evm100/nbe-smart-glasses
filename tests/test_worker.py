@@ -126,3 +126,24 @@ def test_stale_job_goes_back_to_the_queue(tmp_path):
     assert j["job_id"] == jid and j["worker"] == "b"
     q.finish(jid, "boom")
     assert q.state("S1") == "error: boom" and q.pending() == 0
+
+
+def test_process_all_queues_every_kept_session(remote):
+    s, app, tok, sid = remote
+    ada = TestClient(app)
+    ada.post("/login", data={"username": "ada", "password": PW}, headers=ORIGIN)
+    assert "Process all" in ada.get("/").text
+    r = ada.post("/sessions/process-all", data={"subject": "", "protocol": ""}, headers=ORIGIN, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/?queued=1"
+    jobs = JobQueue(s.db_path).recent()
+    assert [(j["session_id"], j["state"], j["force"]) for j in jobs] == [(sid, "queued", 0)]
+    assert "1 session queued for the worker" in ada.get("/?queued=1").text
+    # nothing matches this filter
+    r = ada.post("/sessions/process-all", data={"subject": "S999"}, headers=ORIGIN, follow_redirects=False)
+    assert r.headers["location"] == "/?subject=S999&queued=0"
+    # discarded sessions are skipped
+    with Catalog(s.db_path, s.data_root).con as con:
+        con.execute("UPDATE sessions SET status='discard'")
+        con.execute("DELETE FROM jobs")
+    ada.post("/sessions/process-all", data={}, headers=ORIGIN)
+    assert JobQueue(s.db_path).recent() == []

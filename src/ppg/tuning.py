@@ -55,6 +55,8 @@ def match_beats(ref_t: np.ndarray, tgt_t: np.ndarray, tol_s: float) -> tuple[np.
     d = np.abs(ref_t[k] - tgt_t)
     ok = d <= tol_s
     ri, ti, d = k[ok], np.flatnonzero(ok), d[ok]
+    if ri.size == 0:
+        return ri, ti
     # a reference beat claimed twice keeps its closest target beat
     order = np.lexsort((d, ri))
     ri, ti = ri[order], ti[order]

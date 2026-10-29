@@ -12,6 +12,8 @@ Group=nbe-worker
 EnvironmentFile=/etc/nbe-worker/worker.env
 Environment=MPLBACKEND=Agg
 Environment=MPLCONFIGDIR=/tmp/matplotlib
+# one thread per worker: parallelism comes from running more nbe-worker@N instances (WORKERS)
+Environment=OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 LoadCredential=token:/etc/nbe-worker/token
 ExecStart=/opt/nbe/venv/bin/sglab worker ${NBE_SERVER} --token-file %d/token --name %H-%i
 Restart=always

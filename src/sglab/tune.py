@@ -160,6 +160,8 @@ def find_pairs(data: Path, site: str, include: list[str] | None = None, skip_bad
         sid = doc.get("session_id", sj.parent.name)
         if include and not any(s in sid for s in include):
             continue
+        if doc.get("status") == "discard":
+            continue
         if skip_bad and (doc.get("metadata") or {}).get("quality") == "bad":
             continue
         by_role = {st.get("role"): st for st in doc.get("streams", [])

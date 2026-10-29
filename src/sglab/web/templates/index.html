@@ -20,6 +20,16 @@
   {% if auth_enabled %}<label><input type="checkbox" name="mine" value="true" {% if f_mine %}checked{% endif %} onchange="this.form.submit()"> recorded by me</label>{% endif %}
 </form>
 
+{% if is_operator %}
+<form method="post" action="/sessions/process-all" class="filters"
+      onsubmit="return confirm('Process every non-discarded session{{ ' matching the subject/protocol filter' if f_subject or f_protocol else '' }}? Only new or changed streams are re-run.')">
+  <input type="hidden" name="subject" value="{{ f_subject }}">
+  <input type="hidden" name="protocol" value="{{ f_protocol }}">
+  <button class="primary" type="submit">Process all</button>
+  <span class="note">{% if queued is not none %}{{ queued }} session{{ '' if queued == 1 else 's' }} {{ 'queued for the worker' if remote else 'processing here, one at a time' }}.{% else %}Only streams whose settings changed are re-run. Discarded sessions are skipped.{% endif %}</span>
+</form>
+{% endif %}
+
 <div class="card scroll">
 <table>
   <thead><tr>

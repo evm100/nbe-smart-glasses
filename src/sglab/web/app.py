@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import urllib.parse
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -127,6 +128,31 @@ class Ctx:
                 self.processing[sid] = "done"
             except Exception as e:  # pragma: no cover
                 self.processing[sid] = f"error: {e}"
+            finally:
+                c.close()
+
+        threading.Thread(target=job, daemon=True).start()
+
+    def start_processing_many(self, sids: list[str]):
+        """Queue several sessions (remote mode), or process them one after another in one thread."""
+        if self.jobs is not None:
+            for sid in sids:
+                self.jobs.enqueue(sid)
+            return
+        for sid in sids:
+            self.processing[sid] = "queued"
+
+        def job():
+            from ..processing import process_session
+            c = self.cat()
+            try:
+                for sid in sids:
+                    self.processing[sid] = "running"
+                    try:
+                        process_session(self.settings, c, sid, log=lambda *_: None)
+                        self.processing[sid] = "done"
+                    except Exception as e:  # pragma: no cover
+                        self.processing[sid] = f"error: {e}"
             finally:
                 c.close()
 
@@ -245,7 +271,7 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request, subject: str | None = None, protocol: str | None = None, all: bool = False,
-              mine: bool = False, user=viewer):
+              mine: bool = False, queued: int | None = None, user=viewer):
         c = ctx.cat()
         try:
             rows = c.sessions(subject or None, protocol or None, include_discarded=all)
@@ -257,7 +283,25 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
             rows = [r for r in rows if r.get("operator") == user["username"]]
         return ctx.render(request, "index.html", {
             "rows": rows, "subjects": subjects, "protocols": protocols,
-            "f_subject": subject or "", "f_protocol": protocol or "", "f_all": all, "f_mine": mine})
+            "f_subject": subject or "", "f_protocol": protocol or "", "f_all": all, "f_mine": mine,
+            "queued": queued, "remote": ctx.jobs is not None})
+
+    @app.post("/sessions/process-all")
+    async def process_all(request: Request, user=Depends(sec.require("operator"))):
+        """Process (new/changed streams only) every non-discarded session matching the list's filters."""
+        f = await request.form()
+        subject, protocol = f.get("subject", ""), f.get("protocol", "")
+        c = ctx.cat()
+        try:
+            sids = [r["session_id"] for r in c.sessions(subject or None, protocol or None)
+                    if r["status"] != "recording"]
+        finally:
+            c.close()
+        ctx.start_processing_many(sids)
+        ctx.audit(request, "session.process_all", "", {"subject": subject, "protocol": protocol, "n": len(sids)})
+        q = urllib.parse.urlencode({k: v for k, v in
+                                    {"subject": subject, "protocol": protocol, "queued": len(sids)}.items() if v != ""})
+        return RedirectResponse(f"/?{q}", status_code=303)
 
     @app.get("/subjects", response_class=HTMLResponse)
     def subjects_page(request: Request, user=viewer):
