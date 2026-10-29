@@ -152,7 +152,8 @@ def test_process_and_web_api(lab):
     from sglab.web.app import create_app
 
     s, cat = lab
-    rec = _record(s, ["sim"], 35.0, events=[(20, "bp", {"sys_mmhg": 121, "dia_mmhg": 79, "hr_bpm": 72})])
+    rec = _record(s, ["sim"], 35.0, events=[(4, "cuff_start", {"label": "cuff inflation started"}),
+                                            (20, "bp", {"sys_mmhg": 121, "dia_mmhg": 79, "hr_bpm": 72})])
     dest, _ = rec.finalize({"subject_id": "S001", "protocol": "rest", "trial": 1, "keep": True})
     sid = cat.upsert_session(dest)
     res = process_session(s, cat, sid, log=lambda *_: None)
@@ -176,6 +177,19 @@ def test_process_and_web_api(lab):
     ep = c.get(f"/api/sessions/{sid}/epochs", params={"stream": stream}).json()
     assert "dia_rel" in ep["features"]
     assert c.get("/files/../config/lab.toml").status_code == 404
+
+    # Layer 3: the reading's window [cuff_start - 15 s, result] summarised from the processed beats
+    from sglab import dataset
+
+    m = dataset.build(s, cat, "bp", log=lambda *_: None)
+    assert m["summary"]["kinds"]["bp"]["roles"]["finger"] == {"rows": 1, "valid": 1, "subjects": 1, "sessions": 1}
+    import pandas as pd
+    rows = pd.read_csv(s.data_root / "datasets" / "bp" / "rows.csv")
+    r = rows.iloc[0]
+    assert r["sys_mmhg"] == 121 and r["cuff_found"] and r["subject"] == "S001" and r["clock"] == "pc"
+    assert abs(r["t_cuff_start"] - 4) < 1 and abs(r["t_ref"] - 20) < 1
+    assert abs(r["hr_mean_bpm"] - 72) < 3 and r["n_good"] >= 10 and "dia_rel_med" in rows
+    assert dataset.list_datasets(s)[0]["sessions"][0]["runs"][0]["stream"] == r["stream"]
 
 
 def test_startup_glitch_rows():

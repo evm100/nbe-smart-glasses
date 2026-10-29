@@ -4,7 +4,7 @@
 |---|---|---|
 | 1 | Signal conditioning & window quality | done |
 | 2 | Beats, fiducial points, per-beat features, epoch feature table | done |
-| 3 | Align with reference devices (cuff BP, pulse-ox), build datasets | next |
+| 3 | Align with reference devices (cuff BP, pulse-ox), build datasets | done |
 | 4 | Models (HR/SpO2 calibration, BP regression, deep models on beat templates) | later |
 
 ## Layer 1
@@ -196,3 +196,75 @@ Fix made at the same time: the dicrotic-notch search is now limited to the first
 - **APG d and e waves** are found in only a minority of synthetic beats (the synthetic pulse is simpler than a real one). Check detection rates on real finger data before trusting `d_a`, `e_a`, `agi`.
 - **Dicrotic notch** often disappears at the head/glasses site and in older or vasoconstricted subjects; then `notch_method = 2` (inflection point) is used. `notch_method` is saved so you can filter on it.
 - Synthetic data cannot validate that a feature *predicts BP* — that's what Layer 3 + your cuff data are for.
+
+---
+
+## Layer 3: reference readings → labelled rows
+
+```bash
+sglab process --all          # Layers 1–2 first (local or on the worker)
+sglab dataset build          # -> data/datasets/bp/
+sglab dataset list
+```
+
+```
+events.csv ─► readings ─► window per reading ─► good beats in window ─► one row per (reading, stream)
+(cuff_start,   bp / spo2    [cuff_start-15 s,     same summary as an      + label, subject, keys,
+ bp, ox)                     result]              epoch, + pulse arrival    provenance
+```
+
+### Why each step
+
+1. **One clock.** Events are on the session clock (`t_s`). Beats are on each board's own
+   clock. Over Wi-Fi the PC-side `clock_fit` is unreliable: buffered bursts after a lost
+   connection tilt it. On real sessions it put beats up to 50 s away from the cuff and let
+   finger/glasses/head drift seconds apart. Nodes also log SNTP sync points (`epoch_fit`,
+   sub-ms residuals), so `sglab.timebase` maps every stream through SNTP when it has it,
+   anchored to the session start in unix time (`t0_unix`, stored by the recorder since
+   ppg 0.5.0; older sessions use the operator events' wall times). The `clock` column says
+   which fit was used (`sntp`, `pc`, `t_s`). The web plots and `sglab tune` use the same
+   mapping.
+2. **Cuff pairing.** A `bp` result belongs to the **last** `cuff_start` before it (repeated
+   presses count once), if that press came after the previous result and at most
+   `cuff.max_cuff_s` earlier. A failed reading (press, no result) is skipped this way.
+   Without a press, inflation is assumed to start `default_cuff_s` before the result, and
+   `cuff_found = False`.
+3. **Window = the measurement.** The cuff measures during the ~30–90 s between inflation and
+   result, so the PPG window is `[cuff_start − pre_s, result + post_s]` (15 s, 0 s). That uses
+   every beat the cuff "saw" and no beats from before a fast change (exercise). Pulse-ox
+   readings (`ox`) use the 20 s before the reading. Windows are summarised exactly like
+   Layer-2 epochs (`ppg.epochs.summarise_beats`): feature medians and IQRs, HR, HRV, and the
+   averaged beat.
+4. **Pulse-arrival difference (`pad_*`).** Each stream's good beats are matched to the same
+   heartbeats at the finger. `pad_ms_med` is the median foot-time difference in the window.
+   Within a session, its changes follow pulse transit time, which shortens as BP rises.
+   `pad_ms_rel` is the window minus the session median. Use it across sessions, because the
+   absolute value also contains the boards' SNTP offset (a few ms). Beat times in
+   `beats.csv` keep µs since ppg 0.5.0. Before, they had 10 ms steps after 1000 s, so
+   **re-process** (`sglab process --all`) before relying on `pad_*`.
+5. **Keep invalid rows.** Rows with fewer than `min_good_beats` good beats in the window
+   have `valid = False`, so coverage per site stays visible. Filter on `valid` for models.
+
+### Outputs (`data/datasets/<name>/`)
+
+| File | Contents |
+|---|---|
+| `rows.csv` | One row per (reading, stream). Keys: `session_id`, `subject` (the `S###` code only), `protocol`, `trial`, `posture`, `quality`, demographics. Label: `kind` (`bp`/`spo2`), `sys_mmhg`, `dia_mmhg`, `map_mmhg`, `ref_hr_bpm`, `spo2_pct`. Window: `t_ref`, `t_cuff_start`, `cuff_found`, `t_win_start`, `t_win_end`. PPG: `n_beats`, `n_good`, `good_frac`, `valid`, `<feature>_med/_iqr`, `hr_mean_bpm`, HRV, `pad_*`. Provenance: `stream`, `role`, `dev`, `fw`, `clock`, `pipeline_version`, `config_hash` |
+| `templates.npz` | `templates` (n_rows × 100): averaged good beat per row; `row` ids |
+| `manifest.json` | Build time, ppg version, Layer-3 settings, every run used per session, counts per site |
+
+Settings: `config/pipeline_layer3.json` (`ppg.config.Layer3Config`).
+
+### First build (2026-10-29, current Layer 1–2 settings)
+
+44 cuff readings in 18 sessions. Finger windows valid for 38, glasses 9, head 11. The low
+head-site numbers are the `min_skew` gate described in `TUNING.md`. Apply the tuned site
+settings, re-process and rebuild. Finger HR in the window matches the cuff's pulse reading
+(median +1.2 bpm). That checks the alignment. Almost all readings are from one subject at
+rest, so there is little BP variation to learn from yet (see `DATA_COLLECTION.md`).
+
+### Limits
+
+- Readings are typed by hand: a late `bp` entry shifts the window end by the typing delay.
+- The finger is the pulse-arrival reference. If it sits on the cuffed arm, it loses the
+  pulse while the cuff is inflated, and `pad_n` is 0 for those readings.

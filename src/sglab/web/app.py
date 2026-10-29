@@ -39,6 +39,7 @@ from ..firmware import FirmwareStore
 from ..jobs import JobQueue
 from ..nodes import NodeRegistry
 from ..settings import Settings, load_settings
+from ..timebase import device_clock, read_events, run_clock, session_clocks, session_t0_unix
 from . import security as sec
 
 HERE = Path(__file__).parent
@@ -258,6 +259,13 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
     def session_doc(s: dict) -> dict:
         return json.loads((settings.data_root / s["path"] / "session.json").read_text())
 
+    def clock_for(s: dict, r: dict) -> tuple[float, float]:
+        """(t0, k) for a run: session time = t0 + k * pipeline time (see sglab.timebase)."""
+        doc, t0_unix = session_clocks(settings.data_root / s["path"])
+        st = next((x for x in doc.get("streams", []) if x.get("stream") == r["stream"]), {})
+        t0, k, _ = run_clock(st, r["summary"], t0_unix)
+        return t0, k
+
     def run_for(s: dict, stream: str) -> dict | None:
         for r in s["runs"]:
             if r["stream"] == stream and r["status"] == "ok":
@@ -389,15 +397,15 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
             out = settings.data_root / r["out_dir"]
             stem = r["summary"]["stem"]
             sig = pd.read_csv(out / f"{stem}_signals.csv", usecols=["t", f"{ch}_ac_norm"])
-            t0 = r["summary"].get("t0_session_s") or 0.0
-            t = sig["t"].to_numpy() + t0
+            t0, k = clock_for(s, r)
+            t = t0 + k * sig["t"].to_numpy()
             y = sig[f"{ch}_ac_norm"].to_numpy() * 100
             qp = out / f"{stem}_quality.csv"
             if qp.exists():
                 q = pd.read_csv(qp)
                 if "good" in q:
                     b = q[~q["good"].astype(bool)]
-                    for a, e in zip(b["t_start"] + t0, b["t_end"] + t0):  # merge overlapping windows
+                    for a, e in zip(t0 + k * b["t_start"], t0 + k * b["t_end"]):  # merge overlapping windows
                         if bad and a <= bad[-1][1]:
                             bad[-1][1] = max(bad[-1][1], float(e))
                         else:
@@ -405,9 +413,9 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
             unit = "AC/DC (%)"
         else:
             df = pd.read_csv(settings.data_root / s["path"] / st["file"])
-            fit = st.get("clock_fit")
+            fit = device_clock(st, session_t0_unix(doc, read_events(settings.data_root / s["path"])))
             if fit and "t_dev_us" in df:
-                t = fit["a"] + fit["b"] * df["t_dev_us"].to_numpy() / 1e6
+                t = fit[0] + fit[1] * df["t_dev_us"].to_numpy() / 1e6
             else:
                 t = df["t_s"].to_numpy() if "t_s" in df else np.arange(len(df)) / float(st.get("fs") or 100)
             y = df[ch].to_numpy(dtype=float)
@@ -425,20 +433,20 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
             if r is None:
                 continue
             d = settings.data_root / r["out_dir"]
-            stem, t0 = r["summary"]["stem"], r["summary"].get("t0_session_s") or 0.0
+            stem, (t0, k) = r["summary"]["stem"], clock_for(s, r)
             item = {"stream": st["stream"], "role": st["role"], "beats_t": [], "beats_hr": [], "epoch_t": [], "epoch_hr": []}
             bp = d / f"{stem}_beats.csv"
             if bp.exists():
                 b = pd.read_csv(bp)
                 if len(b):
                     b = b[b["beat_good"].astype(bool)]
-                    item["beats_t"], item["beats_hr"] = _clean(b["t_foot"] + t0), _clean(b["hr_bpm"])
+                    item["beats_t"], item["beats_hr"] = _clean(t0 + k * b["t_foot"]), _clean(b["hr_bpm"])
             ep = d / f"{stem}_epochs.csv"
             if ep.exists():
                 e = pd.read_csv(ep)
                 if len(e):
                     e = e[e["valid"].astype(bool)]
-                    item["epoch_t"], item["epoch_hr"] = _clean(e["t_center"] + t0), _clean(e["hr_mean_bpm"])
+                    item["epoch_t"], item["epoch_hr"] = _clean(t0 + k * e["t_center"]), _clean(e["hr_mean_bpm"])
             out.append(item)
         return out
 
@@ -452,10 +460,10 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
         if not p.exists():
             return {"columns": [], "rows": []}
         e = pd.read_csv(p)
-        t0 = r["summary"].get("t0_session_s") or 0.0
+        t0, k = clock_for(s, r)
         for c in ("t_start", "t_end", "t_center"):
             if c in e:
-                e[c] = e[c] + t0
+                e[c] = t0 + k * e[c]
         e = e.replace([np.inf, -np.inf], np.nan).astype(object).where(e.notna(), None)
         return {"columns": list(e.columns), "rows": e.to_dict(orient="records"),
                 "features": [c[:-4] for c in e.columns if c.endswith("_med")]}

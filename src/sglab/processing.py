@@ -114,8 +114,12 @@ def process_stream(csv_path: Path, stream: dict, base1: Layer1Config, cfg2: Laye
         l1, l2 = process_file_layer2(csv_path, cfg1, cfg2, out_dir, plot=plot)
         # map pipeline time (0 = first sample) onto the session clock (t_s)
         t0 = _first_sample_session_time(csv_path, stream)
+        t0_dev = _first_sample_dev_s(csv_path, stream)
+    # t0_session_s is the PC-clock estimate; readers use sglab.timebase.run_clock, which prefers
+    # the SNTP fit and needs t0_dev_s
     return {"layer1": l1.meta["summary"], "layer2": l2.meta["summary"],
-            "timing": l1.meta["timing"], "t0_session_s": t0, "stem": Path(csv_path).stem, "prep": prep}
+            "timing": l1.meta["timing"], "t0_session_s": t0, "t0_dev_s": t0_dev, "stem": Path(csv_path).stem,
+            "prep": prep}
 
 
 def startup_glitch_rows(seq: np.ndarray, t_dev_us: np.ndarray) -> np.ndarray:
@@ -146,6 +150,17 @@ def _prepared_csv(csv_path: Path, tmp: Path) -> tuple[Path, dict]:
     out = tmp / csv_path.name
     df[~drop].to_csv(out, index=False)
     return out, {"startup_glitch_rows": int(drop.sum())}
+
+
+def _first_sample_dev_s(csv_path: Path, stream: dict) -> float | None:
+    """Device time (s) of the first sample, when the pipeline runs on device time."""
+    import pandas as pd
+
+    col = (stream.get("io") or {}).get("time_col") or ""
+    if col != "t_dev_us":
+        return None
+    first = pd.read_csv(csv_path, nrows=1)
+    return float(first[col].iloc[0]) / 1e6 if col in first else None
 
 
 def _first_sample_session_time(csv_path: Path, stream: dict) -> float:

@@ -213,6 +213,58 @@ class Layer2Config:
 
 
 # =============================================================================
+# Layer 3: reference readings + PPG windows -> datasets
+# =============================================================================
+@dataclass
+class CuffConfig:
+    # A `bp` result belongs to the last `cuff_start` at most this long before it (repeated
+    # presses count once: the last one wins). A reading takes ~30-90 s on our cuff.
+    max_cuff_s: float = 150.0
+    # No cuff_start found: assume inflation began this long before the result.
+    default_cuff_s: float = 60.0
+    # PPG window = [cuff_start - pre_s, result + post_s]: the cuff measures during deflation,
+    # and BP moves fast after exercise, so the window hugs the measurement.
+    pre_s: float = 15.0
+    post_s: float = 0.0
+
+
+@dataclass
+class SpO2Config:
+    # A pulse-oximeter reading (`ox`) is typed after the display settles: average before it.
+    pre_s: float = 20.0
+    post_s: float = 0.0
+
+
+@dataclass
+class PulseArrivalConfig:
+    enabled: bool = True
+    # good beats of each stream are matched to this role's good beats (same heartbeat)
+    ref_role: str = "finger"
+    max_lag_s: float = 0.6      # search range for the session's typical offset
+    tol_s: float = 0.05         # a beat matches if within this of offset + reference beat
+
+
+@dataclass
+class Layer3Config:
+    cuff: CuffConfig = field(default_factory=CuffConfig)
+    spo2: SpO2Config = field(default_factory=SpO2Config)
+    pulse_arrival: PulseArrivalConfig = field(default_factory=PulseArrivalConfig)
+    # a row is `valid` with at least this many good beats in its window
+    min_good_beats: int = 10
+
+    to_dict = Layer1Config.to_dict
+    to_json = Layer1Config.to_json
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Layer3Config":
+        return _build(cls, d or {})
+
+    @classmethod
+    def from_json(cls, path: str | Path) -> "Layer3Config":
+        return cls.from_dict(json.loads(Path(path).read_text()))
+
+
+# =============================================================================
 # Partial overrides (per-site configs, tuner trials)
 # =============================================================================
 def deep_merge(base: dict, over: dict) -> dict:

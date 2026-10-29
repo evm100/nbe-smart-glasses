@@ -1,0 +1,19 @@
+{
+  "cuff": {
+    "max_cuff_s": 150.0,
+    "default_cuff_s": 60.0,
+    "pre_s": 15.0,
+    "post_s": 0.0
+  },
+  "spo2": {
+    "pre_s": 20.0,
+    "post_s": 0.0
+  },
+  "pulse_arrival": {
+    "enabled": true,
+    "ref_role": "finger",
+    "max_lag_s": 0.6,
+    "tol_s": 0.05
+  },
+  "min_good_beats": 10
+}

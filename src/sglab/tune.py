@@ -34,6 +34,7 @@ import multiprocessing as mp
 import os
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
@@ -52,8 +53,10 @@ from ppg.quality import label_quality, quality_metrics
 from ppg.tuning import (feature_jitter, median_wave, pool_agreement, pool_jitter, reference_agreement,
                         shape_error)
 
-from .processing import (_first_sample_session_time, _prepared_csv, pipeline_configs, site_overrides,
+from .processing import (_first_sample_dev_s, _first_sample_session_time, _prepared_csv, pipeline_configs, site_overrides,
                          stream_configs, stream_layer1)
+
+from .timebase import run_clock, session_clocks
 
 REF_ROLE = "finger"
 
@@ -149,6 +152,7 @@ class Pair:
     folder: Path
     ref: dict
     tgt: dict
+    t0_unix: float | None = None   # session start, anchors the SNTP clock (sglab.timebase)
 
 
 def find_pairs(data: Path, site: str, include: list[str] | None = None, skip_bad: bool = True) -> list[Pair]:
@@ -156,7 +160,7 @@ def find_pairs(data: Path, site: str, include: list[str] | None = None, skip_bad
     for sj in sorted(Path(data).rglob("session.json")):
         if "_incoming" in sj.parts:
             continue
-        doc = json.loads(sj.read_text())
+        doc, t0_unix = session_clocks(sj.parent)
         sid = doc.get("session_id", sj.parent.name)
         if include and not any(s in sid for s in include):
             continue
@@ -167,7 +171,7 @@ def find_pairs(data: Path, site: str, include: list[str] | None = None, skip_bad
         by_role = {st.get("role"): st for st in doc.get("streams", [])
                    if st.get("file") and (sj.parent / st["file"]).exists()}
         if REF_ROLE in by_role and site in by_role:
-            pairs.append(Pair(sid, sj.parent, by_role[REF_ROLE], by_role[site]))
+            pairs.append(Pair(sid, sj.parent, by_role[REF_ROLE], by_role[site], t0_unix))
     return pairs
 
 
@@ -184,14 +188,15 @@ class Stream:
     settings they depend on: conditioning (timing/artifacts/filters) and window metrics
     (window length, step, HR range). A trial that only moves thresholds reuses both."""
 
-    def __init__(self, folder: Path, entry: dict, cfg1: Layer1Config):
+    def __init__(self, folder: Path, entry: dict, cfg1: Layer1Config, t0_unix: float | None = None):
         cfg1 = stream_layer1(cfg1, entry)
         with tempfile.TemporaryDirectory(prefix="sglab-tune-") as tmp:
             csv, _ = _prepared_csv(folder / entry["file"], Path(tmp))
             self.df = load_csv(csv, cfg1.io)
-            self.t0 = _first_sample_session_time(csv, entry)
-        fit = entry.get("clock_fit") or {}
-        self.b = float(fit.get("b", 1.0)) if (cfg1.io.time_col or "").startswith("t_dev") else 1.0
+            summary = {"t0_session_s": _first_sample_session_time(csv, entry),
+                       "t0_dev_s": _first_sample_dev_s(csv, entry)}
+        # SNTP clock when the node has one: the PC-side clock_fit drifts on bursty Wi-Fi
+        self.t0, self.b, self.clock = run_clock(entry, summary, t0_unix)
         self.entry = entry
         self._sig: OrderedDict = OrderedDict()
         self._q: OrderedDict = OrderedDict()
@@ -291,10 +296,10 @@ class Evaluator:
         ref2 = copy.deepcopy(self.ref2)
         ref2.gaussian.enabled = False  # only beat times and flags are used
         for p in self.pairs:
-            rs = Stream(p.folder, p.ref, self.ref1)
+            rs = Stream(p.folder, p.ref, self.ref1, p.t0_unix)
             _, l2 = rs.run(self.ref1, ref2)
             self._ref[p.session_id] = _beat_times(rs, l2)
-            self._tgt[p.session_id] = Stream(p.folder, p.tgt, self.base1)
+            self._tgt[p.session_id] = Stream(p.folder, p.tgt, self.base1, p.t0_unix)
         if self.synth:
             self._tmp = tempfile.TemporaryDirectory(prefix="sglab-tune-synth-")
             self._synth = synth_cases(Path(self._tmp.name))
@@ -712,6 +717,11 @@ def fetch(out: Path, server: str | None = None, token: str | None = None, includ
             continue
         d.mkdir(parents=True, exist_ok=True)
         (d / "session.json").write_bytes(doc_bytes)
+        try:  # its wall times anchor the SNTP clock to the session (sglab.timebase)
+            with get(f"/files/{q(s['path'])}/events.csv") as r:
+                (d / "events.csv").write_bytes(r.read())
+        except urllib.error.HTTPError:
+            pass
         for st in doc["streams"]:
             if not st.get("file"):
                 continue

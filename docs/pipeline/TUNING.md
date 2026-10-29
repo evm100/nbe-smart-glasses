@@ -97,6 +97,12 @@ only that site's streams are processed again on the next Process.
 
 ## Limits
 
+- **Clock (fixed in ppg 0.5.0).** Before 0.5.0, the tuner put beats on the session clock
+  through the PC-side `clock_fit`. On bursty Wi-Fi sessions that fit drifted by 0.1–5 %, so
+  finger and target beats slid apart within the session (about half the sessions with a
+  finger stream, e.g. T05, T07, T09, T13). Those sessions scored low whatever the settings.
+  Now the SNTP fit is used (`sglab.timebase`). Re-run `tune fetch`, which also gets
+  `events.csv`, and start new studies: old and new scores aren't comparable.
 - The finger reference is processed with the current finger settings. If the finger is noisy
   in a session, that session's scores are noisy too: the tuner only counts beats where the
   finger is clean.

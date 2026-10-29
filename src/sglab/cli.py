@@ -8,6 +8,7 @@
   sglab list [--subject S001] [--protocol rest] [--all]
   sglab show <session>
   sglab process <session>... | --all [--force]
+  sglab dataset build [--name bp] | list   Layer 3: cuff/pulse-ox readings joined to the PPG
   sglab import file.csv --subject S001 --protocol rest --role finger
   sglab reindex | sglab recover
   sglab serve [--lan] [--token auto]  web UI (run trials + browse) at http://<ip>:8000
@@ -58,9 +59,10 @@ def _preset(items) -> dict:
 # --------------------------------------------------------------------------
 def cmd_init(a):
     s, cat = _ctx()
-    from ppg.config import Layer1Config, Layer2Config
+    from ppg.config import Layer1Config, Layer2Config, Layer3Config
 
-    for name, cfg in [("pipeline_layer1.json", Layer1Config()), ("pipeline_layer2.json", Layer2Config())]:
+    for name, cfg in [("pipeline_layer1.json", Layer1Config()), ("pipeline_layer2.json", Layer2Config()),
+                      ("pipeline_layer3.json", Layer3Config())]:
         p = s.root / "config" / name
         if not p.exists():
             cfg.to_json(p)
@@ -254,6 +256,34 @@ def cmd_process(a):
         console.print(f"[bold]{sid}[/]")
         process_session(s, cat, sid, force=a.force, plot=not a.no_plot, log=console.print)
     return 0
+
+
+def cmd_dataset(a):
+    from . import dataset
+
+    s, cat = _ctx()
+    if a.sub == "build":
+        cfg = None
+        if a.config:
+            from ppg.config import Layer3Config
+            cfg = Layer3Config.from_json(a.config)
+        m = dataset.build(s, cat, a.name, cfg, a.sessions, log=console.print)
+        _print_dataset(m)
+        console.print(f"wrote {s.data_root / 'datasets' / a.name}/ (rows.csv, templates.npz, manifest.json)")
+    else:
+        for m in dataset.list_datasets(s):
+            _print_dataset(m)
+    return 0
+
+
+def _print_dataset(m: dict) -> None:
+    t = Table("label", "readings", "role", "rows", "valid", "subjects", "sessions",
+              title=f"dataset {m['name']}  (built {m['built_at']}, ppg {m['ppg_version']})")
+    for kind, k in (m["summary"].get("kinds") or {}).items():
+        for role, r in k["roles"].items():
+            t.add_row(kind, str(k["readings"]), role or "", str(r["rows"]), str(r["valid"]), str(r["subjects"]),
+                      str(r["sessions"]))
+    console.print(t)
 
 
 def cmd_reindex(a):
@@ -479,6 +509,14 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("sessions", nargs="*"); pr.add_argument("--all", action="store_true")
     pr.add_argument("--force", action="store_true"); pr.add_argument("--no-plot", action="store_true")
     pr.set_defaults(func=cmd_process)
+
+    ds = sub.add_parser("dataset", help="Layer 3: build training tables from cuff/pulse-ox readings")
+    dss = ds.add_subparsers(dest="sub", required=True)
+    db = dss.add_parser("build", help="join every reading to each processed stream -> data/datasets/<name>/")
+    db.add_argument("--name", default="bp"); db.add_argument("--config", help="Layer-3 settings JSON")
+    db.add_argument("--sessions", nargs="*", help="only sessions whose id contains one of these")
+    dss.add_parser("list", help="datasets built so far")
+    ds.set_defaults(func=cmd_dataset)
 
     im = sub.add_parser("import", help="import an existing CSV recording")
     im.add_argument("csv"); im.add_argument("--subject", required=True); im.add_argument("--protocol", required=True)

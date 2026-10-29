@@ -18,14 +18,15 @@ smart-glasses/
 │   ├── session_fields.toml    metadata asked for every recording (edit freely)
 │   ├── pipeline_layer1.json   signal-processing settings (created by `sglab init`)
 │   ├── pipeline_layer2.json   beat/feature settings
+│   ├── pipeline_layer3.json   reading windows (cuff, pulse-ox), pulse-arrival matching
 │   └── sites/<role>.json      per-site overrides (glasses, head), from `sglab tune apply`
 ├── data/                      (git-ignored – back it up separately!)
 │   ├── raw/<session_id>/      IMMUTABLE recordings: session.json, events.csv, <stream>.csv, .rawlog
 │   ├── processed/<session_id>/<stream>/   Layer 1–2 outputs + QA figures (re-creatable)
-│   ├── datasets/              Layer 3 training tables (next step)
+│   ├── datasets/<name>/       Layer 3 training tables (`sglab dataset build`, re-creatable)
 │   └── catalog.sqlite         index of everything (re-creatable with `sglab reindex`)
 ├── src/
-│   ├── ppg/                   processing pipeline (Layer 1 conditioning, Layer 2 features)
+│   ├── ppg/                   processing pipeline (Layer 1 conditioning, Layer 2 features, Layer 3 labels)
 │   └── sglab/                 lab tool: recorder, catalog, processing runner, web UI,
 │                              users/auth, node registry + device CA, MQTT hub
 ├── scripts/                   one-off helpers (demo data)
@@ -63,6 +64,7 @@ sglab record sim sim_glasses         # practise with simulated devices – no ha
 sglab list                           # what do we have?
 sglab show S003                      # details of a session (any unique part of its id)
 sglab process --all                  # run Layers 1–2 on anything new
+sglab dataset build                  # Layer 3: cuff readings + PPG windows -> data/datasets/bp/
 sglab serve                          # web UI → http://127.0.0.1:8000
 sglab serve --lan --token auto       # web UI for the whole local network (prints the links)
 ```
