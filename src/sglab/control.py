@@ -15,7 +15,7 @@ import time
 
 import numpy as np
 
-from .catalog import Catalog
+from .catalog import SUBJECT_ID_RE, Catalog
 from .commands import validate_event
 from .devices import DeviceError
 from .metadata import _convert, load_state, save_state
@@ -113,6 +113,8 @@ class TrialManager:
         cat = self._cat()
         try:
             if new_subject and pre.get("subject_id"):
+                if not SUBJECT_ID_RE.fullmatch(pre["subject_id"]):
+                    raise TrialError(f"subject ID must be a code like {cat.next_subject_id()} – no names")
                 if cat.subject(pre["subject_id"]) is not None:
                     raise TrialError(f"subject {pre['subject_id']} already exists – pick it from the list")
             elif pre.get("subject_id") and cat.subject(pre["subject_id"]) is None:

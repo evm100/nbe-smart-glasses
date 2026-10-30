@@ -4,7 +4,7 @@
   sglab ports                        list serial ports
   sglab record finger glasses        record from devices named in config/lab.toml (or ports)
   sglab record sim                   practice run with a simulated ESP32
-  sglab subject add | sglab subjects
+  sglab subject add | sglab subject rename OLD NEW | sglab subject delete ID | sglab subjects
   sglab list [--subject S001] [--protocol rest] [--all]
   sglab show <session>
   sglab process <session>... | --all [--force]
@@ -34,7 +34,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from .catalog import Catalog
+from .catalog import SUBJECT_ID_RE, Catalog
 from .settings import load_settings
 
 console = Console()
@@ -112,6 +112,8 @@ def cmd_record(a):
     pre = ask_fields(s.fields, "before", cat, state, preset, non_interactive=ni)
     subj = pre.get("subject_id")
     if subj and cat.subject(subj) is None:
+        if not SUBJECT_ID_RE.fullmatch(subj):
+            raise SystemExit(f"{subj!r} is not a subject code like {cat.next_subject_id()} – no names")
         console.print(f"[yellow]{subj} is a new subject[/] – a few details (de-identified only):")
         ask_subject(subj, cat, non_interactive=ni)
 
@@ -185,10 +187,36 @@ def cmd_subjects(a):
     if a.sub == "add":
         from .metadata import ask_subject
         sid = a.id or cat.next_subject_id()
+        if not SUBJECT_ID_RE.fullmatch(sid):
+            raise SystemExit(f"{sid!r} is not a subject code like {cat.next_subject_id()}")
         if cat.subject(sid):
             raise SystemExit(f"{sid} already exists")
         ask_subject(sid, cat)
         console.print(f"added {sid}")
+        return 0
+    if a.sub == "delete":
+        if len(a.ids) != 1:
+            raise SystemExit('usage: sglab subject delete "ID" [--dry-run]')
+        try:
+            sids = cat.delete_subject(a.ids[0], dry_run=a.dry_run)
+        except (KeyError, ValueError) as e:
+            raise SystemExit(str(e).strip("'\""))
+        verb = "would delete" if a.dry_run else "deleted"
+        console.print(f"{verb} {a.ids[0]!r} and {len(sids)} discarded session(s) (raw folders -> raw/_deleted/)")
+        for sid in sids:
+            console.print(f"  {sid}")
+        return 0
+    if a.sub == "rename":
+        if len(a.ids) != 2:
+            raise SystemExit('usage: sglab subject rename "OLD ID" NEW [--dry-run]')
+        try:
+            sids = cat.rename_subject(a.ids[0], a.ids[1], dry_run=a.dry_run)
+        except (KeyError, ValueError) as e:
+            raise SystemExit(str(e).strip("'\""))
+        verb = "would rename" if a.dry_run else "renamed"
+        console.print(f"{verb} {a.ids[0]!r} -> {a.ids[1]} ({len(sids)} session(s))")
+        for sid in sids:
+            console.print(f"  {sid}")
         return 0
     t = Table("subject", "sex", "age", "height", "weight", "skin", "sessions", "notes")
     for r in cat.subjects():
@@ -561,9 +589,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sj = sub.add_parser("subjects", help="list subjects")
     sj.set_defaults(func=cmd_subjects, sub="list", id=None)
-    sa = sub.add_parser("subject", help="sglab subject add [--id S004]")
-    sa.add_argument("sub", choices=["add"])
+    sa = sub.add_parser("subject", help='sglab subject add [--id S004] | sglab subject rename "OLD ID" S004 | sglab subject delete "ID"')
+    sa.add_argument("sub", choices=["add", "rename", "delete"])
+    sa.add_argument("ids", nargs="*", help="rename: old id, new id; delete: id")
     sa.add_argument("--id")
+    sa.add_argument("--dry-run", action="store_true", help="rename/delete: only list the sessions it would touch")
     sa.set_defaults(func=cmd_subjects)
 
     ls = sub.add_parser("list", help="list sessions")
