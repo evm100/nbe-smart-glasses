@@ -107,7 +107,9 @@ def run_job(api: Api, job: dict, log=print) -> None:
     api.json("POST", f"/api/worker/jobs/{jid}/finish", {"error": "; ".join(errors) or None})
 
 
-def run_sweep_job(api: Api, job: dict, log=print) -> None:
+def run_sweep_job(api: Api, job: dict, log=print, jobs: int | None = None) -> None:
+    """jobs: processes for the sweep (default: all cores). Processing jobs run one stream at a
+    time; a sweep is one big job, so it parallelises inside (sglab.sweep.search_many)."""
     from ppg.config import Layer4Config
 
     from .model import read_dataset
@@ -133,7 +135,7 @@ def run_sweep_job(api: Api, job: dict, log=print) -> None:
         df, raw, manifest = read_dataset(ds, pl["dataset"])
         try:
             meta = sweep_to(tmp / "runs", pl["name"], df, raw, manifest, pl["dataset"],
-                            Layer4Config.from_dict(pl["layer4"]), pl["spec"], log, progress)
+                            Layer4Config.from_dict(pl["layer4"]), pl["spec"], log, progress, jobs=jobs)
         except ValueError as e:  # not enough data for this config: a result, not a worker failure
             log(f"  [error] sweep {pl['name']}: {e}")
             api.json("POST", f"/api/worker/jobs/{jid}/finish", {"error": str(e)})
@@ -155,7 +157,8 @@ def can_sweep() -> bool:
     return True
 
 
-def serve(base: str, token: str, name: str | None = None, once: bool = False, log=print) -> int:
+def serve(base: str, token: str, name: str | None = None, once: bool = False, log=print,
+          sweep_jobs: int | None = None) -> int:
     name = name or socket.gethostname()
     api = Api(base, token, name)
     kinds = "process,sweep" if can_sweep() else "process"
@@ -178,7 +181,7 @@ def serve(base: str, token: str, name: str | None = None, once: bool = False, lo
         try:
             if job.get("kind") == "sweep":
                 log(f"job {job['job_id']}: sweep {job['payload']['name']} on dataset {job['payload']['dataset']}")
-                run_sweep_job(api, job, log)
+                run_sweep_job(api, job, log, sweep_jobs)
             else:
                 log(f"job {job['job_id']}: session {job['session_id']}{' (force)' if job['force'] else ''}")
                 run_job(api, job, log)

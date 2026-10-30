@@ -315,7 +315,7 @@ def cmd_model(a):
         if a.no_nested:
             spec["nested"] = False
         try:
-            m = sweep.sweep_run(s, a.dataset, spec, a.name, base, log=console.print)
+            m = sweep.sweep_run(s, a.dataset, spec, a.name, base, log=console.print, jobs=a.jobs)
         except (ValueError, FileNotFoundError) as e:
             raise SystemExit(str(e))
         _print_model(m)
@@ -494,7 +494,7 @@ def cmd_worker(a):
     tok = Path(a.token_file).read_text().strip() if a.token_file else os.environ.get("NBE_WORKER_TOKEN")
     if not tok:
         raise ValueError("give --token-file (or set NBE_WORKER_TOKEN)")
-    return serve(a.url, tok, a.name, once=a.once, log=lambda m: print(m, flush=True))
+    return serve(a.url, tok, a.name, once=a.once, log=lambda m: print(m, flush=True), sweep_jobs=a.sweep_jobs)
 
 
 def cmd_tune(a):
@@ -596,6 +596,7 @@ def build_parser() -> argparse.ArgumentParser:
     msw.add_argument("--dataset", default="bp"); msw.add_argument("--config", help="Layer-4 base settings JSON")
     msw.add_argument("--name"); msw.add_argument("--trials", type=int)
     msw.add_argument("--no-nested", action="store_true", help="skip the honest (nested) estimate: much faster")
+    msw.add_argument("--jobs", type=int, help="processes (default: all cores)")
     ml = mos.add_parser("list", help="scores of every run so far")
     ml.add_argument("--name", help="only this model name")
     mo.set_defaults(func=cmd_model)
@@ -624,6 +625,7 @@ def build_parser() -> argparse.ArgumentParser:
     wk.add_argument("--token-file", help="file with an API token of a worker-role user")
     wk.add_argument("--name", help="worker name shown on the server (default: hostname)")
     wk.add_argument("--once", action="store_true", help="exit when the queue is empty (testing)")
+    wk.add_argument("--sweep-jobs", type=int, help="processes for a Layer-4 sweep (default: all cores)")
     wk.set_defaults(func=cmd_worker)
 
     tn = sub.add_parser("tune", help="tune Layer 1-2 settings per sensor site (no BP labels; see sglab/tune.py)")

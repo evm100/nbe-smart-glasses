@@ -157,3 +157,15 @@ def test_sweep_run_writes_a_model_run(tmp_path):
     x = explain(m)
     assert x["targets"][0]["verdict"] == "good" and "beats the baseline" in x["targets"][0]["text"]
     assert "honest check" in x["sweep"]
+
+
+def test_parallel_sweep_matches_serial():
+    pytest.importorskip("optuna")
+    from sglab.sweep import run
+
+    spec = {**FAST, "space": FAST["space"][:1] + [["model.alpha", "float", [0.01, 100, "log"]]]}
+    one = run(_dataset(n_subjects=4), Layer4Config(role="glasses"), spec, log=lambda *_: None, jobs=1)
+    two = run(_dataset(n_subjects=4), Layer4Config(role="glasses"), spec, log=lambda *_: None, jobs=3)
+    assert two["jobs"] == 3 and one["jobs"] == 1
+    assert [t["mae"] for t in one["trials"]] == pytest.approx([t["mae"] for t in two["trials"]])
+    assert one["nested"]["metrics"] == two["nested"]["metrics"]

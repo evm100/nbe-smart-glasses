@@ -331,6 +331,10 @@ Or **Models → Start sweep** on the website. In remote mode it is queued for `s
   Search space and candidates: `config/sweep_layer4.json`.
 - The best trial is trained like `sglab model train` and saved as a run (`<dataset>-<site>-sweep-cal`),
   with `trials.csv` and a `sweep` block in `metrics.json`.
+- **Cores.** The main search and the nested searches run side by side, with trials scored in a
+  process pool: one process per core, one thread each (`--jobs` / `sglab worker --sweep-jobs`,
+  default all cores). A sweep uses the whole worker box whatever `WORKERS` is. That setting
+  only controls how many jobs run at once. The same core count gives the same result.
 - **Nested score.** The best of 60 trials is flattered by luck. So the sweep repeats the
   whole search once without each subject, and scores its winner on that subject. This
   costs `trials × (subjects + 1)` trials. That nested MAE is the honest estimate. A large

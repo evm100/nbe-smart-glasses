@@ -18,6 +18,7 @@ Spec: config/sweep_layer4.json (keys as DEFAULT_SPEC; missing keys use the defau
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -86,41 +87,127 @@ def _suggest(trial, space: list, features: list[str], base: dict) -> tuple[dict,
     return cfg, params
 
 
-def search(dev: pd.DataFrame, groups: np.ndarray, base: Layer4Config, features: list[str], spec: dict,
-           n_trials: int, seed: int, tick=None) -> tuple[Layer4Config, list[dict]]:
-    """Best config by out-of-fold MAE over `groups`, and every trial (number, mae, params)."""
+# ---- parallel evaluation -------------------------------------------------------------
+# The main search and the nested searches (one per left-out subject) are independent. They
+# advance together in rounds: each asks a batch of trials, every trial of the round is scored
+# in a process pool, then the results are told back. One process per core, one thread each
+# (tiny sklearn fits are Python-bound: threads would fight over the GIL, and OpenMP threads
+# in gradient boosting only add overhead at this size). Results do not depend on timing, only on
+# the batch size (cores // searches): the same core count gives the same sweep.
+_DATA: dict = {}
+
+
+THREAD_ENV = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
+
+
+def _one_thread():
+    """Limit OpenMP / BLAS to one thread. threadpoolctl only reaches libraries already
+    loaded, so load scikit-learn's first: otherwise every process's gradient boosting
+    starts one spinning OpenMP thread per core (cores x cores threads)."""
+    import sklearn.ensemble  # noqa: F401
+    import sklearn.linear_model  # noqa: F401
+    from threadpoolctl import threadpool_limits
+
+    return threadpool_limits(1)
+
+
+def _init(data: dict) -> None:
+    for k in THREAD_ENV:
+        os.environ[k] = "1"
+    _one_thread()
+    _DATA.update(data)
+
+
+def _score(key, cfg_d: dict, features: list[str]) -> float:
     from ppg.layer4 import cv_mae
 
+    rows, groups = _DATA[key]
+    return cv_mae(rows, Layer4Config.from_dict(cfg_d), features, groups)
+
+
+class _Inline:
+    """Executor stand-in for jobs=1: score in this process."""
+
+    def __init__(self, data):
+        self.limits = _one_thread()
+        _DATA.update(data)
+
+    def submit(self, fn, *args):
+        from concurrent.futures import Future
+
+        f = Future()
+        try:
+            f.set_result(fn(*args))
+        except Exception as e:
+            f.set_exception(e)
+        return f
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        _DATA.clear()
+        self.limits.restore_original_limits()
+
+
+def default_jobs() -> int:
+    return os.process_cpu_count() or os.cpu_count() or 1
+
+
+def search_many(searches: dict, base: Layer4Config, features: list[str], spec: dict, n_trials: int,
+                seed: int, jobs: int, tick=None) -> dict:
+    """{key: (best Layer4Config, trials)} for searches {key: (rows, groups)}, n_trials each."""
     optuna = _optuna()
+    from concurrent.futures import ProcessPoolExecutor
+    from multiprocessing import get_context
+
     base_d = base.to_dict()
-    trials = []
+    jobs = max(1, min(jobs, n_trials * len(searches)))
+    studies = {k: optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(
+        seed=seed, n_startup_trials=min(15, max(5, n_trials // 4)), constant_liar=True)) for k in searches}
+    trials = {k: [] for k in searches}
+    asked = dict.fromkeys(searches, 0)
+    pool = (ProcessPoolExecutor(jobs, mp_context=get_context("forkserver"), initializer=_init,
+                                initargs=(searches,)) if jobs > 1 else _Inline(searches))
+    with pool:
+        while any(a < n_trials for a in asked.values()):
+            active = [k for k in searches if asked[k] < n_trials]
+            batch = max(1, jobs // len(active))
+            pending = []
+            for k in active:
+                for _ in range(min(batch, n_trials - asked[k])):
+                    asked[k] += 1
+                    tr = studies[k].ask()
+                    cfg_d, params = _suggest(tr, spec["space"], features, base_d)
+                    if not params["features"]:
+                        studies[k].tell(tr, state=optuna.trial.TrialState.PRUNED)
+                        tick and tick()
+                        continue
+                    pending.append((k, tr, params, pool.submit(_score, k, cfg_d, params["features"])))
+            for k, tr, params, fut in pending:
+                mae = fut.result()
+                studies[k].tell(tr, mae)
+                trials[k].append({"trial": tr.number, "mae": mae, **params})
+                tick and tick()
+    out = {}
+    for k, ts in trials.items():
+        if not ts:
+            raise ValueError("every trial failed")
+        best = min(ts, key=lambda t: t["mae"])
+        cfg_d = base.to_dict()
+        for p, v in best.items():
+            if p.startswith("model."):
+                set_path(cfg_d, p, v)
+        cfg_d["features"] = best["features"]
+        out[k] = (Layer4Config.from_dict(cfg_d), ts)
+    return out
 
-    def objective(trial):
-        cfg_d, params = _suggest(trial, spec["space"], features, base_d)
-        if not params["features"]:
-            raise optuna.TrialPruned("no features")
-        mae = cv_mae(dev, Layer4Config.from_dict(cfg_d), params["features"], groups)
-        trials.append({"trial": trial.number, "mae": mae, **params})
-        return mae
 
-    sampler = optuna.samplers.TPESampler(seed=seed, n_startup_trials=min(15, max(5, n_trials // 4)))
-    study = optuna.create_study(direction="minimize", sampler=sampler)
-    study.optimize(objective, n_trials=n_trials, callbacks=[lambda *_: tick and tick()])
-    if not trials:
-        raise ValueError("every trial failed")
-    best = min(trials, key=lambda t: t["mae"])
-    cfg_d = base.to_dict()
-    for k, v in best.items():
-        if k.startswith("model."):
-            set_path(cfg_d, k, v)
-    cfg_d["features"] = best["features"]
-    return Layer4Config.from_dict(cfg_d), trials
-
-
-def run(df: pd.DataFrame, base: Layer4Config, spec: dict, log=print, progress=None) -> dict:
+def run(df: pd.DataFrame, base: Layer4Config, spec: dict, log=print, progress=None, jobs: int | None = None) -> dict:
     """The sweep: {"best": Layer4Config, "trials": [...], "nested": {...} | None, "best_cv_mae": float}.
 
-    progress(done, total) is called after every trial (workers use it to keep their lease)."""
+    progress(done, total) is called after every trial (workers use it to keep their lease).
+    jobs: processes (default: every core this process may use)."""
     from ppg.layer4 import cv_groups, error_metrics, fit_predict, prepare
 
     cand = Layer4Config.from_dict({**base.to_dict(), "features": list(spec["features"])})
@@ -132,7 +219,11 @@ def run(df: pd.DataFrame, base: Layer4Config, spec: dict, log=print, progress=No
         raise ValueError(f"a sweep needs 2+ {unit}s, have {len(outer)}")
     n = int(spec["trials"])
     nested_ok = bool(spec.get("nested", True)) and len(outer) >= 3
-    total = n * (1 + (len(outer) if nested_ok else 0))
+    searches = {"all": (dev, groups)}
+    if nested_ok:  # the whole search without each group
+        searches.update({str(g): (dev[groups != g].reset_index(drop=True), groups[groups != g]) for g in outer})
+    total = n * len(searches)
+    jobs = jobs or int(spec.get("jobs") or 0) or default_jobs()
     done = [0]
 
     def tick():
@@ -141,9 +232,10 @@ def run(df: pd.DataFrame, base: Layer4Config, spec: dict, log=print, progress=No
             progress(done[0], total)
 
     log(f"  sweep: {n} trials over {len(features)} candidate features, {len(outer)} {unit} folds"
-        + (f", nested ({total} trials in all)" if nested_ok else ""))
+        + (f", nested ({total} trials in all)" if nested_ok else "") + f", {min(jobs, total)} processes")
     t0 = time.monotonic()
-    best, trials = search(dev, groups, base, features, spec, n, int(spec.get("seed", 0)), tick)
+    res = search_many(searches, base, features, spec, n, int(spec.get("seed", 0)), jobs, tick)
+    best, trials = res["all"]
     log(f"  best: MAE {min(t['mae'] for t in trials):.2f} mmHg with {best.model.kind}, "
         f"{len(best.features)} feature(s) ({time.monotonic() - t0:.0f} s)")
 
@@ -153,9 +245,8 @@ def run(df: pd.DataFrame, base: Layer4Config, spec: dict, log=print, progress=No
         chosen = []
         for g in outer:
             te = groups == g
-            inner, inner_groups = dev[~te].reset_index(drop=True), groups[~te]
-            cfg_g, _ = search(inner, inner_groups, base, features, spec, n, int(spec.get("seed", 0)), tick)
-            for t, p in fit_predict(inner, dev[te], cfg_g, list(cfg_g.features)).items():
+            cfg_g = res[str(g)][0]
+            for t, p in fit_predict(dev[~te].reset_index(drop=True), dev[te], cfg_g, list(cfg_g.features)).items():
                 preds[t][te] = p
             chosen.append({"left_out": str(g), "model": cfg_g.model.kind, "features": list(cfg_g.features)})
         metrics = {}
@@ -173,22 +264,23 @@ def run(df: pd.DataFrame, base: Layer4Config, spec: dict, log=print, progress=No
     elif spec.get("nested", True):
         log(f"  nested score skipped: needs 3+ {unit}s")
     return {"best": best, "trials": trials, "nested": nested, "best_cv_mae": min(t["mae"] for t in trials),
-            "n_candidates": len(features), "seconds": round(time.monotonic() - t0, 1)}
+            "n_candidates": len(features), "seconds": round(time.monotonic() - t0, 1), "jobs": min(jobs, total)}
 
 
 def sweep_to(parent: Path, name: str, df: pd.DataFrame, raw: bytes, manifest: dict, dataset: str,
-             base: Layer4Config, spec: dict, log=print, progress=None, run_id: str | None = None) -> dict:
+             base: Layer4Config, spec: dict, log=print, progress=None, run_id: str | None = None,
+             jobs: int | None = None) -> dict:
     """Sweep, train the winner, write parent/<run_id>/ (a model run + trials.csv). Returns metrics.json."""
     from ppg.layer4 import train
 
     from .model import new_run_id, write_run
 
-    sw = run(df, base, spec, log, progress)
+    sw = run(df, base, spec, log, progress, jobs)
     res = train(df, sw["best"], log=log)
     run_id = run_id or new_run_id(parent)
     trials = sorted(sw["trials"], key=lambda t: t["mae"])
     extra = {"sweep": {"trials": len(trials), "best_cv_mae": sw["best_cv_mae"], "nested": sw["nested"],
-                       "n_candidates": sw["n_candidates"], "seconds": sw["seconds"], "spec": spec,
+                       "n_candidates": sw["n_candidates"], "seconds": sw["seconds"], "jobs": sw["jobs"], "spec": spec,
                        "top": trials[:10]}}
     meta = write_run(parent / run_id, name, run_id, dataset, raw, manifest, sw["best"], res, extra)
     pd.DataFrame([{**t, "features": " ".join(t["features"])} for t in trials]).to_csv(
@@ -197,7 +289,7 @@ def sweep_to(parent: Path, name: str, df: pd.DataFrame, raw: bytes, manifest: di
 
 
 def sweep_run(settings, dataset: str = "bp", spec: dict | None = None, name: str | None = None,
-              base: Layer4Config | None = None, log=print, progress=None) -> dict:
+              base: Layer4Config | None = None, log=print, progress=None, jobs: int | None = None) -> dict:
     """Local sweep on data/datasets/<dataset>/ into data/models/<name>/<run_id>/."""
     from .model import check_name, default_name, layer4_config, load_dataset, models_dir
 
@@ -205,4 +297,5 @@ def sweep_run(settings, dataset: str = "bp", spec: dict | None = None, name: str
     spec = spec or sweep_spec(settings)
     name = check_name(name or default_name(dataset, base, sweep=True))
     df, raw, manifest = load_dataset(settings, dataset)
-    return sweep_to(models_dir(settings) / name, name, df, raw, manifest, dataset, base, spec, log, progress)
+    return sweep_to(models_dir(settings) / name, name, df, raw, manifest, dataset, base, spec, log, progress,
+                    jobs=jobs)
