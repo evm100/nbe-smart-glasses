@@ -88,12 +88,14 @@ def _suggest(trial, space: list, features: list[str], base: dict) -> tuple[dict,
 
 
 # ---- parallel evaluation -------------------------------------------------------------
-# The main search and the nested searches (one per left-out subject) are independent. They
-# advance together in rounds: each asks a batch of trials, every trial of the round is scored
-# in a process pool, then the results are told back. One process per core, one thread each
+# The main search and the nested searches (one per left-out subject) are independent. Each keeps
+# a window of trials in flight in a process pool; results are told back in trial order, and trial
+# i is asked right after trial i - window is told. No search waits for another, so a slow trial
+# (gradient boosting can cost 30x a ridge fit) only holds up its own search while the others keep
+# the cores busy: windows add up to ~2x the cores. One process per core, one thread each
 # (tiny sklearn fits are Python-bound: threads would fight over the GIL, and OpenMP threads
 # in gradient boosting only add overhead at this size). Results do not depend on timing, only on
-# the batch size (cores // searches): the same core count gives the same sweep.
+# the window (2 x cores // searches): the same core count gives the same sweep.
 _DATA: dict = {}
 
 
@@ -158,37 +160,45 @@ def search_many(searches: dict, base: Layer4Config, features: list[str], spec: d
                 seed: int, jobs: int, tick=None) -> dict:
     """{key: (best Layer4Config, trials)} for searches {key: (rows, groups)}, n_trials each."""
     optuna = _optuna()
-    from concurrent.futures import ProcessPoolExecutor
+    from collections import deque
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
     from multiprocessing import get_context
 
     base_d = base.to_dict()
     jobs = max(1, min(jobs, n_trials * len(searches)))
+    window = max(1, min(jobs, 2 * jobs // len(searches)))
     studies = {k: optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(
         seed=seed, n_startup_trials=min(15, max(5, n_trials // 4)), constant_liar=True)) for k in searches}
     trials = {k: [] for k in searches}
     asked = dict.fromkeys(searches, 0)
+    flying = {k: deque() for k in searches}  # (trial, params, future) in ask order
+
+    def fill(k):
+        while asked[k] < n_trials and len(flying[k]) < window:
+            asked[k] += 1
+            tr = studies[k].ask()
+            cfg_d, params = _suggest(tr, spec["space"], features, base_d)
+            if not params["features"]:
+                studies[k].tell(tr, state=optuna.trial.TrialState.PRUNED)
+                tick and tick()
+                continue
+            flying[k].append((tr, params, pool.submit(_score, k, cfg_d, params["features"])))
+
     pool = (ProcessPoolExecutor(jobs, mp_context=get_context("forkserver"), initializer=_init,
                                 initargs=(searches,)) if jobs > 1 else _Inline(searches))
     with pool:
-        while any(a < n_trials for a in asked.values()):
-            active = [k for k in searches if asked[k] < n_trials]
-            batch = max(1, jobs // len(active))
-            pending = []
-            for k in active:
-                for _ in range(min(batch, n_trials - asked[k])):
-                    asked[k] += 1
-                    tr = studies[k].ask()
-                    cfg_d, params = _suggest(tr, spec["space"], features, base_d)
-                    if not params["features"]:
-                        studies[k].tell(tr, state=optuna.trial.TrialState.PRUNED)
-                        tick and tick()
-                        continue
-                    pending.append((k, tr, params, pool.submit(_score, k, cfg_d, params["features"])))
-            for k, tr, params, fut in pending:
-                mae = fut.result()
-                studies[k].tell(tr, mae)
-                trials[k].append({"trial": tr.number, "mae": mae, **params})
-                tick and tick()
+        for k in searches:
+            fill(k)
+        while any(flying.values()):
+            wait([q[0][2] for q in flying.values() if q], return_when=FIRST_COMPLETED)
+            for k, q in flying.items():
+                while q and q[0][2].done():
+                    tr, params, fut = q.popleft()
+                    mae = fut.result()
+                    studies[k].tell(tr, mae)
+                    trials[k].append({"trial": tr.number, "mae": mae, **params})
+                    tick and tick()
+                    fill(k)
     out = {}
     for k, ts in trials.items():
         if not ts:
