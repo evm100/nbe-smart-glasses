@@ -114,3 +114,46 @@ def test_train_run_writes_and_lists(tmp_path):
     assert [r["run_id"] for r in list_runs(s)] == [m1["run_id"], m2["run_id"]]
     with pytest.raises(FileNotFoundError, match="dataset build"):
         train_run(s, "nope", cfg)
+
+
+FAST = {"trials": 12, "nested": True, "seed": 0, "features": ["hr_mean_bpm", "pad_ms_rel", "t_rise_s_med"],
+        "space": [["model.kind", "categorical", ["ridge"]], ["model.alpha", "float", [0.01, 100, "log"]]]}
+
+
+def test_sweep_finds_the_signal_and_scores_itself():
+    pytest.importorskip("optuna")
+    from sglab.sweep import run
+
+    ticks = []
+    r = run(_dataset(n_subjects=4), Layer4Config(role="glasses"), FAST, log=lambda *_: None,
+            progress=lambda d, n: ticks.append((d, n)))
+    assert "pad_ms_rel" in r["best"].features
+    assert ticks[-1] == (12 * 5, 12 * 5)  # the search + one per left-out subject
+    n = r["nested"]
+    assert n["unit"] == "subject" and n["n_outer"] == 4 and len(n["chosen"]) == 4
+    m = n["metrics"]["sys_mmhg"]
+    assert m["model"]["mae"] < 0.5 * m["baseline"]["mae"]
+    # two sessions only: no nested score, still a best config
+    one = _dataset(n_subjects=1)
+    assert run(one, Layer4Config(role="glasses"), FAST, log=lambda *_: None)["nested"] is None
+
+
+def test_sweep_run_writes_a_model_run(tmp_path):
+    pytest.importorskip("optuna")
+    from sglab.model import explain, list_runs
+    from sglab.settings import load_settings
+    from sglab.sweep import sweep_run
+
+    (tmp_path / "config").mkdir()
+    shutil.copy(REPO / "config" / "lab.toml", tmp_path / "config")
+    s = load_settings(tmp_path)
+    ds = s.data_root / "datasets" / "bp"
+    ds.mkdir(parents=True)
+    _dataset(n_subjects=4).to_csv(ds / "rows.csv", index=False)
+    m = sweep_run(s, "bp", FAST, base=Layer4Config(role="glasses"), log=lambda *_: None)
+    assert m["name"] == "bp-glasses-sweep-cal" and 8 < m["sweep"]["trials"] <= 12  # no-feature trials are skipped
+    assert (s.data_root / "models" / m["name"] / m["run_id"] / "trials.csv").exists()
+    assert list_runs(s)[0]["sweep"]["nested"]["n_outer"] == 4
+    x = explain(m)
+    assert x["targets"][0]["verdict"] == "good" and "beats the baseline" in x["targets"][0]["text"]
+    assert "honest check" in x["sweep"]

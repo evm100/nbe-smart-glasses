@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}{{ m.name }} · Models{% endblock %}
+{% block head %}<style>
+.pill.same::before { content: "▲ "; color: var(--warn); }
+.verdict h3 { margin: 0 0 6px; font-size: 15px; display: flex; gap: 8px; align-items: center; }
+.verdict p { margin: 0 0 10px; }
+pre.cfg { background: var(--grid); padding: 10px; border-radius: 6px; overflow-x: auto; font-size: 12px; }
+img.report { width: 100%; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+</style>{% endblock %}
+{% block content %}
+<div class="note"><a href="/models">Models</a> /</div>
+<h1>{{ m.name }} <span class="note">{{ m.run_id }}</span></h1>
+<div class="sub">{{ m.role }} · {{ m.model }} · {{ 'calibrated' if m.calibrated else 'not calibrated' }} ·
+  {{ m.n_folds }} {{ m.cv_unit }} folds · {{ m.n_dev }} readings scored · trained {{ m.trained_at[:16] | replace('T', ' ') }} UTC</div>
+
+<div class="grid2">
+{% for t in x.targets %}
+<div class="card verdict">
+  <h3>{{ t.label | capitalize }} <span class="pill {{ t.verdict }}">{{ {'good': 'beats baseline', 'same': 'same as baseline', 'bad': 'worse than baseline'}[t.verdict] }}</span></h3>
+  <p>{{ t.text }}</p>
+  <dl class="kv">
+    <dt>MAE</dt><dd>{{ '%.1f' % t.mae }} mmHg <span class="note">(baseline {{ '%.1f' % t.base_mae }})</span></dd>
+    <dt>Bias ± SD</dt><dd>{{ '%+.1f' % t.me }} ± {{ '%.1f' % t.sd }} mmHg <span class="note">(AAMI: within ±5, SD ≤ 8)</span></dd>
+    {% if t.r_change is not none and t.r_change == t.r_change %}<dt>r change</dt><dd>{{ '%.2f' % t.r_change }}</dd>{% endif %}
+    {% if t.holdout %}<dt>Holdout</dt><dd>MAE {{ '%.1f' % t.holdout.mae }} mmHg on {{ t.holdout.n }} readings</dd>{% endif %}
+  </dl>
+</div>
+{% endfor %}
+</div>
+
+{% for n in x.notes %}<div class="warn">{{ n }}</div>{% endfor %}
+
+{% if m.sweep %}
+<h2>Sweep</h2>
+<div class="card">
+  <p>{{ x.sweep }}</p>
+  {% if m.sweep.nested %}
+  <table><thead><tr><th>Target</th><th class="num">Nested MAE</th><th class="num">Baseline</th><th class="num">Bias ± SD</th></tr></thead>
+  <tbody>{% for t, v in m.sweep.nested.metrics.items() %}<tr><td>{{ {'sys_mmhg': 'Systolic', 'dia_mmhg': 'Diastolic', 'map_mmhg': 'Mean arterial'}.get(t, t) }}</td><td class="num">{{ '%.1f' % v.model.mae }}</td><td class="num">{{ '%.1f' % v.baseline.mae }}</td>
+    <td class="num">{{ '%+.1f' % v.model.me }} ± {{ '%.1f' % v.model.sd }}</td></tr>{% endfor %}</tbody></table>
+  {% endif %}
+  <h2>Best settings found</h2>
+  <div class="scroll"><table><thead><tr><th class="num">Trial</th><th class="num">CV MAE</th><th>Model</th><th>Features</th></tr></thead>
+  <tbody>{% for t in m.sweep.top %}<tr><td class="num">{{ t.trial }}</td><td class="num">{{ '%.2f' % t.mae }}</td>
+    <td>{{ t['model.kind'] or m.model }}{% if t['model.alpha'] %} α={{ '%.3g' % t['model.alpha'] }}{% endif %}</td>
+    <td style="white-space:normal">{{ t.features | join(', ') }}</td></tr>{% endfor %}</tbody></table></div>
+  <p class="note">All {{ m.sweep.trials }} trials: <a href="/files/models/{{ m.name }}/{{ m.run_id }}/trials.csv">trials.csv</a> · {{ m.sweep.seconds }} s</p>
+</div>
+{% endif %}
+
+<h2>Report</h2>
+<div class="card">
+  <p class="note">Left: every reading's prediction (blue) and the baseline's (orange circles) against the cuff; on the grey line = perfect.
+    Middle: Bland-Altman — each reading's error against its BP level, with the bias and 95% limits (dashed).
+    Right: what the final model weights (ridge only): orange raises the prediction when the feature goes up, blue lowers it.</p>
+  <a href="{{ report }}"><img class="report" src="{{ report }}" alt="report"></a>
+</div>
+
+<h2>Details</h2>
+<div class="grid2">
+<div class="card"><dl class="kv">
+  <dt>Features used</dt><dd>{{ m.features | join(', ') }}</dd>
+  <dt>Subjects</dt><dd>{{ m.subjects | join(', ') }}{% if m.holdout_subjects %} · holdout: {{ m.holdout_subjects | join(', ') }}{% endif %}</dd>
+  <dt>Readings</dt><dd>{{ m.n_readings }} valid, {{ m.n_scored }} after calibration</dd>
+  <dt>Dataset</dt><dd>{{ m.dataset.name }}, built {{ (m.dataset.built_at or '?')[:16] | replace('T', ' ') }}, rows {{ m.dataset.rows_sha256[:8] }}</dd>
+  <dt>Pipeline</dt><dd>ppg {{ m.ppg_version }}</dd>
+  <dt>Files</dt><dd><a href="/files/models/{{ m.name }}/{{ m.run_id }}/predictions.csv">predictions.csv</a> ·
+    <a href="/files/models/{{ m.name }}/{{ m.run_id }}/metrics.json">metrics.json</a> ·
+    <a href="/files/models/{{ m.name }}/{{ m.run_id }}/model.joblib">model.joblib</a></dd>
+</dl></div>
+<div class="card"><div class="note">config.json</div><pre class="cfg">{{ cfg }}</pre></div>
+</div>
+{% endblock %}

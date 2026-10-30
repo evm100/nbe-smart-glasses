@@ -317,10 +317,36 @@ finger, which is the pulse-arrival reference).
 
 Runs are never overwritten. Retrain after every `sglab dataset build` and compare in `sglab model list`.
 
+### Sweeps
+
+```bash
+sglab model sweep [--trials 60] [--no-nested]   # on this computer
+```
+
+Or **Models → Start sweep** on the website. In remote mode it is queued for `sglab worker`
+(needs the `model` extra; `setup-worker.sh` installs it). Older workers never claim sweeps.
+
+- Each trial is one config: model kind (ridge/hgb), its settings, and a subset of the
+  candidate features. It is scored by cross-validated MAE on the non-holdout subjects.
+  Search space and candidates: `config/sweep_layer4.json`.
+- The best trial is trained like `sglab model train` and saved as a run (`<dataset>-<site>-sweep-cal`),
+  with `trials.csv` and a `sweep` block in `metrics.json`.
+- **Nested score.** The best of 60 trials is flattered by luck. So the sweep repeats the
+  whole search once without each subject, and scores its winner on that subject. This
+  costs `trials × (subjects + 1)` trials. That nested MAE is the honest estimate. A large
+  gap to the best trial means the search is fitting noise.
+
+### Models page (`/models`)
+
+- Dataset counts and a **Rebuild** button (runs `sglab dataset build` on the server).
+- **Train** (current settings) and **Sweep** (site, trials).
+- Jobs with progress, and a chart of every run's MAE vs its baseline over time.
+- A runs table with verdicts, and a page per run: plain-language verdict per target, notes
+  (one subject, few readings), sweep results, the report figure, and downloads.
+- "How to read these results" explains MAE, baseline, bias ± SD, r change, folds,
+  holdout and nested scores.
+
 ### Next
 
-- Sweeps over features/model settings as worker jobs. Tune with CV inside the non-holdout
-  subjects only (nested), or the winning score is optimistic.
-- Results page in the web UI.
 - `hgb` (gradient boosting) once there are hundreds of readings. A CNN on `templates.npz`
   once there are thousands (the GPU worker).

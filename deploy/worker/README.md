@@ -6,7 +6,7 @@ catalog, processing results, the device CA, OTA images, the web UI and the broke
 
 ```
                        evmserver (nbe.evm100.org)                        nbe-proc LXC (Debian 13)
-browsers ──https──▶ nginx ─▶ sglab ─▶ /srv/nbe/ppg-data   ◀──https──  sglab worker ×N   (Layers 1-2)
+browsers ──https──▶ nginx ─▶ sglab ─▶ /srv/nbe/ppg-data   ◀──https──  sglab worker ×N   (Layers 1-2, Layer-4 sweeps)
                               │  jobs table (queue)         claim, raw CSV down, outputs up
                               └─ /srv/nbe/pki/firmware    ◀──https──  build-firmware.sh (ESP-IDF in Docker)
                                     (OTA images)            nbe_node.py configure / upload

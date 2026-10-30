@@ -12,6 +12,7 @@ Module layout
     app.py       factory, auth middleware, browsing + processing routes
     trials.py    devices page, trial pages and trial API
     admin.py     login/logout, account, users, nodes (registration, credentials), audit
+    models.py    Models page (Layer 4): datasets, model runs, train / sweep
     security.py  identity, roles, CSRF origin check, login rate limiting
 """
 from __future__ import annotations
@@ -85,6 +86,7 @@ class Ctx:
     processing: dict = field(default_factory=dict)  # session_id -> state (local mode)
     jobs: JobQueue | None = None                    # remote mode: queue for `sglab worker`
     workers_seen: dict = field(default_factory=dict)  # worker name -> time.time() of its last poll
+    model_tasks: list = field(default_factory=list)   # Models page: dataset builds, trainings, local sweeps
 
     def cat(self) -> Catalog:
         return Catalog(self.settings.db_path, self.settings.data_root)
@@ -352,10 +354,10 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
 
     @app.get("/files/{path:path}")
     def files(path: str, user=viewer):
-        # only recordings and processing outputs; never the catalog DB, PKI or state files
+        # only recordings, processing outputs and model runs; never the catalog DB, PKI or state files
         root = settings.data_root.resolve()
         p = (root / path).resolve()
-        if not any(d in p.parents for d in (root / "raw", root / "processed")) or not p.is_file():
+        if not any(d in p.parents for d in (root / "raw", root / "processed", root / "models")) or not p.is_file():
             raise HTTPException(404)
         return FileResponse(p)
 
@@ -469,9 +471,11 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
                 "features": [c[:-4] for c in e.columns if c.endswith("_med")]}
 
     from .admin import router as admin_router
+    from .models import router as models_router
     from .trials import router as trials_router
     from .worker import router as worker_router
     app.include_router(trials_router)
     app.include_router(admin_router)
     app.include_router(worker_router)
+    app.include_router(models_router)
     return app

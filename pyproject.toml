@@ -23,8 +23,8 @@ web = ["fastapi>=0.110", "uvicorn>=0.27", "jinja2>=3.1", "python-multipart>=0.0.
 server = ["smart-glasses[web]", "paho-mqtt>=2.0", "cryptography>=42"]
 # `sglab tune`: settings search (Optuna)
 tune = ["optuna>=4.0"]
-# `sglab model`: Layer-4 models (ridge / gradient boosting, grouped CV)
-model = ["scikit-learn>=1.5"]
+# `sglab model`: Layer-4 models (ridge / gradient boosting, grouped CV) and sweeps (Optuna)
+model = ["scikit-learn>=1.5", "optuna>=4.0"]
 dev = ["smart-glasses[server,tune,model]", "pytest>=7", "httpx2"]  # starlette >= 1.0 TestClient uses httpx2
 
 [project.scripts]

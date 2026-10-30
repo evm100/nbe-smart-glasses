@@ -9,7 +9,7 @@
   sglab show <session>
   sglab process <session>... | --all [--force]
   sglab dataset build [--name bp] | list   Layer 3: cuff/pulse-ox readings joined to the PPG
-  sglab model train [--config F] | list    Layer 4: cross-validated BP models on a dataset
+  sglab model train [--config F] | sweep [--trials N] | list   Layer 4: validated BP models
   sglab import file.csv --subject S001 --protocol rest --role finger
   sglab reindex | sglab recover
   sglab serve [--lan] [--token auto]  web UI (run trials + browse) at http://<ip>:8000
@@ -302,6 +302,25 @@ def cmd_model(a):
             raise SystemExit(str(e))
         _print_model(m)
         console.print(f"wrote {m['path']}/ (report.png, metrics.json, predictions.csv, model.joblib)")
+    elif a.sub == "sweep":
+        from . import sweep
+
+        base = None
+        if a.config:
+            from ppg.config import Layer4Config
+            base = Layer4Config.from_json(a.config)
+        spec = sweep.sweep_spec(s)
+        if a.trials:
+            spec["trials"] = a.trials
+        if a.no_nested:
+            spec["nested"] = False
+        try:
+            m = sweep.sweep_run(s, a.dataset, spec, a.name, base, log=console.print)
+        except (ValueError, FileNotFoundError) as e:
+            raise SystemExit(str(e))
+        _print_model(m)
+        console.print(model.explain(m)["sweep"])
+        console.print(f"wrote {m['path']}/ (+ trials.csv)")
     else:
         runs = model.list_runs(s, a.name)
         t = Table("run", "dataset", "folds", "n", "target", "model MAE", "baseline MAE", "model ME \u00b1 SD",
@@ -573,6 +592,10 @@ def build_parser() -> argparse.ArgumentParser:
     mt = mos.add_parser("train", help="cross-validate one config, write data/models/<name>/<run_id>/")
     mt.add_argument("--dataset", default="bp"); mt.add_argument("--config", help="Layer-4 settings JSON")
     mt.add_argument("--name", help="run folder name (default: <dataset>-<role>-<model>[-cal])")
+    msw = mos.add_parser("sweep", help="search model settings + features (config/sweep_layer4.json), keep the best")
+    msw.add_argument("--dataset", default="bp"); msw.add_argument("--config", help="Layer-4 base settings JSON")
+    msw.add_argument("--name"); msw.add_argument("--trials", type=int)
+    msw.add_argument("--no-nested", action="store_true", help="skip the honest (nested) estimate: much faster")
     ml = mos.add_parser("list", help="scores of every run so far")
     ml.add_argument("--name", help="only this model name")
     mo.set_defaults(func=cmd_model)

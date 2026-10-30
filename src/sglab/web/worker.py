@@ -1,13 +1,21 @@
 """API for remote processing workers (`sglab worker`, see sglab.jobs). Role: worker (or admin).
 
     GET  /api/worker/ping                     token / role / mode check (setup scripts)
-    POST /api/worker/claim?wait=25            204 = nothing to do, else the job (long poll)
+    POST /api/worker/claim?wait=25&kinds=process,sweep
+                                              204 = nothing to do, else the job (long poll);
+                                              kinds defaults to process (older workers)
     GET  /api/worker/jobs/{id}/raw/{stream}   the stream's raw CSV
     PUT  /api/worker/jobs/{id}/out/{stream}/{name}   one output file (raw body), staged
     POST /api/worker/jobs/{id}/runs/{stream}  {status, summary, pipeline_version, config_hash}:
                                               swaps the staged files in, records the run
     POST /api/worker/jobs/{id}/finish         {error: null | "..."}
     GET  /api/worker/jobs                     recent jobs (admin)
+
+Sweeps (kind "sweep", Layer 4):
+    GET  /api/worker/jobs/{id}/dataset/{rows.csv|manifest.json}   the job's Layer-3 dataset
+    POST /api/worker/jobs/{id}/progress       {done, total}: shown on the Models page, renews the lease
+    PUT  /api/worker/jobs/{id}/out/model/{name}   run folder files (as above, stream "model")
+    POST /api/worker/jobs/{id}/model          {run_id}: moves them to data/models/<name>/<run_id>/
 
 Every job call carries the header X-NBE-Worker: <name>, and only the worker holding the job
 may touch it. Outputs land in data/processed/<session>/<stream>/ exactly as with local
@@ -102,19 +110,27 @@ def ping(request: Request, user=worker):
     return {"ok": True, "user": user["username"], "pending": _queue(C(request)).pending()}
 
 
+KINDS = ("process", "sweep")
+
+
 @router.post("/api/worker/claim")
-async def claim(request: Request, wait: float = 0, user=worker):
+async def claim(request: Request, wait: float = 0, kinds: str = "process", user=worker):
     ctx = C(request)
     q, name = _queue(ctx), _worker_name(request)
+    want = tuple(k for k in KINDS if k in kinds.split(","))
+    if not want:
+        raise HTTPException(400, f"kinds: any of {', '.join(KINDS)}")
     deadline = time.monotonic() + min(max(wait, 0), 55)
     while True:
         ctx.workers_seen[name] = time.time()
-        j = q.claim(name)
+        j = q.claim(name, want)
         if j is not None:
             break
         if time.monotonic() >= deadline or await request.is_disconnected():
             return Response(status_code=204)
         await asyncio.sleep(1)
+    if j["kind"] == "sweep":
+        return {"job_id": j["job_id"], "kind": "sweep", "payload": j["payload"]}
     from ..processing import pipeline_configs, site_overrides
 
     try:
@@ -124,7 +140,7 @@ async def claim(request: Request, wait: float = 0, user=worker):
         return Response(status_code=204)
     cfg1, cfg2 = pipeline_configs(ctx.settings)
     folder = ctx.settings.data_root / s["path"]
-    return {"job_id": j["job_id"], "session_id": s["session_id"], "force": bool(j["force"]),
+    return {"job_id": j["job_id"], "kind": "process", "session_id": s["session_id"], "force": bool(j["force"]),
             "streams": [st for st in doc.get("streams", []) if st.get("file") and (folder / st["file"]).exists()],
             "configs": {"layer1": cfg1.to_dict(), "layer2": cfg2.to_dict(), "sites": site_overrides(ctx.settings)},
             "ok_runs": s["ok_runs"]}
@@ -201,6 +217,49 @@ async def finish(request: Request, job_id: int, user=worker):
     ctx.jobs.finish(job_id, body.get("error") or None)
     shutil.rmtree(ctx.settings.processed_dir / "_staging" / str(job_id), ignore_errors=True)
     return {"ok": True}
+
+
+@router.get("/api/worker/jobs/{job_id}/dataset/{name}")
+def dataset_file(request: Request, job_id: int, name: str, user=worker):
+    ctx = C(request)
+    j = _job(request, job_id)
+    if j["kind"] != "sweep" or name not in ("rows.csv", "manifest.json"):
+        raise HTTPException(404, "no such dataset file")
+    ds = (j["payload"] or {}).get("dataset", "")
+    p = ctx.settings.data_root / "datasets" / ds / name
+    if not NAME.match(ds) or not p.is_file():
+        raise HTTPException(404, f"dataset {ds} has no {name} (sglab dataset build)")
+    ctx.jobs.touch(job_id)
+    return FileResponse(p, media_type="text/csv" if name.endswith(".csv") else "application/json")
+
+
+@router.post("/api/worker/jobs/{job_id}/progress")
+async def progress(request: Request, job_id: int, user=worker):
+    ctx = C(request)
+    _job(request, job_id)
+    body = await request.json()
+    ctx.jobs.set_progress(job_id, f"{int(body.get('done', 0))}/{int(body.get('total', 0))}")
+    return {"ok": True}
+
+
+@router.post("/api/worker/jobs/{job_id}/model")
+async def commit_model(request: Request, job_id: int, user=worker):
+    ctx = C(request)
+    j = _job(request, job_id)
+    body = await request.json()
+    run_id, name = str(body.get("run_id", "")), (j["payload"] or {}).get("name", "")
+    if j["kind"] != "sweep" or not NAME.match(run_id) or not NAME.match(name):
+        raise HTTPException(400, "not a sweep job, or bad run id")
+    staged = _staging(ctx, job_id, "model")
+    if not (staged / "metrics.json").is_file():
+        raise HTTPException(400, "upload the run files (metrics.json, ...) first")
+    out = ctx.settings.data_root / "models" / name / run_id
+    if out.exists():
+        raise HTTPException(409, f"run {name}/{run_id} exists")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(staged), str(out))
+    ctx.jobs.touch(job_id)
+    return {"ok": True, "path": f"models/{name}/{run_id}"}
 
 
 @router.get("/api/worker/jobs")

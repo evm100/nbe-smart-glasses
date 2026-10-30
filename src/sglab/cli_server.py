@@ -264,9 +264,11 @@ def cmd_jobs(a):
 
     s = load_settings()
     q = JobQueue(s.db_path)
-    t = Table("job", "session", "state", "worker", "created", "finished", "error")
+    t = Table("job", "session / sweep", "state", "worker", "created", "finished", "error")
     for j in q.recent(30):
-        t.add_row(str(j["job_id"]), j["session_id"], j["state"] + (" (force)" if j["force"] else ""), j["worker"] or "",
+        what = j["session_id"] if j["kind"] == "process" else f"sweep {(j['payload'] or {}).get('name', '')}"
+        state = j["state"] + (" (force)" if j["force"] else "") + (f" {j['progress']}" if j.get("progress") else "")
+        t.add_row(str(j["job_id"]), what, state, j["worker"] or "",
                   (j["created_at"] or "")[:19], (j["finished_at"] or "")[:19], (j["error"] or "")[:60])
     console.print(t)
     console.print(f"processing mode: {s.processing_mode}; {q.pending()} queued/running")

@@ -5,7 +5,10 @@
 Polls /api/worker/claim (long poll, so new jobs start within a second or two), downloads
 each stream's raw CSV, runs Layers 1-2 with the server's pipeline configs, uploads the
 outputs and records the run on the server. Only outbound HTTPS is needed. Stdlib HTTP
-only, so the worker needs just the base package (numpy/scipy/pandas/matplotlib).
+only, so processing needs just the base package (numpy/scipy/pandas/matplotlib).
+
+With the `model` extra installed (scikit-learn, Optuna) it also takes Layer-4 sweeps:
+download the dataset, run sglab.sweep, upload the model run folder.
 
 The token belongs to a user with the `worker` role (`sglab user add nbe-worker --role worker`,
 then `sglab user token nbe-worker`), which can do nothing but this.
@@ -104,14 +107,64 @@ def run_job(api: Api, job: dict, log=print) -> None:
     api.json("POST", f"/api/worker/jobs/{jid}/finish", {"error": "; ".join(errors) or None})
 
 
+def run_sweep_job(api: Api, job: dict, log=print) -> None:
+    from ppg.config import Layer4Config
+
+    from .model import read_dataset
+    from .sweep import sweep_to
+
+    jid, pl = job["job_id"], job["payload"]
+    last = [0.0]
+
+    def progress(done, total):  # also keeps the lease alive
+        if done == total or time.monotonic() - last[0] > 15:
+            last[0] = time.monotonic()
+            api.json("POST", f"/api/worker/jobs/{jid}/progress", {"done": done, "total": total})
+
+    with tempfile.TemporaryDirectory(prefix="sglab-sweep-") as tmp:
+        tmp = Path(tmp)
+        ds = tmp / "dataset"
+        ds.mkdir()
+        api.download(f"/api/worker/jobs/{jid}/dataset/rows.csv", ds / "rows.csv")
+        try:
+            api.download(f"/api/worker/jobs/{jid}/dataset/manifest.json", ds / "manifest.json")
+        except RuntimeError:
+            pass
+        df, raw, manifest = read_dataset(ds, pl["dataset"])
+        try:
+            meta = sweep_to(tmp / "runs", pl["name"], df, raw, manifest, pl["dataset"],
+                            Layer4Config.from_dict(pl["layer4"]), pl["spec"], log, progress)
+        except ValueError as e:  # not enough data for this config: a result, not a worker failure
+            log(f"  [error] sweep {pl['name']}: {e}")
+            api.json("POST", f"/api/worker/jobs/{jid}/finish", {"error": str(e)})
+            return
+        out = Path(meta["path"])
+        for f in sorted(out.iterdir()):
+            api.upload(f"/api/worker/jobs/{jid}/out/model/{urllib.parse.quote(f.name)}", f)
+        api.json("POST", f"/api/worker/jobs/{jid}/model", {"run_id": meta["run_id"]})
+    log(f"  [ok] sweep {pl['name']}/{meta['run_id']}")
+    api.json("POST", f"/api/worker/jobs/{jid}/finish", {"error": None})
+
+
+def can_sweep() -> bool:
+    try:
+        import optuna  # noqa: F401
+        import sklearn  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def serve(base: str, token: str, name: str | None = None, once: bool = False, log=print) -> int:
     name = name or socket.gethostname()
     api = Api(base, token, name)
-    log(f"sglab worker {name} (ppg {ppg.__version__}) -> {api.base}")
+    kinds = "process,sweep" if can_sweep() else "process"
+    log(f"sglab worker {name} (ppg {ppg.__version__}) -> {api.base}  [jobs: {kinds}]"
+        + ("" if can_sweep() else "  (pip install -e '.[model]' for Layer-4 sweeps)"))
     backoff = 5
     while True:
         try:
-            job = api.json("POST", "/api/worker/claim?wait=25", timeout=60)
+            job = api.json("POST", f"/api/worker/claim?wait=25&kinds={kinds}", timeout=60)
             backoff = 5
         except (OSError, RuntimeError) as e:  # server restarting, network down, ...
             log(f"  claim failed: {e}; retrying in {backoff} s")
@@ -122,9 +175,13 @@ def serve(base: str, token: str, name: str | None = None, once: bool = False, lo
             if once:
                 return 0
             continue
-        log(f"job {job['job_id']}: session {job['session_id']}{' (force)' if job['force'] else ''}")
         try:
-            run_job(api, job, log)
+            if job.get("kind") == "sweep":
+                log(f"job {job['job_id']}: sweep {job['payload']['name']} on dataset {job['payload']['dataset']}")
+                run_sweep_job(api, job, log)
+            else:
+                log(f"job {job['job_id']}: session {job['session_id']}{' (force)' if job['force'] else ''}")
+                run_job(api, job, log)
         except Exception as e:  # report it; if the server is unreachable, the lease expires and it is retried
             log(f"  job {job['job_id']} aborted: {type(e).__name__}: {e}")
             try:

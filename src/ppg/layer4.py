@@ -103,12 +103,9 @@ def error_metrics(y: np.ndarray, pred: np.ndarray, cal: np.ndarray | None = None
     return out
 
 
-def train(df: pd.DataFrame, cfg: Layer4Config, log=print) -> dict:
-    """Cross-validate, score the holdout, fit the final models.
-
-    Returns {"preds": DataFrame (one row per reading x target: y, pred, baseline, split, fold),
-    "metrics": {target: {split: {"model": ..., "baseline": ...}}}, "models": {target: fitted},
-    "info": what was used}. Raises ValueError when there is nothing to validate on."""
+def prepare(df: pd.DataFrame, cfg: Layer4Config, log=print) -> tuple[pd.DataFrame, list[str], list[str], int]:
+    """(rows ready to model - calibrated when cfg.calibrated -, features used, features skipped,
+    number of readings before calibration)."""
     rows = model_rows(df, cfg)
     if rows.empty:
         raise ValueError(f"no valid bp readings for role {cfg.role!r} in the dataset")
@@ -120,6 +117,49 @@ def train(df: pd.DataFrame, cfg: Layer4Config, log=print) -> dict:
     n_readings = len(rows)
     if cfg.calibrated:
         rows = calibrate(rows, cfg, features)
+    return rows, features, dropped, n_readings
+
+
+def out_of_fold(dev: pd.DataFrame, cfg: Layer4Config, features: list[str], groups: np.ndarray
+                ) -> dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """{target: (y, prediction, baseline)} with every row predicted by a model that never saw its
+    group. In the model's units: the change from the calibration when cfg.calibrated."""
+    out = {}
+    for t in cfg.targets:
+        X, y = _xy(dev, features, t, cfg.calibrated)
+        pred, base = np.full(len(dev), np.nan), np.full(len(dev), np.nan)
+        for g in dict.fromkeys(groups):
+            te = groups == g
+            pred[te] = make_model(cfg.model).fit(X[~te], y[~te]).predict(X[te])
+            base[te] = 0.0 if cfg.calibrated else float(np.mean(y[~te]))
+        out[t] = (y, pred, base)
+    return out
+
+
+def cv_mae(dev: pd.DataFrame, cfg: Layer4Config, features: list[str], groups: np.ndarray) -> float:
+    """Mean over targets of the out-of-fold MAE in mmHg (the sweep objective)."""
+    return float(np.mean([np.mean(np.abs(p - y)) for y, p, _ in out_of_fold(dev, cfg, features, groups).values()]))
+
+
+def fit_predict(train_rows: pd.DataFrame, test_rows: pd.DataFrame, cfg: Layer4Config, features: list[str]
+                ) -> dict[str, np.ndarray]:
+    """{target: prediction in mmHg for test_rows} from models fitted on train_rows."""
+    out = {}
+    for t in cfg.targets:
+        X, y = _xy(train_rows, features, t, cfg.calibrated)
+        Xt, _ = _xy(test_rows, features, t, cfg.calibrated)
+        out[t] = make_model(cfg.model).fit(X, y).predict(Xt) + (
+            test_rows[f"cal_{t}"].to_numpy(float) if cfg.calibrated else 0.0)
+    return out
+
+
+def train(df: pd.DataFrame, cfg: Layer4Config, log=print) -> dict:
+    """Cross-validate, score the holdout, fit the final models.
+
+    Returns {"preds": DataFrame (one row per reading x target: y, pred, baseline, split, fold),
+    "metrics": {target: {split: {"model": ..., "baseline": ...}}}, "models": {target: fitted},
+    "info": what was used}. Raises ValueError when there is nothing to validate on."""
+    rows, features, dropped, n_readings = prepare(df, cfg, log)
     hold = rows["subject"].isin(list(cfg.holdout_subjects)).to_numpy()
     dev = rows[~hold].reset_index(drop=True)
     test = rows[hold].reset_index(drop=True)
@@ -136,18 +176,12 @@ def train(df: pd.DataFrame, cfg: Layer4Config, log=print) -> dict:
 
     preds, metrics, models = [], {}, {}
     keys = [c for c in KEY_COLS if c in rows]
-    for t in cfg.targets:
-        X, y = _xy(dev, features, t, cfg.calibrated)
-        pred, base = np.full(len(dev), np.nan), np.full(len(dev), np.nan)
-        for g in folds:
-            te = groups == g
-            m = make_model(cfg.model).fit(X[~te], y[~te])
-            pred[te] = m.predict(X[te])
-            base[te] = 0.0 if cfg.calibrated else float(np.mean(y[~te]))
+    for t, (y, pred, base) in out_of_fold(dev, cfg, features, groups).items():
+        X, _ = _xy(dev, features, t, cfg.calibrated)
         models[t] = make_model(cfg.model).fit(X, y)
         splits = [("cv", dev, pred, base, groups)]
         if len(test):
-            Xt, yt = _xy(test, features, t, cfg.calibrated)
+            Xt, _ = _xy(test, features, t, cfg.calibrated)
             splits.append(("holdout", test, models[t].predict(Xt),
                            np.zeros(len(test)) if cfg.calibrated else np.full(len(test), float(np.mean(y))),
                            np.full(len(test), "holdout")))
