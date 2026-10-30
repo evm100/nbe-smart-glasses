@@ -123,6 +123,9 @@ def build(settings, catalog, name: str = "bp", cfg: Layer3Config | None = None,
             tpls.append(tp)
             log(f"  {s['session_id']}: {u['n_readings']} reading(s) x {len(u['runs'])} stream(s), "
                 f"{int(rows['valid'].sum())} valid")
+    if not used:
+        log(f"  no sessions with cuff/pulse-ox readings in {settings.data_root} "
+            f"(wrong data root? on the server run as nbe with SGLAB_SERVER_CONFIG)")
     df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     templates = np.concatenate(tpls) if tpls else np.empty((0, 100))
     if len(df):
