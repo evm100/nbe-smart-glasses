@@ -265,6 +265,48 @@ class Layer3Config:
 
 
 # =============================================================================
+# Layer 4: models on a Layer-3 dataset
+# =============================================================================
+@dataclass
+class ModelConfig:
+    kind: str = "ridge"          # "ridge" (linear, few rows) | "hgb" (gradient boosting, hundreds+)
+    alpha: float = 1.0           # ridge: L2 strength on standardised features
+    max_iter: int = 200          # hgb: boosting rounds
+    learning_rate: float = 0.05  # hgb
+    max_depth: int = 3           # hgb
+    min_samples_leaf: int = 5    # hgb
+
+
+@dataclass
+class Layer4Config:
+    role: str = "finger"                       # one model per site
+    targets: tuple = ("sys_mmhg", "dia_mmhg")
+    features: tuple = ("hr_mean_bpm", "pad_ms_rel", "t_rise_s_med", "pw50_s_med",
+                       "max_slope_norm_med", "shape_factor_med")
+    # Calibrated: the first valid reading of each session is the calibration; the model
+    # predicts changes from it (target and features minus the calibration row's).
+    calibrated: bool = True
+    # Folds are whole subjects ("subject") or whole sessions ("session"). With fewer than
+    # min_groups subjects, "subject" falls back to "session" and the metrics say so.
+    cv: str = "subject"
+    min_groups: int = 3
+    # Never used for CV or tuning: scored once by the model fitted on everything else.
+    holdout_subjects: tuple = ()
+    model: ModelConfig = field(default_factory=ModelConfig)
+
+    to_dict = Layer1Config.to_dict
+    to_json = Layer1Config.to_json
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Layer4Config":
+        return _build(cls, d or {})
+
+    @classmethod
+    def from_json(cls, path: str | Path) -> "Layer4Config":
+        return cls.from_dict(json.loads(Path(path).read_text()))
+
+
+# =============================================================================
 # Partial overrides (per-site configs, tuner trials)
 # =============================================================================
 def deep_merge(base: dict, over: dict) -> dict:

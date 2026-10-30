@@ -33,7 +33,7 @@ PYVER=$(python3 -c 'import sys; print("python%d.%d" % sys.version_info[:2])')
 [[ -d /opt/nbe/venv/lib/$PYVER ]] || rm -rf /opt/nbe/venv
 [[ -d /opt/nbe/venv ]] || python3 -m venv /opt/nbe/venv
 /opt/nbe/venv/bin/pip install -q --upgrade pip
-/opt/nbe/venv/bin/pip install -q "$DEST"     # base package only: the pipeline, no web/MQTT stack
+/opt/nbe/venv/bin/pip install -q "$DEST[model]"     # the pipeline + Layer-4 models, no web/MQTT stack
 echo "ppg $(/opt/nbe/venv/bin/python -c 'import ppg; print(ppg.__version__)')"
 
 step "server $SERVER"

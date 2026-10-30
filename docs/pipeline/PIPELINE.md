@@ -5,7 +5,7 @@
 | 1 | Signal conditioning & window quality | done |
 | 2 | Beats, fiducial points, per-beat features, epoch feature table | done |
 | 3 | Align with reference devices (cuff BP, pulse-ox), build datasets | done |
-| 4 | Models (HR/SpO2 calibration, BP regression, deep models on beat templates) | later |
+| 4 | BP models validated on unseen subjects (ridge / boosting now; deep models on templates later) | first version |
 
 ## Layer 1
 
@@ -268,3 +268,59 @@ rest, so there is little BP variation to learn from yet (see `DATA_COLLECTION.md
 - Readings are typed by hand: a late `bp` entry shifts the window end by the typing delay.
 - The finger is the pulse-arrival reference. If it sits on the cuffed arm, it loses the
   pulse while the cuff is inflated, and `pad_n` is 0 for those readings.
+
+## Layer 4: BP models with honest validation
+
+```bash
+pip install -e ".[model]"          # scikit-learn
+sglab model train                  # config/pipeline_layer4.json on datasets/bp
+sglab model train --config my.json --name bp-glasses-hgb
+sglab model list                   # every run's CV scores (watch them as the dataset grows)
+```
+
+Code: `ppg/layer4.py` (selection, calibration, CV, metrics), `ppg/plotting4.py`, `sglab/model.py`
+(run folders). Settings: `ppg.config.Layer4Config`.
+
+### How a run works
+
+1. **Rows.** Valid `bp` rows of one site (`role`, default finger). One model per site, so a
+   reading never appears twice.
+2. **Calibrated (default).** In each session, the first reading is the calibration. Every later
+   reading becomes (features − calibration's, BP − calibration's), and the model predicts the
+   change. This is how cuffless devices are used, and it removes each person's BP level,
+   which ~15 subjects can't teach. Sessions with one reading drop out. `calibrated: false`
+   predicts absolute BP instead.
+3. **Cross-validation by subject.** Each fold leaves out a whole subject. With fewer than
+   `min_groups` subjects it leaves out whole sessions instead, and says so: that measures
+   "a new day of a known person", which is easier. Never split rows randomly: readings from
+   one session are near-duplicates, so the model would be scored on remembering people.
+4. **Baseline.** The model has to beat "no change from the calibration" (calibrated) or the
+   training mean (not calibrated). At rest, the no-change baseline is very hard to beat.
+   That is the expected result until sessions move BP (`DATA_COLLECTION.md`).
+5. **Holdout.** `holdout_subjects` never enter CV or tuning. They are scored once by the
+   final model. Pick them once there are ~10 subjects, and don't look at them while trying
+   settings.
+6. **Final model.** Refit on every non-holdout row and saved for later use.
+
+Features that have no values for the site are skipped with a note (e.g. `pad_*` on the
+finger, which is the pulse-arrival reference).
+
+### Outputs (`data/models/<name>/<run_id>/`)
+
+| File | Contents |
+|---|---|
+| `report.png` | Out-of-fold predictions vs cuff (model, baseline, holdout), Bland-Altman, ridge weights |
+| `metrics.json` | Per target and split: model and baseline `me`, `sd` (AAMI asks ≤ 5 ± 8 mmHg), `mae`, `r`, `r_change` (does the predicted change follow the measured one). Folds, features, and the dataset build used (`rows_sha256`) |
+| `predictions.csv` | One row per (reading, target): `y`, `pred`, `baseline`, `cal`, `fold`, `split` |
+| `model.joblib` | `{"models": {target: fitted}, "features": [...], "config": {...}}` |
+| `config.json` | The Layer-4 settings |
+
+Runs are never overwritten. Retrain after every `sglab dataset build` and compare in `sglab model list`.
+
+### Next
+
+- Sweeps over features/model settings as worker jobs. Tune with CV inside the non-holdout
+  subjects only (nested), or the winning score is optimistic.
+- Results page in the web UI.
+- `hgb` (gradient boosting) once there are hundreds of readings. A CNN on `templates.npz`
+  once there are thousands (the GPU worker).

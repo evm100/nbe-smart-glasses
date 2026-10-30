@@ -9,6 +9,7 @@
   sglab show <session>
   sglab process <session>... | --all [--force]
   sglab dataset build [--name bp] | list   Layer 3: cuff/pulse-ox readings joined to the PPG
+  sglab model train [--config F] | list    Layer 4: cross-validated BP models on a dataset
   sglab import file.csv --subject S001 --protocol rest --role finger
   sglab reindex | sglab recover
   sglab serve [--lan] [--token auto]  web UI (run trials + browse) at http://<ip>:8000
@@ -59,10 +60,10 @@ def _preset(items) -> dict:
 # --------------------------------------------------------------------------
 def cmd_init(a):
     s, cat = _ctx()
-    from ppg.config import Layer1Config, Layer2Config, Layer3Config
+    from ppg.config import Layer1Config, Layer2Config, Layer3Config, Layer4Config
 
     for name, cfg in [("pipeline_layer1.json", Layer1Config()), ("pipeline_layer2.json", Layer2Config()),
-                      ("pipeline_layer3.json", Layer3Config())]:
+                      ("pipeline_layer3.json", Layer3Config()), ("pipeline_layer4.json", Layer4Config())]:
         p = s.root / "config" / name
         if not p.exists():
             cfg.to_json(p)
@@ -284,6 +285,55 @@ def _print_dataset(m: dict) -> None:
             t.add_row(kind, str(k["readings"]), role or "", str(r["rows"]), str(r["valid"]), str(r["subjects"]),
                       str(r["sessions"]))
     console.print(t)
+
+
+def cmd_model(a):
+    from . import model
+
+    s, _ = _ctx()
+    if a.sub == "train":
+        cfg = None
+        if a.config:
+            from ppg.config import Layer4Config
+            cfg = Layer4Config.from_json(a.config)
+        try:
+            m = model.train_run(s, a.dataset, cfg, a.name, log=console.print)
+        except (ValueError, FileNotFoundError) as e:
+            raise SystemExit(str(e))
+        _print_model(m)
+        console.print(f"wrote {m['path']}/ (report.png, metrics.json, predictions.csv, model.joblib)")
+    else:
+        runs = model.list_runs(s, a.name)
+        t = Table("run", "dataset", "folds", "n", "target", "model MAE", "baseline MAE", "model ME \u00b1 SD",
+                  "r change", title="model runs (cross-validation)")
+        for m in runs:
+            for tgt, sp in m["metrics"].items():
+                mm, mb = sp["cv"]["model"], sp["cv"]["baseline"]
+                t.add_row(f"{m['name']}/{m['run_id']}", f"{m['dataset']['name']} {m['dataset']['rows_sha256'][:8]}",
+                          f"{m['n_folds']} {m['cv_unit']}", str(mm["n"]), tgt, f"{mm['mae']:.1f}",
+                          f"{mb['mae']:.1f}", f"{mm['me']:+.1f} \u00b1 {mm['sd']:.1f}", _fmt(mm["r_change"]))
+        console.print(t)
+    return 0
+
+
+def _fmt(v) -> str:
+    return "" if v is None or v != v else f"{v:.2f}"
+
+
+def _print_model(m: dict) -> None:
+    t = Table("target", "split", "n", "model ME \u00b1 SD", "model MAE", "baseline ME \u00b1 SD", "baseline MAE",
+              "r change", title=f"{m['name']}/{m['run_id']}  ({m['n_folds']} {m['cv_unit']} folds, "
+              f"features: {', '.join(m['features'])})")
+    for tgt, sp in m["metrics"].items():
+        for split, r in sp.items():
+            mm, mb = r["model"], r["baseline"]
+            better = mm["mae"] < mb["mae"]
+            t.add_row(tgt, split, str(mm["n"]), f"{mm['me']:+.1f} \u00b1 {mm['sd']:.1f}",
+                      f"[{'green' if better else 'red'}]{mm['mae']:.1f}[/]",
+                      f"{mb['me']:+.1f} \u00b1 {mb['sd']:.1f}", f"{mb['mae']:.1f}", _fmt(mm["r_change"]))
+    console.print(t)
+    console.print("baseline = " + ("no change from each session's first (calibration) reading"
+                                   if m["calibrated"] else "mean of the training folds"))
 
 
 def cmd_reindex(a):
@@ -517,6 +567,15 @@ def build_parser() -> argparse.ArgumentParser:
     db.add_argument("--sessions", nargs="*", help="only sessions whose id contains one of these")
     dss.add_parser("list", help="datasets built so far")
     ds.set_defaults(func=cmd_dataset)
+
+    mo = sub.add_parser("model", help="Layer 4: train + validate BP models on a dataset")
+    mos = mo.add_subparsers(dest="sub", required=True)
+    mt = mos.add_parser("train", help="cross-validate one config, write data/models/<name>/<run_id>/")
+    mt.add_argument("--dataset", default="bp"); mt.add_argument("--config", help="Layer-4 settings JSON")
+    mt.add_argument("--name", help="run folder name (default: <dataset>-<role>-<model>[-cal])")
+    ml = mos.add_parser("list", help="scores of every run so far")
+    ml.add_argument("--name", help="only this model name")
+    mo.set_defaults(func=cmd_model)
 
     im = sub.add_parser("import", help="import an existing CSV recording")
     im.add_argument("csv"); im.add_argument("--subject", required=True); im.add_argument("--protocol", required=True)
