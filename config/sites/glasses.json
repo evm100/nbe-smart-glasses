@@ -2,33 +2,33 @@
   "layer1": {
     "quality": {
       "amp_ratio_range": [
-        0.3818,
-        2.334
+        0.5216,
+        3.692
       ],
-      "max_hr_disagreement_bpm": 9.604,
-      "min_acf_peak": 0.6445,
-      "min_skew": -0.5633,
-      "min_spec_purity": 0.5464,
+      "max_hr_disagreement_bpm": 7.354,
+      "min_acf_peak": 0.6271,
+      "min_skew": 0.3531,
+      "min_spec_purity": 0.32,
       "window_s": 4.0
     }
   },
   "layer2": {
     "beats": {
-      "beta": 0.03367,
-      "foot_search_s": 0.5535,
-      "w_beat_s": 0.7852,
-      "w_peak_s": 0.05423
+      "beta": 0.03054,
+      "foot_search_s": 0.597,
+      "w_beat_s": 0.8672,
+      "w_peak_s": 0.09341
     },
     "quality": {
       "amp_ratio_range": [
-        0.5458,
-        2.597
+        0.4595,
+        2.66
       ],
       "ibi_ratio_range": [
-        0.7692,
-        1.181
+        0.7097,
+        1.373
       ],
-      "min_template_corr": 0.7034,
+      "min_template_corr": 0.7943,
       "require_layer1_good": false
     }
   }
