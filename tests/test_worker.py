@@ -128,6 +128,35 @@ def test_stale_job_goes_back_to_the_queue(tmp_path):
     assert q.state("S1") == "error: boom" and q.pending() == 0
 
 
+def test_cancel_drops_queued_and_running_jobs(tmp_path):
+    q = JobQueue(tmp_path / "c.sqlite")
+    running, queued = q.enqueue("S1"), q.enqueue("S2")
+    sweep = q.enqueue_sweep({"name": "m"})
+    assert q.claim("a")["job_id"] == running
+    assert q.counts() == {"queued": 1, "running": 1}
+    assert sorted(q.cancel()) == [running, queued]
+    assert q.counts() == {"queued": 0, "running": 0}
+    assert q.get(sweep)["state"] == "queued"  # sweeps untouched
+    assert q.claim("b") is None and q.state("S1") is None
+    q.con.execute("UPDATE jobs SET claimed_at='2000-01-01T00:00:00+00:00'")
+    assert q.claim("b") is None  # a cancelled job never comes back
+
+
+def test_cancel_processing_stops_the_worker(remote):
+    s, app, tok, sid = remote
+    ada = TestClient(app)
+    ada.post("/login", data={"username": "ada", "password": PW}, headers=ORIGIN)
+    ada.post("/sessions/process-all", data={}, headers=ORIGIN)
+    w = ClientApi(TestClient(app), tok, "big-box")
+    job = w.json("POST", "/api/worker/claim")
+    assert "1 running, 0 queued" in ada.get("/").text
+    r = ada.post("/sessions/cancel-processing", headers=ORIGIN, follow_redirects=False)
+    assert r.headers["location"] == "/?cancelled=1"
+    with pytest.raises(RuntimeError, match="409"):
+        run_job(w, job, log=lambda *_: None)
+    assert JobQueue(s.db_path).get(job["job_id"])["state"] == "cancelled"
+
+
 def test_process_all_queues_every_kept_session(remote):
     s, app, tok, sid = remote
     ada = TestClient(app)

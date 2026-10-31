@@ -18,6 +18,7 @@ Module layout
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 import time
 import urllib.parse
@@ -150,6 +151,8 @@ class Ctx:
             c = self.cat()
             try:
                 for sid in sids:
+                    if self.processing.get(sid) != "queued":  # cancelled meanwhile
+                        continue
                     self.processing[sid] = "running"
                     try:
                         process_session(self.settings, c, sid, log=lambda *_: None)
@@ -160,6 +163,25 @@ class Ctx:
                 c.close()
 
         threading.Thread(target=job, daemon=True).start()
+
+    def cancel_processing(self) -> int:
+        """Drop queued processing; in remote mode running jobs too (their workers stop after the
+        current stream). Local mode can't interrupt the session being processed."""
+        if self.jobs is not None:
+            ids = self.jobs.cancel("process")
+            for jid in ids:
+                shutil.rmtree(self.settings.processed_dir / "_staging" / str(jid), ignore_errors=True)
+            return len(ids)
+        sids = [sid for sid, st in self.processing.items() if st == "queued"]
+        for sid in sids:
+            self.processing.pop(sid, None)
+        return len(sids)
+
+    def processing_counts(self) -> dict:
+        if self.jobs is not None:
+            return self.jobs.counts("process")
+        sts = list(self.processing.values())
+        return {"queued": sts.count("queued"), "running": sts.count("running")}
 
 
 def create_app(settings: Settings | None = None, token: str | None = None, hub=None) -> FastAPI:
@@ -294,7 +316,8 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
         return ctx.render(request, "index.html", {
             "rows": rows, "subjects": subjects, "protocols": protocols,
             "f_subject": subject or "", "f_protocol": protocol or "", "f_all": all, "f_mine": mine,
-            "queued": queued, "remote": ctx.jobs is not None})
+            "queued": queued, "remote": ctx.jobs is not None, "counts": ctx.processing_counts(),
+            "cancelled": request.query_params.get("cancelled")})
 
     @app.post("/sessions/process-all")
     async def process_all(request: Request, user=Depends(sec.require("operator"))):
@@ -312,6 +335,13 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
         q = urllib.parse.urlencode({k: v for k, v in
                                     {"subject": subject, "protocol": protocol, "queued": len(sids)}.items() if v != ""})
         return RedirectResponse(f"/?{q}", status_code=303)
+
+    @app.post("/sessions/cancel-processing")
+    def cancel_processing(request: Request, user=Depends(sec.require("operator"))):
+        """Empty the processing queue and stop running processing jobs (not Layer-4 sweeps)."""
+        n = ctx.cancel_processing()
+        ctx.audit(request, "session.cancel_processing", "", {"n": n})
+        return RedirectResponse(f"/?cancelled={n}", status_code=303)
 
     @app.get("/subjects", response_class=HTMLResponse)
     def subjects_page(request: Request, user=viewer):

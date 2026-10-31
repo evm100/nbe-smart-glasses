@@ -75,6 +75,15 @@ journalctl -fu 'nbe-worker@*'                 # in the LXC
 nbe jobs                                      # on evmserver: queue, states, which worker
 ```
 
+More jobs at once: each `nbe-worker@N` runs one session at a time, single-threaded, so set
+`WORKERS` to about the LXC's core count (`nproc`) and re-run the setup script, e.g.
+`WORKERS=20 NBE_WORKER_TOKEN=nbe_... setup-worker.sh`. Or add instances directly:
+`systemctl enable --now nbe-worker@{3..20}`.
+
+Stop processing: **Cancel processing** on the Sessions page (or `nbe jobs --cancel` on evmserver)
+drops the queue and cancels running jobs. Their workers stop after the current stream. Layer-4
+sweeps are left alone.
+
 Test: open any session → **Re-process** (admin). The page shows *running on nbe-proc-1*, and then
 the results.
 

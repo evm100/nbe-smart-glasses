@@ -264,6 +264,10 @@ def cmd_jobs(a):
 
     s = load_settings()
     q = JobQueue(s.db_path)
+    if a.cancel:
+        ids = q.cancel("process")
+        console.print(f"cancelled {len(ids)} processing job(s); running ones stop after their current stream")
+        return 0
     t = Table("job", "session / sweep", "state", "worker", "created", "finished", "error")
     for j in q.recent(30):
         what = j["session_id"] if j["kind"] == "process" else f"sweep {(j['payload'] or {}).get('name', '')}"
@@ -316,7 +320,9 @@ def add_parsers(sub) -> None:
 
     sub.add_parser("doctor", help="check server config, paths, PKI, broker").set_defaults(func=cmd_doctor)
 
-    sub.add_parser("jobs", help="remote processing queue ([processing] mode = remote)").set_defaults(func=cmd_jobs)
+    j = sub.add_parser("jobs", help="remote processing queue ([processing] mode = remote)")
+    j.add_argument("--cancel", action="store_true", help="cancel all queued and running processing jobs (not sweeps)")
+    j.set_defaults(func=cmd_jobs)
 
     sp = sub.add_parser("snapshot", help="consistent copy of the catalog database (for backups)")
     sp.add_argument("--out", help="folder (default <data root>/snapshots)")

@@ -8,7 +8,9 @@ Nothing has to reach the worker, so it can sit behind NAT. A worker only gets th
 asks for, so an older worker never claims a sweep.
 
 Stored in the catalog SQLite file (table jobs). A claimed job that hears nothing from its
-worker for LEASE_S goes back to the queue (worker crashed or was rebooted).
+worker for LEASE_S goes back to the queue (worker crashed or was rebooted). A cancelled running
+job is no longer 'running', so the worker's next call for it (upload, run, finish) is refused
+and the worker drops it.
 """
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     kind         TEXT NOT NULL,          -- process | sweep
     session_id   TEXT NOT NULL,          -- '' for sweeps
     force        INTEGER NOT NULL DEFAULT 0,
-    state        TEXT NOT NULL,          -- queued | running | done | error
+    state        TEXT NOT NULL,          -- queued | running | done | error | cancelled
     worker       TEXT,
     created_at   TEXT,
     claimed_at   TEXT,                   -- also refreshed by every upload (the lease)
@@ -126,9 +128,24 @@ class JobQueue:
             self.con.execute("UPDATE jobs SET state=?, finished_at=?, error=? WHERE job_id=?",
                              ("error" if error else "done", _iso(_now()), error, job_id))
 
+    def cancel(self, kind: str = "process") -> list[int]:
+        """Cancel every queued or running job of this kind; returns their ids."""
+        with self.lock:
+            ids = [r["job_id"] for r in self._q("SELECT job_id FROM jobs WHERE kind=? AND state IN ('queued', 'running')",
+                                                (kind,))]
+            self.con.execute("UPDATE jobs SET state='cancelled', finished_at=?, error='cancelled' "
+                             "WHERE kind=? AND state IN ('queued', 'running')", (_iso(_now()), kind))
+        return ids
+
+    def counts(self, kind: str = "process") -> dict:
+        """{'queued': n, 'running': n} for this kind."""
+        rows = self._q("SELECT state, COUNT(*) AS n FROM jobs WHERE kind=? AND state IN ('queued', 'running') "
+                       "GROUP BY state", (kind,))
+        return {"queued": 0, "running": 0, **{r["state"]: r["n"] for r in rows}}
+
     def state(self, session_id: str) -> str | None:
         """What the session page shows: 'queued', 'running on <worker>' or 'error: ...' (latest job);
-        None once it is done (the results are on the page then)."""
+        None once it is done or cancelled (the results are on the page then)."""
         r = self._q("SELECT state, worker, error FROM jobs WHERE session_id=? AND kind='process' "
                     "ORDER BY job_id DESC LIMIT 1", (session_id,))
         if not r:

@@ -28,6 +28,14 @@
   <button class="primary" type="submit">Process all</button>
   <span class="note">{% if queued is not none %}{{ queued }} session{{ '' if queued == 1 else 's' }} {{ 'queued for the worker' if remote else 'processing here, one at a time' }}.{% else %}Only streams whose settings changed are re-run. Discarded sessions are skipped.{% endif %}</span>
 </form>
+{% if counts.queued or counts.running or cancelled is not none %}
+<form method="post" action="/sessions/cancel-processing" class="filters"
+      onsubmit="return confirm('Cancel {{ counts.queued }} queued{{ (' and ' ~ counts.running ~ ' running') if remote and counts.running else '' }} processing job(s)?')">
+  <span class="note">Processing: {{ counts.running }} running, {{ counts.queued }} queued.{% if cancelled is not none %} Cancelled {{ cancelled }}.{% endif %}</span>
+  {% if counts.queued or (remote and counts.running) %}<button type="submit">Cancel processing</button>{% endif %}
+  <span class="note">{{ 'Running jobs stop after their current stream.' if remote else 'The session being processed finishes first.' }}</span>
+</form>
+{% endif %}
 {% endif %}
 
 <div class="card scroll">
