@@ -40,3 +40,7 @@ firmware/esp-idf/*/main/certs/*
 firmware/esp-idf/*/sdkconfig.nbe
 *_credentials.zip
 dev-server/
+
+# tuning: downloaded sessions and studies
+tune-data/
+runs/

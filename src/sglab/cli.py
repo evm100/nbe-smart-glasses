@@ -4,14 +4,17 @@
   sglab ports                        list serial ports
   sglab record finger glasses        record from devices named in config/lab.toml (or ports)
   sglab record sim                   practice run with a simulated ESP32
-  sglab subject add | sglab subjects
+  sglab subject add | sglab subject rename OLD NEW | sglab subject delete ID | sglab subjects
   sglab list [--subject S001] [--protocol rest] [--all]
   sglab show <session>
   sglab process <session>... | --all [--force]
+  sglab dataset build [--name bp] | list   Layer 3: cuff/pulse-ox readings joined to the PPG
+  sglab model train [--config F] | sweep [--trials N] | list   Layer 4: validated BP models
   sglab import file.csv --subject S001 --protocol rest --role finger
   sglab reindex | sglab recover
   sglab serve [--lan] [--token auto]  web UI (run trials + browse) at http://<ip>:8000
   sglab worker URL --token-file F    process the server's queued jobs on this computer
+  sglab tune fetch|run|report|apply  tune Layer 1-2 settings per sensor site against the finger
 
 Server administration (multi-user deployment, MQTT nodes – see deploy/DEPLOY.md):
   sglab user add|list|passwd|set|token   sglab pki init|core-cert|show   sglab jobs
@@ -31,7 +34,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from .catalog import Catalog
+from .catalog import SUBJECT_ID_RE, Catalog
 from .settings import load_settings
 
 console = Console()
@@ -57,9 +60,10 @@ def _preset(items) -> dict:
 # --------------------------------------------------------------------------
 def cmd_init(a):
     s, cat = _ctx()
-    from ppg.config import Layer1Config, Layer2Config
+    from ppg.config import Layer1Config, Layer2Config, Layer3Config, Layer4Config
 
-    for name, cfg in [("pipeline_layer1.json", Layer1Config()), ("pipeline_layer2.json", Layer2Config())]:
+    for name, cfg in [("pipeline_layer1.json", Layer1Config()), ("pipeline_layer2.json", Layer2Config()),
+                      ("pipeline_layer3.json", Layer3Config()), ("pipeline_layer4.json", Layer4Config())]:
         p = s.root / "config" / name
         if not p.exists():
             cfg.to_json(p)
@@ -108,6 +112,8 @@ def cmd_record(a):
     pre = ask_fields(s.fields, "before", cat, state, preset, non_interactive=ni)
     subj = pre.get("subject_id")
     if subj and cat.subject(subj) is None:
+        if not SUBJECT_ID_RE.fullmatch(subj):
+            raise SystemExit(f"{subj!r} is not a subject code like {cat.next_subject_id()} – no names")
         console.print(f"[yellow]{subj} is a new subject[/] – a few details (de-identified only):")
         ask_subject(subj, cat, non_interactive=ni)
 
@@ -181,10 +187,36 @@ def cmd_subjects(a):
     if a.sub == "add":
         from .metadata import ask_subject
         sid = a.id or cat.next_subject_id()
+        if not SUBJECT_ID_RE.fullmatch(sid):
+            raise SystemExit(f"{sid!r} is not a subject code like {cat.next_subject_id()}")
         if cat.subject(sid):
             raise SystemExit(f"{sid} already exists")
         ask_subject(sid, cat)
         console.print(f"added {sid}")
+        return 0
+    if a.sub == "delete":
+        if len(a.ids) != 1:
+            raise SystemExit('usage: sglab subject delete "ID" [--dry-run]')
+        try:
+            sids = cat.delete_subject(a.ids[0], dry_run=a.dry_run)
+        except (KeyError, ValueError) as e:
+            raise SystemExit(str(e).strip("'\""))
+        verb = "would delete" if a.dry_run else "deleted"
+        console.print(f"{verb} {a.ids[0]!r} and {len(sids)} discarded session(s) (raw folders -> raw/_deleted/)")
+        for sid in sids:
+            console.print(f"  {sid}")
+        return 0
+    if a.sub == "rename":
+        if len(a.ids) != 2:
+            raise SystemExit('usage: sglab subject rename "OLD ID" NEW [--dry-run]')
+        try:
+            sids = cat.rename_subject(a.ids[0], a.ids[1], dry_run=a.dry_run)
+        except (KeyError, ValueError) as e:
+            raise SystemExit(str(e).strip("'\""))
+        verb = "would rename" if a.dry_run else "renamed"
+        console.print(f"{verb} {a.ids[0]!r} -> {a.ids[1]} ({len(sids)} session(s))")
+        for sid in sids:
+            console.print(f"  {sid}")
         return 0
     t = Table("subject", "sex", "age", "height", "weight", "skin", "sessions", "notes")
     for r in cat.subjects():
@@ -253,6 +285,102 @@ def cmd_process(a):
         console.print(f"[bold]{sid}[/]")
         process_session(s, cat, sid, force=a.force, plot=not a.no_plot, log=console.print)
     return 0
+
+
+def cmd_dataset(a):
+    from . import dataset
+
+    s, cat = _ctx()
+    if a.sub == "build":
+        cfg = None
+        if a.config:
+            from ppg.config import Layer3Config
+            cfg = Layer3Config.from_json(a.config)
+        m = dataset.build(s, cat, a.name, cfg, a.sessions, log=console.print)
+        _print_dataset(m)
+        console.print(f"wrote {s.data_root / 'datasets' / a.name}/ (rows.csv, templates.npz, manifest.json)")
+    else:
+        for m in dataset.list_datasets(s):
+            _print_dataset(m)
+    return 0
+
+
+def _print_dataset(m: dict) -> None:
+    t = Table("label", "readings", "role", "rows", "valid", "subjects", "sessions",
+              title=f"dataset {m['name']}  (built {m['built_at']}, ppg {m['ppg_version']})")
+    for kind, k in (m["summary"].get("kinds") or {}).items():
+        for role, r in k["roles"].items():
+            t.add_row(kind, str(k["readings"]), role or "", str(r["rows"]), str(r["valid"]), str(r["subjects"]),
+                      str(r["sessions"]))
+    console.print(t)
+
+
+def cmd_model(a):
+    from . import model
+
+    s, _ = _ctx()
+    if a.sub == "train":
+        cfg = None
+        if a.config:
+            from ppg.config import Layer4Config
+            cfg = Layer4Config.from_json(a.config)
+        try:
+            m = model.train_run(s, a.dataset, cfg, a.name, log=console.print)
+        except (ValueError, FileNotFoundError) as e:
+            raise SystemExit(str(e))
+        _print_model(m)
+        console.print(f"wrote {m['path']}/ (report.png, metrics.json, predictions.csv, model.joblib)")
+    elif a.sub == "sweep":
+        from . import sweep
+
+        base = None
+        if a.config:
+            from ppg.config import Layer4Config
+            base = Layer4Config.from_json(a.config)
+        spec = sweep.sweep_spec(s)
+        if a.trials:
+            spec["trials"] = a.trials
+        if a.no_nested:
+            spec["nested"] = False
+        try:
+            m = sweep.sweep_run(s, a.dataset, spec, a.name, base, log=console.print, jobs=a.jobs)
+        except (ValueError, FileNotFoundError) as e:
+            raise SystemExit(str(e))
+        _print_model(m)
+        console.print(model.explain(m)["sweep"])
+        console.print(f"wrote {m['path']}/ (+ trials.csv)")
+    else:
+        runs = model.list_runs(s, a.name)
+        t = Table("run", "dataset", "folds", "n", "target", "model MAE", "baseline MAE", "model ME \u00b1 SD",
+                  "r change", title="model runs (cross-validation)")
+        for m in runs:
+            for tgt, sp in m["metrics"].items():
+                mm, mb = sp["cv"]["model"], sp["cv"]["baseline"]
+                t.add_row(f"{m['name']}/{m['run_id']}", f"{m['dataset']['name']} {m['dataset']['rows_sha256'][:8]}",
+                          f"{m['n_folds']} {m['cv_unit']}", str(mm["n"]), tgt, f"{mm['mae']:.1f}",
+                          f"{mb['mae']:.1f}", f"{mm['me']:+.1f} \u00b1 {mm['sd']:.1f}", _fmt(mm["r_change"]))
+        console.print(t)
+    return 0
+
+
+def _fmt(v) -> str:
+    return "" if v is None or v != v else f"{v:.2f}"
+
+
+def _print_model(m: dict) -> None:
+    t = Table("target", "split", "n", "model ME \u00b1 SD", "model MAE", "baseline ME \u00b1 SD", "baseline MAE",
+              "r change", title=f"{m['name']}/{m['run_id']}  ({m['n_folds']} {m['cv_unit']} folds, "
+              f"features: {', '.join(m['features'])})")
+    for tgt, sp in m["metrics"].items():
+        for split, r in sp.items():
+            mm, mb = r["model"], r["baseline"]
+            better = mm["mae"] < mb["mae"]
+            t.add_row(tgt, split, str(mm["n"]), f"{mm['me']:+.1f} \u00b1 {mm['sd']:.1f}",
+                      f"[{'green' if better else 'red'}]{mm['mae']:.1f}[/]",
+                      f"{mb['me']:+.1f} \u00b1 {mb['sd']:.1f}", f"{mb['mae']:.1f}", _fmt(mm["r_change"]))
+    console.print(t)
+    console.print("baseline = " + ("no change from each session's first (calibration) reading"
+                                   if m["calibrated"] else "mean of the training folds"))
 
 
 def cmd_reindex(a):
@@ -394,7 +522,53 @@ def cmd_worker(a):
     tok = Path(a.token_file).read_text().strip() if a.token_file else os.environ.get("NBE_WORKER_TOKEN")
     if not tok:
         raise ValueError("give --token-file (or set NBE_WORKER_TOKEN)")
-    return serve(a.url, tok, a.name, once=a.once, log=lambda m: print(m, flush=True))
+    return serve(a.url, tok, a.name, once=a.once, log=lambda m: print(m, flush=True), sweep_jobs=a.sweep_jobs)
+
+
+def cmd_tune(a):
+    import pandas as pd
+
+    from . import tune
+    from .settings import find_root
+
+    if a.sub == "fetch":
+        n = tune.fetch(Path(a.out), a.server, None, a.sessions)
+        console.print(f"{n} session(s) with a finger stream in {a.out}")
+    elif a.sub == "run":
+        out = Path(a.out or f"runs/tune/{a.site}-{a.stage}")
+        tune.run(Path(a.data), a.site, a.stage, out, a.trials, a.hours, a.jobs, a.holdout_every, a.sessions,
+                 Path(a.base) if a.base else None, a.f1_slack, not a.include_bad, find_root(),
+                 log=lambda m: print(m, flush=True))
+        console.print(f"done. next: sglab tune report {out}")
+    elif a.sub == "report":
+        r = tune.report(Path(a.study), a.jobs)
+        short = {"f1": "F1", "sensitivity": "sens", "ppv": "PPV", "ibi_mae_ms": "IBI err ms",
+                 "foot_jitter_ms": "foot jit ms", "jitter": "feat jitter", "shape_err": "shape err",
+                 "n_good_beats": "good beats"}
+        if r["meta"]["stage"] == "beats":
+            short = {k: v for k, v in short.items() if k not in ("jitter", "shape_err")}
+        elif r["meta"]["stage"] == "morph":
+            short = {k: v for k, v in short.items() if k not in ("sensitivity", "ppv", "n_good_beats")}
+        tab = r["table"]
+        cols = [(f"{pre}{k}", f"{lab} {pre[:-1]}") for k, lab in short.items() for pre in ("tune_", "hold_")
+                if f"{pre}{k}" in tab]
+        t = Table("trial", "", *[lab for _, lab in cols],
+                  title=f"{r['meta']['site']} / {r['meta']['stage']}   (tune = searched sessions, hold = held out)")
+        for _, row in tab.iterrows():
+            mark = " ".join(m for m, on in (("start", row["baseline"]),
+                                            ("★", row["trial"] == r["recommended"]["trial"])) if on)
+            t.add_row(str(row["trial"]), mark, *[("" if pd.isna(row[c]) else f"{row[c]:.4g}") for c, _ in cols])
+        console.print(t)
+        rec = r["recommended"]
+        console.print(f"{r['n_trials']} trials. recommended: trial {rec['trial']} (★), "
+                      f"settings in {a.study}/recommended.json, plot in {a.study}/pareto.png")
+        console.print(f"apply with: sglab tune apply {a.study}")
+    elif a.sub == "apply":
+        path, new = tune.apply(Path(a.study), find_root(), a.trial)
+        console.print(f"wrote {path}:")
+        console.print(json.dumps(new, indent=2, default=list))
+        console.print("Copy it to the server's config/sites/ too; changed settings re-process on the next Process.")
+    return 0
 
 
 # --------------------------------------------------------------------------
@@ -415,9 +589,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sj = sub.add_parser("subjects", help="list subjects")
     sj.set_defaults(func=cmd_subjects, sub="list", id=None)
-    sa = sub.add_parser("subject", help="sglab subject add [--id S004]")
-    sa.add_argument("sub", choices=["add"])
+    sa = sub.add_parser("subject", help='sglab subject add [--id S004] | sglab subject rename "OLD ID" S004 | sglab subject delete "ID"')
+    sa.add_argument("sub", choices=["add", "rename", "delete"])
+    sa.add_argument("ids", nargs="*", help="rename: old id, new id; delete: id")
     sa.add_argument("--id")
+    sa.add_argument("--dry-run", action="store_true", help="rename/delete: only list the sessions it would touch")
     sa.set_defaults(func=cmd_subjects)
 
     ls = sub.add_parser("list", help="list sessions")
@@ -432,6 +608,28 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("sessions", nargs="*"); pr.add_argument("--all", action="store_true")
     pr.add_argument("--force", action="store_true"); pr.add_argument("--no-plot", action="store_true")
     pr.set_defaults(func=cmd_process)
+
+    ds = sub.add_parser("dataset", help="Layer 3: build training tables from cuff/pulse-ox readings")
+    dss = ds.add_subparsers(dest="sub", required=True)
+    db = dss.add_parser("build", help="join every reading to each processed stream -> data/datasets/<name>/")
+    db.add_argument("--name", default="bp"); db.add_argument("--config", help="Layer-3 settings JSON")
+    db.add_argument("--sessions", nargs="*", help="only sessions whose id contains one of these")
+    dss.add_parser("list", help="datasets built so far")
+    ds.set_defaults(func=cmd_dataset)
+
+    mo = sub.add_parser("model", help="Layer 4: train + validate BP models on a dataset")
+    mos = mo.add_subparsers(dest="sub", required=True)
+    mt = mos.add_parser("train", help="cross-validate one config, write data/models/<name>/<run_id>/")
+    mt.add_argument("--dataset", default="bp"); mt.add_argument("--config", help="Layer-4 settings JSON")
+    mt.add_argument("--name", help="run folder name (default: <dataset>-<role>-<model>[-cal])")
+    msw = mos.add_parser("sweep", help="search model settings + features (config/sweep_layer4.json), keep the best")
+    msw.add_argument("--dataset", default="bp"); msw.add_argument("--config", help="Layer-4 base settings JSON")
+    msw.add_argument("--name"); msw.add_argument("--trials", type=int)
+    msw.add_argument("--no-nested", action="store_true", help="skip the honest (nested) estimate: much faster")
+    msw.add_argument("--jobs", type=int, help="processes (default: all cores)")
+    ml = mos.add_parser("list", help="scores of every run so far")
+    ml.add_argument("--name", help="only this model name")
+    mo.set_defaults(func=cmd_model)
 
     im = sub.add_parser("import", help="import an existing CSV recording")
     im.add_argument("csv"); im.add_argument("--subject", required=True); im.add_argument("--protocol", required=True)
@@ -457,7 +655,32 @@ def build_parser() -> argparse.ArgumentParser:
     wk.add_argument("--token-file", help="file with an API token of a worker-role user")
     wk.add_argument("--name", help="worker name shown on the server (default: hostname)")
     wk.add_argument("--once", action="store_true", help="exit when the queue is empty (testing)")
+    wk.add_argument("--sweep-jobs", type=int, help="processes for a Layer-4 sweep (default: all cores)")
     wk.set_defaults(func=cmd_worker)
+
+    tn = sub.add_parser("tune", help="tune Layer 1-2 settings per sensor site (no BP labels; see sglab/tune.py)")
+    ts = tn.add_subparsers(dest="sub", required=True)
+    tf = ts.add_parser("fetch", help="download sessions that have a finger stream (nbe_node.py admin login)")
+    tf.add_argument("--out", default="tune-data"); tf.add_argument("--server")
+    tf.add_argument("--sessions", nargs="*", help="only session ids containing one of these")
+    tr = ts.add_parser("run", help="search settings (resumable; Ctrl-C keeps finished trials)")
+    tr.add_argument("--data", required=True, help="folder of session folders (tune-data, or the server's data/raw)")
+    tr.add_argument("--site", required=True, choices=["glasses", "head"])
+    tr.add_argument("--stage", default="beats", choices=["beats", "morph", "all"])
+    tr.add_argument("--out", help="study folder (default runs/tune/<site>-<stage>)")
+    tr.add_argument("--trials", type=int, default=500, help="total trial budget (default 500)")
+    tr.add_argument("--hours", type=float, default=0, help="stop after this many hours (0 = trials only)")
+    tr.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1), help="worker processes")
+    tr.add_argument("--holdout-every", type=int, default=4, help="hold out every Nth session (default 4)")
+    tr.add_argument("--sessions", nargs="*", help="only session ids containing one of these")
+    tr.add_argument("--base", help="earlier study whose recommended settings are the starting point")
+    tr.add_argument("--f1-slack", type=float, default=0.02, help="morph: allowed F1 drop vs. the start")
+    tr.add_argument("--include-bad", action="store_true", help="also use sessions marked quality=bad")
+    tp = ts.add_parser("report", help="Pareto front + held-out check + recommended settings")
+    tp.add_argument("study"); tp.add_argument("--jobs", type=int, default=4)
+    ta = ts.add_parser("apply", help="write a trial's settings to config/sites/<site>.json")
+    ta.add_argument("study"); ta.add_argument("--trial", type=int, help="default: the recommended one")
+    tn.set_defaults(func=cmd_tune)
 
     from .cli_server import add_parsers
     add_parsers(sub)

@@ -77,6 +77,13 @@ def window_starts(n: int, fs: float, window_s: float, step_s: float) -> np.ndarr
 
 def compute_quality(signals: pd.DataFrame, channels: list[str], fs: float, cfg: QualityConfig,
                     morph_band: tuple = (0.5, 8.0)) -> pd.DataFrame:
+    return label_quality(quality_metrics(signals, channels, fs, cfg, morph_band), channels, cfg)
+
+
+def quality_metrics(signals: pd.DataFrame, channels: list[str], fs: float, cfg: QualityConfig,
+                    morph_band: tuple = (0.5, 8.0)) -> pd.DataFrame:
+    """The per-window metrics only. They depend on window_s, step_s and the HR range of cfg, not on
+    its thresholds, so the tuner computes them once and re-labels them per trial."""
     n = len(signals)
     w = int(round(cfg.window_s * fs))
     starts = window_starts(n, fs, cfg.window_s, cfg.step_s)
@@ -115,6 +122,15 @@ def compute_quality(signals: pd.DataFrame, channels: list[str], fs: float, cfg: 
         if col in q:
             med = np.nanmedian(q[col])
             q[f"{ch}_amp_ratio"] = q[col] / med if med and np.isfinite(med) else np.nan
+    return q
+
+
+def label_quality(q: pd.DataFrame, channels: list[str], cfg: QualityConfig) -> pd.DataFrame:
+    """Apply cfg's thresholds to quality_metrics() output: <ch>_good/_reason, good, reason, hr_bpm."""
+    if q.empty:
+        return q
+    q = q.copy()
+    for ch in channels:
         _label(q, ch, cfg)
 
     primary = cfg.primary_channel or channels[0]

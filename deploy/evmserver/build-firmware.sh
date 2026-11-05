@@ -14,6 +14,8 @@
 #       # WIFI_EAP_DOMAIN=<RADIUS cert name>     optional pin, see README
 #       # WIFI2_SSID=<phone hotspot>  WIFI2_PASSWORD='...'   optional fallbacks, tried in order
 #       # WIFI3_SSID=<home Wi-Fi>     WIFI3_PASSWORD='...'   when the one before isn't found
+#       # WIFI3_DNS=192.168.1.99     optional per-network DNS server (also WIFI_DNS, WIFI2_DNS),
+#       #   e.g. a LAN resolver that maps the server's name to its LAN address (no NAT loopback)
 #
 # Output: ~/nbe-firmware/out/<ID>.bin (contains the node key AND your Wi-Fi password - treat
 # like a password) + flash.sh. Per-node build trees: ~/nbe-firmware/work/<ID>/.
@@ -74,7 +76,8 @@ for id in "${NODES[@]}"; do
   rm -f "$w/sdkconfig"   # regenerate from sdkconfig.defaults + sdkconfig.nbe
   NBE_WIFI_PASSWORD="$WIFI_PASSWORD" NBE_WIFI2_PASSWORD="${WIFI2_PASSWORD:-}" NBE_WIFI3_PASSWORD="${WIFI3_PASSWORD:-}" \
       python3 "$TOOL" configure "$id" --project "$w" --wifi-ssid "$WIFI_SSID" "${eap[@]}" \
-      --wifi2-ssid "${WIFI2_SSID:-}" --wifi3-ssid "${WIFI3_SSID:-}"
+      --wifi2-ssid "${WIFI2_SSID:-}" --wifi3-ssid "${WIFI3_SSID:-}" \
+      --wifi-dns "${WIFI_DNS:-}" --wifi2-dns "${WIFI2_DNS:-}" --wifi3-dns "${WIFI3_DNS:-}"
   : > "$BASE/work/$id/build.log"   # so the bar doesn't show the previous run
   # no `set-target`: it wipes build/ every time (sdkconfig.defaults already selects esp32s3)
   docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e IDF_TARGET=esp32s3 -v "$w:/project" -w /project "$IMAGE" \
@@ -82,7 +85,7 @@ for id in "${NODES[@]}"; do
   progress $! "$BASE/work/$id/build.log" "building $id" \
       || { tail -n 40 "$BASE/work/$id/build.log"; echo "build of $id failed (full log: $BASE/work/$id/build.log)"; exit 1; }
   cp "$w/build/merged-binary.bin" "$BASE/out/$id.bin"
-  grep -E '^CONFIG_PPG_(DEVICE_ID|SITE|WIFI_SSID[23]?|WIFI_AUTH_EAP|WIFI_EAP_USERNAME|MQTT_BROKER_URI)=' "$w/sdkconfig" | sed 's/^/   /'
+  grep -E '^CONFIG_PPG_(DEVICE_ID|SITE|WIFI_SSID[23]?|WIFI_DNS[23]?|WIFI_AUTH_EAP|WIFI_EAP_USERNAME|MQTT_BROKER_URI)=' "$w/sdkconfig" | sed 's/^/   /'
   echo "   -> $BASE/out/$id.bin ($(stat -c %s "$BASE/out/$id.bin") bytes, USB flash)"
   if [[ -z "${NBE_NO_UPLOAD:-}" ]]; then
     python3 "$TOOL" upload "$id" "$w/build/ppg_stream.bin" | sed 's/^/   /' \

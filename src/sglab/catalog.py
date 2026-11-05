@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import csv
 import json
+import os
+import re
+import shutil
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -88,6 +91,8 @@ CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id, stream);
 """
 
+SUBJECT_ID_RE = re.compile(r"S\d{3,}")   # S001, S002, ... – a code, never a name
+
 CORE = {"subject_id", "protocol", "trial", "quality", "operator", "notes"}
 
 
@@ -140,8 +145,59 @@ class Catalog:
 
     def next_subject_id(self) -> str:
         ids = [r["subject_id"] for r in self.q("SELECT subject_id FROM subjects")]
-        nums = [int(i[1:]) for i in ids if i[:1] == "S" and i[1:].isdigit()]
+        # count malformed ids like 'S002 - name' too, or their number gets handed out again
+        nums = [int(m.group(1)) for i in ids if (m := re.match(r"\s*S(\d+)", i or ""))]
         return f"S{(max(nums) + 1 if nums else 1):03d}"
+
+    def rename_subject(self, old: str, new: str, dry_run: bool = False) -> list[str]:
+        """Give subject `old` the id `new`: the subjects row, the catalog and every
+        session.json (metadata + subject snapshot), so a reindex keeps the new id.
+        Session ids / folder names are left alone. Returns the affected session ids."""
+        if not SUBJECT_ID_RE.fullmatch(new):
+            raise ValueError(f"{new!r} is not a subject code like S004")
+        if self.subject(old) is None:
+            raise KeyError(f"unknown subject {old!r}")
+        if self.subject(new) is not None:
+            raise ValueError(f"subject {new} already exists")
+        rows = self.q("SELECT session_id, path FROM sessions WHERE subject_id=?", (old,))
+        if dry_run:
+            return [r["session_id"] for r in rows]
+        for r in rows:
+            sj = self.data_root / r["path"] / "session.json"
+            doc = json.loads(sj.read_text())
+            doc.setdefault("metadata", {})["subject_id"] = new
+            if isinstance(doc.get("subject"), dict):
+                doc["subject"]["subject_id"] = new
+            tmp = sj.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(doc, indent=2, default=str))
+            os.replace(tmp, sj)
+        self.con.execute("UPDATE subjects SET subject_id=? WHERE subject_id=?", (new, old))
+        self.con.execute("UPDATE sessions SET subject_id=? WHERE subject_id=?", (new, old))
+        self.con.commit()
+        return [r["session_id"] for r in rows]
+
+    def delete_subject(self, sid: str, dry_run: bool = False) -> list[str]:
+        """Remove subject `sid`. Its sessions must all be discarded; their raw folders
+        move to raw/_deleted/ (reindex skips it, and it can be moved back by hand) and
+        their processed outputs are removed. Returns the affected session ids."""
+        if self.subject(sid) is None:
+            raise KeyError(f"unknown subject {sid!r}")
+        rows = self.q("SELECT session_id, path, status FROM sessions WHERE subject_id=?", (sid,))
+        if any(r["status"] != "discard" for r in rows):
+            raise ValueError(f"{sid!r} has sessions that aren't discarded – discard them or rename the subject instead")
+        if dry_run:
+            return [r["session_id"] for r in rows]
+        trash = self.data_root / "raw" / "_deleted"
+        for r in rows:
+            src = self.data_root / r["path"]
+            if src.exists():
+                trash.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(trash / src.name))
+            shutil.rmtree(self.data_root / "processed" / r["session_id"], ignore_errors=True)
+            self.con.execute("DELETE FROM sessions WHERE session_id=?", (r["session_id"],))  # cascades runs etc.
+        self.con.execute("DELETE FROM subjects WHERE subject_id=?", (sid,))
+        self.con.commit()
+        return [r["session_id"] for r in rows]
 
     def next_trial(self, subject_id: str, protocol: str) -> int:
         r = self.q("SELECT MAX(trial) AS m FROM sessions WHERE subject_id=? AND protocol=?", (subject_id, protocol))

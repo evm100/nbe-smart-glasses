@@ -344,6 +344,7 @@ class Recording:
         self.ended_at: datetime | None = None
         self.folder: Path | None = None
         self.t0_ns = 0
+        self.t0_unix = 0.0
         self.subject_snapshot: dict | None = None  # copied into session.json
 
     def now(self) -> float:
@@ -362,6 +363,7 @@ class Recording:
             except FileExistsError:
                 continue
         self.t0_ns = time.monotonic_ns()
+        self.t0_unix = time.time()
         warnings = []
         roles = set()
         for d in self.devices:
@@ -428,6 +430,7 @@ class Recording:
             "session_id": meta.get("session_id"),
             "started_at": self.started_at.isoformat(timespec="seconds"),
             "started_at_local": self.started_at.astimezone().isoformat(timespec="seconds"),
+            "t0_unix": round(self.t0_unix, 3),   # unix time of t_s = 0 (sglab.timebase)
             "ended_at": self.ended_at.isoformat(timespec="seconds") if self.ended_at else None,
             "duration_s": (self.ended_at - self.started_at).total_seconds() if self.ended_at else None,
             "metadata": {k: v for k, v in meta.items() if k not in ("session_id", "status")},

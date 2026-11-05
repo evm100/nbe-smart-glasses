@@ -1,0 +1,27 @@
+{
+  "role": "finger",
+  "targets": [
+    "sys_mmhg",
+    "dia_mmhg"
+  ],
+  "features": [
+    "hr_mean_bpm",
+    "pad_ms_rel",
+    "t_rise_s_med",
+    "pw50_s_med",
+    "max_slope_norm_med",
+    "shape_factor_med"
+  ],
+  "calibrated": true,
+  "cv": "subject",
+  "min_groups": 3,
+  "holdout_subjects": [],
+  "model": {
+    "kind": "ridge",
+    "alpha": 1.0,
+    "max_iter": 200,
+    "learning_rate": 0.05,
+    "max_depth": 3,
+    "min_samples_leaf": 5
+  }
+}

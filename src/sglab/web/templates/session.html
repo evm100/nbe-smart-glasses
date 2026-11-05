@@ -134,13 +134,19 @@ function message(div, text) {
   document.getElementById(div).innerHTML = `<div class="note" style="padding:24px">${text}</div>`;
 }
 
+// Only wipe a message; clearing a live plot's DOM leaves Plotly's state behind and react() then draws nothing.
+function clearMessage(div) {
+  const el = document.getElementById(div);
+  if (el.querySelector(':scope > .note')) el.innerHTML = '';
+}
+
 async function drawSignal() {
   const stream = document.getElementById('sig-stream').value;
   const source = document.getElementById('sig-source').value;
   const r = await fetch(`/api/sessions/${SID}/signal?stream=${encodeURIComponent(stream)}&source=${source}`);
   if (!r.ok) { message('sig', r.status === 409 ? 'Not processed yet – press “Process”, or switch to raw counts.' : 'Could not load signal.'); return; }
   const d = await r.json();
-  document.getElementById('sig').innerHTML = '';
+  clearMessage('sig');
   const shapes = eventShapes().concat(d.bad_windows.map(([a, b]) => ({
     type: 'rect', x0: a, x1: b, yref: 'paper', y0: 0, y1: 1, fillcolor: css('--bad-bg'), line: {width: 0}, layer: 'below'})));
   Plotly.react('sig', [{x: d.t, y: d.y, type: 'scattergl', mode: 'lines', name: `${stream} · ${d.channel}`,
@@ -151,7 +157,7 @@ async function drawSignal() {
 async function drawHR() {
   const items = await (await fetch(`/api/sessions/${SID}/hr`)).json();
   if (!items.length) { message('hr', 'Process the session to see beat-by-beat heart rate.'); return; }
-  document.getElementById('hr').innerHTML = '';
+  clearMessage('hr');
   const traces = [];
   for (const it of items) {
     const c = ROLE_COLOR(it.role);
@@ -182,7 +188,7 @@ function drawFeature() {
   const stream = document.getElementById('feat-stream').value;
   const f = document.getElementById('feat-name').value;
   if (!EPOCHS.rows || !EPOCHS.rows.length) { message('feat', 'No epochs (recording shorter than one 30 s epoch?).'); return; }
-  document.getElementById('feat').innerHTML = '';
+  clearMessage('feat');
   const rows = EPOCHS.rows.filter(r => r.valid);
   const bp = EVENTS.filter(e => e.kind === 'bp');
   const c = ROLE_COLOR(streamRole(stream));

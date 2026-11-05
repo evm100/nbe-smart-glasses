@@ -210,3 +210,121 @@ class Layer2Config:
     @classmethod
     def from_json(cls, path: str | Path) -> "Layer2Config":
         return cls.from_dict(json.loads(Path(path).read_text()))
+
+
+# =============================================================================
+# Layer 3: reference readings + PPG windows -> datasets
+# =============================================================================
+@dataclass
+class CuffConfig:
+    # A `bp` result belongs to the last `cuff_start` at most this long before it (repeated
+    # presses count once: the last one wins). A reading takes ~30-90 s on our cuff.
+    max_cuff_s: float = 150.0
+    # No cuff_start found: assume inflation began this long before the result.
+    default_cuff_s: float = 60.0
+    # PPG window = [cuff_start - pre_s, result + post_s]: the cuff measures during deflation,
+    # and BP moves fast after exercise, so the window hugs the measurement.
+    pre_s: float = 15.0
+    post_s: float = 0.0
+
+
+@dataclass
+class SpO2Config:
+    # A pulse-oximeter reading (`ox`) is typed after the display settles: average before it.
+    pre_s: float = 20.0
+    post_s: float = 0.0
+
+
+@dataclass
+class PulseArrivalConfig:
+    enabled: bool = True
+    # good beats of each stream are matched to this role's good beats (same heartbeat)
+    ref_role: str = "finger"
+    max_lag_s: float = 0.6      # search range for the session's typical offset
+    tol_s: float = 0.05         # a beat matches if within this of offset + reference beat
+
+
+@dataclass
+class Layer3Config:
+    cuff: CuffConfig = field(default_factory=CuffConfig)
+    spo2: SpO2Config = field(default_factory=SpO2Config)
+    pulse_arrival: PulseArrivalConfig = field(default_factory=PulseArrivalConfig)
+    # a row is `valid` with at least this many good beats in its window
+    min_good_beats: int = 10
+
+    to_dict = Layer1Config.to_dict
+    to_json = Layer1Config.to_json
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Layer3Config":
+        return _build(cls, d or {})
+
+    @classmethod
+    def from_json(cls, path: str | Path) -> "Layer3Config":
+        return cls.from_dict(json.loads(Path(path).read_text()))
+
+
+# =============================================================================
+# Layer 4: models on a Layer-3 dataset
+# =============================================================================
+@dataclass
+class ModelConfig:
+    kind: str = "ridge"          # "ridge" (linear, few rows) | "hgb" (gradient boosting, hundreds+)
+    alpha: float = 1.0           # ridge: L2 strength on standardised features
+    max_iter: int = 200          # hgb: boosting rounds
+    learning_rate: float = 0.05  # hgb
+    max_depth: int = 3           # hgb
+    min_samples_leaf: int = 5    # hgb
+
+
+@dataclass
+class Layer4Config:
+    role: str = "finger"                       # one model per site
+    targets: tuple = ("sys_mmhg", "dia_mmhg")
+    features: tuple = ("hr_mean_bpm", "pad_ms_rel", "t_rise_s_med", "pw50_s_med",
+                       "max_slope_norm_med", "shape_factor_med")
+    # Calibrated: the first valid reading of each session is the calibration; the model
+    # predicts changes from it (target and features minus the calibration row's).
+    calibrated: bool = True
+    # Folds are whole subjects ("subject") or whole sessions ("session"). With fewer than
+    # min_groups subjects, "subject" falls back to "session" and the metrics say so.
+    cv: str = "subject"
+    min_groups: int = 3
+    # Never used for CV or tuning: scored once by the model fitted on everything else.
+    holdout_subjects: tuple = ()
+    model: ModelConfig = field(default_factory=ModelConfig)
+
+    to_dict = Layer1Config.to_dict
+    to_json = Layer1Config.to_json
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Layer4Config":
+        return _build(cls, d or {})
+
+    @classmethod
+    def from_json(cls, path: str | Path) -> "Layer4Config":
+        return cls.from_dict(json.loads(Path(path).read_text()))
+
+
+# =============================================================================
+# Partial overrides (per-site configs, tuner trials)
+# =============================================================================
+def deep_merge(base: dict, over: dict) -> dict:
+    """Copy of base with over's values on top; nested dicts merge, everything else is replaced."""
+    out = dict(base)
+    for k, v in (over or {}).items():
+        out[k] = deep_merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+def with_overrides(cfg, over: dict | None):
+    """cfg (Layer1Config / Layer2Config) with a partial dict applied, e.g. {"quality": {"min_skew": -1}}."""
+    return cfg if not over else type(cfg).from_dict(deep_merge(cfg.to_dict(), over))
+
+
+def set_path(d: dict, path: str, value) -> None:
+    """Set a dotted path in a nested dict, creating levels as needed: set_path(d, "quality.min_skew", -1)."""
+    *head, last = path.split(".")
+    for k in head:
+        d = d.setdefault(k, {})
+    d[last] = value

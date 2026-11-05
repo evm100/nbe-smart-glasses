@@ -33,6 +33,7 @@ static wifi_ap_record_t s_scan[20];
 // Saved networks in order of preference; an empty SSID = not configured. Only #1 can be PEAP.
 static const char *const s_ssid[] = {CONFIG_PPG_WIFI_SSID, CONFIG_PPG_WIFI_SSID2, CONFIG_PPG_WIFI_SSID3};
 static const char *const s_pass[] = {CONFIG_PPG_WIFI_PASSWORD, CONFIG_PPG_WIFI_PASSWORD2, CONFIG_PPG_WIFI_PASSWORD3};
+static const char *const s_dns[] = {CONFIG_PPG_WIFI_DNS, CONFIG_PPG_WIFI_DNS2, CONFIG_PPG_WIFI_DNS3};  // "" = DHCP's
 #define NET_N_APS ((int)(sizeof s_ssid / sizeof s_ssid[0]))
 static int s_ap;          // network being tried / in use
 static int s_ap_fails;    // failed attempts on it since it was chosen
@@ -117,6 +118,30 @@ static void log_scan(void)
     }
 }
 
+// The current network's own DNS server (if set) becomes the main one, DHCP's is kept as backup.
+// Also run from net_watchdog(): a DHCP lease renewal writes the router's server back.
+static void apply_dns(bool log)
+{
+    const char *want = s_dns[s_ap];
+    if (!want[0]) return;
+    esp_netif_dns_info_t d = {0}, cur = {0};
+    if (esp_netif_str_to_ip4(want, &d.ip.u_addr.ip4) != ESP_OK) {
+        if (log) ESP_LOGE(TAG, "DNS server \"%s\" for \"%s\" is not an IPv4 address - using DHCP's", want, s_ssid[s_ap]);
+        return;
+    }
+    d.ip.type = ESP_IPADDR_TYPE_V4;
+    if (esp_netif_get_dns_info(s_netif, ESP_NETIF_DNS_MAIN, &cur) == ESP_OK && cur.ip.type == ESP_IPADDR_TYPE_V4 &&
+        cur.ip.u_addr.ip4.addr == d.ip.u_addr.ip4.addr) {
+        return;  // already in place
+    }
+    if (cur.ip.type == ESP_IPADDR_TYPE_V4 && cur.ip.u_addr.ip4.addr) {
+        esp_netif_set_dns_info(s_netif, ESP_NETIF_DNS_BACKUP, &cur);
+    }
+    esp_err_t err = esp_netif_set_dns_info(s_netif, ESP_NETIF_DNS_MAIN, &d);
+    if (err != ESP_OK) ESP_LOGW(TAG, "DNS server %s not set: %s", want, esp_err_to_name(err));
+    else ESP_LOGI(TAG, "DNS server %s (DHCP's " IPSTR " as backup)", want, IP2STR(&cur.ip.u_addr.ip4));
+}
+
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
@@ -144,6 +169,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_backoff_ms = 500;
         s_fails = 0;
         s_ap_fails = 0;  // after a drop, this network gets the first tries again
+        apply_dns(true);  // before on_ip: MQTT looks up the broker right away
         if (s_on_ip) s_on_ip();
     }
 }
@@ -216,7 +242,15 @@ void net_watchdog(void)
     // The retry chain is event driven: a disconnect schedules retry_connect(), whose connect
     // attempt ends in the next GOT_IP or DISCONNECTED event. If an esp_wifi_connect() fails
     // without an event (driver busy, EAP state machine wedged...), nothing would ever retry.
-    if (s_has_ip) return;
+    if (s_has_ip) {
+        static int64_t last_dns_check_us;
+        int64_t t = esp_timer_get_time();
+        if (t - last_dns_check_us > 5 * 1000000LL) {  // DHCP renewals are minutes apart
+            last_dns_check_us = t;
+            apply_dns(false);
+        }
+        return;
+    }
     int64_t now = esp_timer_get_time();
     if (now - s_last_progress_us < NET_STUCK_US) return;
     s_last_progress_us = now;

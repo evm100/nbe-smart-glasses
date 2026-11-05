@@ -12,13 +12,16 @@ Module layout
     app.py       factory, auth middleware, browsing + processing routes
     trials.py    devices page, trial pages and trial API
     admin.py     login/logout, account, users, nodes (registration, credentials), audit
+    models.py    Models page (Layer 4): datasets, model runs, train / sweep
     security.py  identity, roles, CSRF origin check, login rate limiting
 """
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 import time
+import urllib.parse
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +41,7 @@ from ..firmware import FirmwareStore
 from ..jobs import JobQueue
 from ..nodes import NodeRegistry
 from ..settings import Settings, load_settings
+from ..timebase import device_clock, read_events, run_clock, session_clocks, session_t0_unix
 from . import security as sec
 
 HERE = Path(__file__).parent
@@ -83,6 +87,7 @@ class Ctx:
     processing: dict = field(default_factory=dict)  # session_id -> state (local mode)
     jobs: JobQueue | None = None                    # remote mode: queue for `sglab worker`
     workers_seen: dict = field(default_factory=dict)  # worker name -> time.time() of its last poll
+    model_tasks: list = field(default_factory=list)   # Models page: dataset builds, trainings, local sweeps
 
     def cat(self) -> Catalog:
         return Catalog(self.settings.db_path, self.settings.data_root)
@@ -131,6 +136,52 @@ class Ctx:
                 c.close()
 
         threading.Thread(target=job, daemon=True).start()
+
+    def start_processing_many(self, sids: list[str]):
+        """Queue several sessions (remote mode), or process them one after another in one thread."""
+        if self.jobs is not None:
+            for sid in sids:
+                self.jobs.enqueue(sid)
+            return
+        for sid in sids:
+            self.processing[sid] = "queued"
+
+        def job():
+            from ..processing import process_session
+            c = self.cat()
+            try:
+                for sid in sids:
+                    if self.processing.get(sid) != "queued":  # cancelled meanwhile
+                        continue
+                    self.processing[sid] = "running"
+                    try:
+                        process_session(self.settings, c, sid, log=lambda *_: None)
+                        self.processing[sid] = "done"
+                    except Exception as e:  # pragma: no cover
+                        self.processing[sid] = f"error: {e}"
+            finally:
+                c.close()
+
+        threading.Thread(target=job, daemon=True).start()
+
+    def cancel_processing(self) -> int:
+        """Drop queued processing; in remote mode running jobs too (their workers stop after the
+        current stream). Local mode can't interrupt the session being processed."""
+        if self.jobs is not None:
+            ids = self.jobs.cancel("process")
+            for jid in ids:
+                shutil.rmtree(self.settings.processed_dir / "_staging" / str(jid), ignore_errors=True)
+            return len(ids)
+        sids = [sid for sid, st in self.processing.items() if st == "queued"]
+        for sid in sids:
+            self.processing.pop(sid, None)
+        return len(sids)
+
+    def processing_counts(self) -> dict:
+        if self.jobs is not None:
+            return self.jobs.counts("process")
+        sts = list(self.processing.values())
+        return {"queued": sts.count("queued"), "running": sts.count("running")}
 
 
 def create_app(settings: Settings | None = None, token: str | None = None, hub=None) -> FastAPI:
@@ -232,6 +283,13 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
     def session_doc(s: dict) -> dict:
         return json.loads((settings.data_root / s["path"] / "session.json").read_text())
 
+    def clock_for(s: dict, r: dict) -> tuple[float, float]:
+        """(t0, k) for a run: session time = t0 + k * pipeline time (see sglab.timebase)."""
+        doc, t0_unix = session_clocks(settings.data_root / s["path"])
+        st = next((x for x in doc.get("streams", []) if x.get("stream") == r["stream"]), {})
+        t0, k, _ = run_clock(st, r["summary"], t0_unix)
+        return t0, k
+
     def run_for(s: dict, stream: str) -> dict | None:
         for r in s["runs"]:
             if r["stream"] == stream and r["status"] == "ok":
@@ -245,7 +303,7 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request, subject: str | None = None, protocol: str | None = None, all: bool = False,
-              mine: bool = False, user=viewer):
+              mine: bool = False, queued: int | None = None, user=viewer):
         c = ctx.cat()
         try:
             rows = c.sessions(subject or None, protocol or None, include_discarded=all)
@@ -257,7 +315,33 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
             rows = [r for r in rows if r.get("operator") == user["username"]]
         return ctx.render(request, "index.html", {
             "rows": rows, "subjects": subjects, "protocols": protocols,
-            "f_subject": subject or "", "f_protocol": protocol or "", "f_all": all, "f_mine": mine})
+            "f_subject": subject or "", "f_protocol": protocol or "", "f_all": all, "f_mine": mine,
+            "queued": queued, "remote": ctx.jobs is not None, "counts": ctx.processing_counts(),
+            "cancelled": request.query_params.get("cancelled")})
+
+    @app.post("/sessions/process-all")
+    async def process_all(request: Request, user=Depends(sec.require("operator"))):
+        """Process (new/changed streams only) every non-discarded session matching the list's filters."""
+        f = await request.form()
+        subject, protocol = f.get("subject", ""), f.get("protocol", "")
+        c = ctx.cat()
+        try:
+            sids = [r["session_id"] for r in c.sessions(subject or None, protocol or None)
+                    if r["status"] != "recording"]
+        finally:
+            c.close()
+        ctx.start_processing_many(sids)
+        ctx.audit(request, "session.process_all", "", {"subject": subject, "protocol": protocol, "n": len(sids)})
+        q = urllib.parse.urlencode({k: v for k, v in
+                                    {"subject": subject, "protocol": protocol, "queued": len(sids)}.items() if v != ""})
+        return RedirectResponse(f"/?{q}", status_code=303)
+
+    @app.post("/sessions/cancel-processing")
+    def cancel_processing(request: Request, user=Depends(sec.require("operator"))):
+        """Empty the processing queue and stop running processing jobs (not Layer-4 sweeps)."""
+        n = ctx.cancel_processing()
+        ctx.audit(request, "session.cancel_processing", "", {"n": n})
+        return RedirectResponse(f"/?cancelled={n}", status_code=303)
 
     @app.get("/subjects", response_class=HTMLResponse)
     def subjects_page(request: Request, user=viewer):
@@ -300,10 +384,10 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
 
     @app.get("/files/{path:path}")
     def files(path: str, user=viewer):
-        # only recordings and processing outputs; never the catalog DB, PKI or state files
+        # only recordings, processing outputs and model runs; never the catalog DB, PKI or state files
         root = settings.data_root.resolve()
         p = (root / path).resolve()
-        if not any(d in p.parents for d in (root / "raw", root / "processed")) or not p.is_file():
+        if not any(d in p.parents for d in (root / "raw", root / "processed", root / "models")) or not p.is_file():
             raise HTTPException(404)
         return FileResponse(p)
 
@@ -345,15 +429,15 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
             out = settings.data_root / r["out_dir"]
             stem = r["summary"]["stem"]
             sig = pd.read_csv(out / f"{stem}_signals.csv", usecols=["t", f"{ch}_ac_norm"])
-            t0 = r["summary"].get("t0_session_s") or 0.0
-            t = sig["t"].to_numpy() + t0
+            t0, k = clock_for(s, r)
+            t = t0 + k * sig["t"].to_numpy()
             y = sig[f"{ch}_ac_norm"].to_numpy() * 100
             qp = out / f"{stem}_quality.csv"
             if qp.exists():
                 q = pd.read_csv(qp)
                 if "good" in q:
                     b = q[~q["good"].astype(bool)]
-                    for a, e in zip(b["t_start"] + t0, b["t_end"] + t0):  # merge overlapping windows
+                    for a, e in zip(t0 + k * b["t_start"], t0 + k * b["t_end"]):  # merge overlapping windows
                         if bad and a <= bad[-1][1]:
                             bad[-1][1] = max(bad[-1][1], float(e))
                         else:
@@ -361,9 +445,9 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
             unit = "AC/DC (%)"
         else:
             df = pd.read_csv(settings.data_root / s["path"] / st["file"])
-            fit = st.get("clock_fit")
+            fit = device_clock(st, session_t0_unix(doc, read_events(settings.data_root / s["path"])))
             if fit and "t_dev_us" in df:
-                t = fit["a"] + fit["b"] * df["t_dev_us"].to_numpy() / 1e6
+                t = fit[0] + fit[1] * df["t_dev_us"].to_numpy() / 1e6
             else:
                 t = df["t_s"].to_numpy() if "t_s" in df else np.arange(len(df)) / float(st.get("fs") or 100)
             y = df[ch].to_numpy(dtype=float)
@@ -381,20 +465,20 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
             if r is None:
                 continue
             d = settings.data_root / r["out_dir"]
-            stem, t0 = r["summary"]["stem"], r["summary"].get("t0_session_s") or 0.0
+            stem, (t0, k) = r["summary"]["stem"], clock_for(s, r)
             item = {"stream": st["stream"], "role": st["role"], "beats_t": [], "beats_hr": [], "epoch_t": [], "epoch_hr": []}
             bp = d / f"{stem}_beats.csv"
             if bp.exists():
                 b = pd.read_csv(bp)
                 if len(b):
                     b = b[b["beat_good"].astype(bool)]
-                    item["beats_t"], item["beats_hr"] = _clean(b["t_foot"] + t0), _clean(b["hr_bpm"])
+                    item["beats_t"], item["beats_hr"] = _clean(t0 + k * b["t_foot"]), _clean(b["hr_bpm"])
             ep = d / f"{stem}_epochs.csv"
             if ep.exists():
                 e = pd.read_csv(ep)
                 if len(e):
                     e = e[e["valid"].astype(bool)]
-                    item["epoch_t"], item["epoch_hr"] = _clean(e["t_center"] + t0), _clean(e["hr_mean_bpm"])
+                    item["epoch_t"], item["epoch_hr"] = _clean(t0 + k * e["t_center"]), _clean(e["hr_mean_bpm"])
             out.append(item)
         return out
 
@@ -408,18 +492,20 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
         if not p.exists():
             return {"columns": [], "rows": []}
         e = pd.read_csv(p)
-        t0 = r["summary"].get("t0_session_s") or 0.0
+        t0, k = clock_for(s, r)
         for c in ("t_start", "t_end", "t_center"):
             if c in e:
-                e[c] = e[c] + t0
+                e[c] = t0 + k * e[c]
         e = e.replace([np.inf, -np.inf], np.nan).astype(object).where(e.notna(), None)
         return {"columns": list(e.columns), "rows": e.to_dict(orient="records"),
                 "features": [c[:-4] for c in e.columns if c.endswith("_med")]}
 
     from .admin import router as admin_router
+    from .models import router as models_router
     from .trials import router as trials_router
     from .worker import router as worker_router
     app.include_router(trials_router)
     app.include_router(admin_router)
     app.include_router(worker_router)
+    app.include_router(models_router)
     return app

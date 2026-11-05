@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}Models · NBE PPG lab{% endblock %}
+{% block head %}<script src="/static/plotly.min.js"></script>
+<style>
+.verdict { display: flex; gap: 6px; align-items: center; }
+.pill.same::before { content: "▲ "; color: var(--warn); }
+details.guide summary { cursor: pointer; font-weight: 600; }
+details.guide dl.kv { margin-top: 10px; }
+details.guide dd { color: var(--text-2); }
+.mae { font-variant-numeric: tabular-nums; }
+.mae small { color: var(--muted); }
+</style>{% endblock %}
+{% block content %}
+<h1>Models</h1>
+<div class="sub">Layer 4: blood pressure from the PPG, scored only on people (or sessions) the model never saw.</div>
+
+{% if msg == 'sweep' %}<div class="warn">Sweep {% if remote %}queued for the processing worker{% else %}started{% endif %}. Reload this page to follow it.</div>
+{% elif msg == 'train' %}<div class="warn">Training started; it takes a few seconds. Reload to see the run.</div>
+{% elif msg == 'dataset' %}<div class="warn">Rebuilding the dataset from the processed sessions. Reload in a moment.</div>{% endif %}
+
+<details class="card guide" {% if not rows %}open{% endif %}>
+<summary>How to read these results</summary>
+<dl class="kv">
+  <dt>MAE</dt><dd>Mean absolute error: how far off a prediction is on average, in mmHg, ignoring whether it is too high or too low. Lower is better. A cuff itself is typically within ~5 mmHg of an arterial line.</dd>
+  <dt>Baseline</dt><dd>The simple guess the model has to beat. Calibrated runs (the default): “BP stays at the session's first cuff reading”. Otherwise: “everyone has the average BP”. A model that doesn't beat it has learned nothing useful, however small its MAE looks.</dd>
+  <dt>Bias ± SD</dt><dd>Average signed error (does it read high or low?) and how much the errors scatter. The AAMI standard for BP devices asks for bias within ±5 and SD ≤ 8 mmHg, on 85+ people.</dd>
+  <dt>r change</dt><dd>Does the predicted change from the calibration go up and down with the measured one? 1 = follows perfectly, 0 = no relation. This is the number to watch for cold-pressor / exercise sessions.</dd>
+  <dt>Folds</dt><dd>Each prediction comes from a model trained without that subject (or that session, while there is only one subject). That is what makes the scores honest: a model always looks great on the data it was fitted to.</dd>
+  <dt>Holdout</dt><dd>Subjects locked away from all training and tuning (<code>holdout_subjects</code> in the settings), scored once at the end. Worth setting once there are ~10 subjects.</dd>
+  <dt>Sweep</dt><dd>Tries many model settings and feature sets and keeps the best. The best of many always looks a bit lucky, so a sweep also reports a <b>nested</b> score: the whole search repeated without each subject, its winner scored on them. Trust the nested number.</dd>
+</dl>
+</details>
+
+<div class="grid2" style="margin-top:16px">
+<div class="card">
+  <h2 style="margin-top:0">Dataset</h2>
+  {% set ds = datasets | selectattr('name', 'equalto', 'bp') | list %}
+  {% if ds %}{% set d = ds[0] %}
+    <div class="note">built {{ d.built_at[:16] | replace('T', ' ') }} UTC</div>
+    {% set k = (d.summary.kinds or {}).get('bp') %}
+    {% if k %}
+    <table style="margin-top:8px"><thead><tr><th>Site</th><th class="num">Usable readings</th><th class="num">of</th><th class="num">Subjects</th><th class="num">Sessions</th></tr></thead>
+    <tbody>{% for role, r in k.roles.items() %}<tr><td>{{ role }}</td><td class="num">{{ r.valid }}</td><td class="num">{{ r.rows }}</td><td class="num">{{ r.subjects }}</td><td class="num">{{ r.sessions }}</td></tr>{% endfor %}</tbody></table>
+    {% else %}<p class="note">No cuff readings in it yet.</p>{% endif %}
+  {% else %}<p class="note">Not built yet.</p>{% endif %}
+  {% if is_operator %}
+  <form method="post" action="/models/dataset" style="margin-top:12px"><button>Rebuild from processed sessions</button></form>
+  <p class="note">Process new sessions first (Sessions → Process all), then rebuild, then train.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Train</h2>
+  <p class="note">Settings: <code>config/pipeline_layer4.json</code> — {{ cfg.role }}, {{ cfg.model.kind }}, {{ 'calibrated' if cfg.calibrated else 'not calibrated' }}, features: {{ cfg.features | join(', ') }}.</p>
+  {% if is_operator %}
+  <form method="post" action="/models/train"><button class="primary">Train with these settings</button></form>
+  <h2>Sweep</h2>
+  <p class="note">Searches model kind, settings and which of {{ spec.features | length }} features to use{% if remote %}; runs on the processing worker{% endif %}. Each trial is quick; the nested check repeats the search once per subject, so 60 trials with 10 subjects is ~660 trials.</p>
+  <form method="post" action="/models/sweep" class="row-inline">
+    <label>site <select name="role">{% for r in ['finger', 'glasses', 'head'] %}<option {% if r == cfg.role %}selected{% endif %}>{{ r }}</option>{% endfor %}</select></label>
+    <label>trials <input type="number" name="trials" value="{{ spec.trials }}" min="5" max="500"></label>
+    <button class="primary">Start sweep</button>
+  </form>
+  {% endif %}
+</div>
+</div>
+
+{% if jobs %}
+<h2>Jobs</h2>
+<div class="card scroll"><table>
+<thead><tr><th>What</th><th>State</th><th>Progress</th><th>Started (UTC)</th><th>Error</th></tr></thead>
+<tbody>{% for j in jobs %}<tr>
+  <td>{{ j.what }}</td><td>{{ j.state }}</td>
+  <td>{% if j.link %}<a href="{{ j.link }}">{{ j.progress or 'open' }}</a>{% else %}{{ j.progress or '' }}{% endif %}</td>
+  <td>{{ (j.started or '')[:16] | replace('T', ' ') }}</td><td style="white-space:normal">{{ j.error or '' }}</td></tr>{% endfor %}</tbody>
+</table></div>
+{% endif %}
+
+{% if history %}
+<h2>Scores over time</h2>
+<div class="card">
+  <div class="note">Cross-validated MAE of every run, oldest left. Solid: model. Dotted: its baseline. Diamonds: a sweep's nested (honest) score. Progress = the solid line dropping below the dotted one.</div>
+  <div id="hist" class="plot" style="height:320px"></div>
+</div>
+{% endif %}
+
+<h2>Runs</h2>
+<div class="card scroll"><table>
+<thead><tr><th>Run</th><th>Trained (UTC)</th><th>Site</th><th>Model</th><th>Validation</th><th class="num">Readings</th>
+  <th>Systolic MAE <small>(baseline)</small></th><th>Diastolic MAE <small>(baseline)</small></th></tr></thead>
+<tbody>
+{% for r in rows %}{% set m = r.m %}
+<tr>
+  <td><a href="/models/{{ m.name }}/{{ m.run_id }}">{{ m.name }}</a> <span class="note">{{ m.run_id }}</span></td>
+  <td>{{ m.trained_at[:16] | replace('T', ' ') }}</td><td>{{ m.role }}</td>
+  <td>{{ m.model }}{% if m.sweep %} <span class="pill">sweep</span>{% endif %}</td>
+  <td>{{ m.n_folds }} {{ m.cv_unit }}s</td><td class="num">{{ m.n_dev }}</td>
+  {% for t in r.x.targets %}
+  <td class="mae"><span class="pill {{ t.verdict }}">{{ '%.1f' % t.mae }}</span> <small>({{ '%.1f' % t.base_mae }})</small></td>
+  {% endfor %}
+</tr>
+{% else %}
+<tr><td colspan="8" class="note">No runs yet: build the dataset, then Train or Sweep (or <code>sglab model train</code>).</td></tr>
+{% endfor %}
+</tbody></table></div>
+
+{% if history %}
+<script>
+const H = {{ history | tojson }};
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const x = H.map((h, i) => i + 1);
+const label = H.map(h => `${h.name}<br>${h.run_id}`);
+const traces = [];
+[['sys_mmhg', 'systolic', '--s1'], ['dia_mmhg', 'diastolic', '--s2']].forEach(([t, name, col]) => {
+  traces.push({x, y: H.map(h => h[`${t}_model`]), text: label, name: `${name} model`, mode: 'lines+markers',
+               line: {color: css(col), width: 2}, hovertemplate: '%{text}<br>%{y:.1f} mmHg<extra>%{fullData.name}</extra>'});
+  traces.push({x, y: H.map(h => h[`${t}_baseline`]), text: label, name: `${name} baseline`, mode: 'lines',
+               line: {color: css(col), width: 1.5, dash: 'dot'}, hovertemplate: '%{text}<br>%{y:.1f} mmHg<extra>%{fullData.name}</extra>'});
+  if (H.some(h => h[`${t}_nested`] != null))
+    traces.push({x, y: H.map(h => h[`${t}_nested`] ?? null), text: label, name: `${name} nested`, mode: 'markers',
+                 marker: {color: css(col), symbol: 'diamond', size: 10}, hovertemplate: '%{text}<br>%{y:.1f} mmHg<extra>%{fullData.name}</extra>'});
+});
+Plotly.newPlot('hist', traces, {
+  paper_bgcolor: css('--surface'), plot_bgcolor: css('--surface'),
+  font: {color: css('--text-2'), size: 12, family: 'system-ui, sans-serif'},
+  margin: {l: 50, r: 16, t: 10, b: 40}, legend: {orientation: 'h', y: 1.12, x: 1, xanchor: 'right'},
+  xaxis: {title: 'run', dtick: 1, gridcolor: css('--grid'), zeroline: false, linecolor: css('--border')},
+  yaxis: {title: 'MAE (mmHg)', rangemode: 'tozero', gridcolor: css('--grid'), zeroline: false, linecolor: css('--border')},
+}, {responsive: true, displaylogo: false});
+</script>
+{% endif %}
+{% endblock %}

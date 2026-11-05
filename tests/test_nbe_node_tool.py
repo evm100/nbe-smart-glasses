@@ -111,6 +111,19 @@ def test_tool_login_register_configure(live_server, tmp_path, monkeypatch, capsy
     sdk = (proj / "sdkconfig").read_text()
     assert 'CONFIG_PPG_WIFI_SSID2="Lab Hotspot"' in sdk and 'CONFIG_PPG_WIFI_PASSWORD2="hotspot-pw"' in sdk
     assert 'CONFIG_PPG_WIFI_SSID3=""' in sdk and 'CONFIG_PPG_WIFI_PASSWORD3=""' in sdk
+
+    # per-network DNS: set, kept on the next run, dropped with its network, bad address refused
+    assert t.main(["configure", "FNG07", "--project", str(proj), "--wifi-ssid", "UCSD-PROTECTED",
+                   "--wifi-eap-user", "jdoe", "--wifi2-dns", "192.168.1.99", "--wifi3-dns", "10.0.0.1"]) == 0
+    sdk = (proj / "sdkconfig").read_text()
+    assert 'CONFIG_PPG_WIFI_DNS=""' in sdk and 'CONFIG_PPG_WIFI_DNS2="192.168.1.99"' in sdk
+    assert 'CONFIG_PPG_WIFI_DNS3=""' in sdk  # network 3 is not configured
+    assert t.main(["configure", "FNG07", "--project", str(proj), "--wifi-ssid", "UCSD-PROTECTED",
+                   "--wifi-eap-user", "jdoe"]) == 0
+    assert 'CONFIG_PPG_WIFI_DNS2="192.168.1.99"' in (proj / "sdkconfig").read_text()
+    assert t.main(["configure", "FNG07", "--project", str(proj), "--wifi-ssid", "UCSD-PROTECTED",
+                   "--wifi-eap-user", "jdoe", "--wifi-dns", "my-router"]) == 1
+    assert "IPv4" in capsys.readouterr().err
     monkeypatch.delenv("NBE_WIFI_PASSWORD")
 
     # unknown node without --register -> clear error

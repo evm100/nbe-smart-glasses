@@ -92,7 +92,7 @@ menu "PPG stream (MAX30102)"
     menu "Sensor"
         choice PPG_LED_MODE
             prompt "LED mode"
-            default PPG_LED_MODE_SPO2
+            default PPG_LED_MODE_HR
             config PPG_LED_MODE_SPO2
                 bool "SpO2 mode: red + IR (channels ir|red)"
             config PPG_LED_MODE_HR
@@ -101,7 +101,7 @@ menu "PPG stream (MAX30102)"
 
         choice PPG_SAMPLE_RATE
             prompt "Sensor sample rate (samples/s, before averaging)"
-            default PPG_SR_400
+            default PPG_SR_1000
             help
                 The output rate sent to the PC is (sample rate / averaging).
                 Not every rate works with every pulse width (each sample needs time
@@ -139,7 +139,7 @@ menu "PPG stream (MAX30102)"
 
         choice PPG_SAMPLE_AVG
             prompt "On-chip sample averaging"
-            default PPG_AVG_1
+            default PPG_AVG_8
             help
                 Averages N samples inside the sensor (less noise, lower output rate).
             config PPG_AVG_1
@@ -211,7 +211,7 @@ menu "PPG stream (MAX30102)"
         config PPG_LED_RED_MA_X10
             int "Red LED current (units of 0.1 mA, 0-510)"
             range 0 510
-            default 64
+            default 510
             help
                 64 = 6.4 mA. The sensor's step is 0.2 mA, so the value is rounded to
                 an even number. Raise it for weak signals (glasses), lower it if the raw
@@ -285,6 +285,14 @@ menu "PPG stream (MAX30102)"
                 help
                     Empty = open network. Kept only in sdkconfig / sdkconfig.nbe (not committed).
 
+            config PPG_WIFI_DNS
+                string "Network 1: DNS server (empty = the one DHCP gives)"
+                default ""
+                help
+                    IPv4 address, e.g. 192.168.1.99. Used instead of the DHCP one, only on this
+                    network: a local resolver that answers the server's name with its LAN address
+                    gets around routers that don't do NAT loopback (hairpinning).
+
             config PPG_WIFI_EAP_IDENTITY
                 string "EAP outer identity"
                 default "anonymous"
@@ -322,6 +330,14 @@ menu "PPG stream (MAX30102)"
                 string "Fallback network 2: password (empty = open)"
                 default ""
 
+            config PPG_WIFI_DNS2
+                string "Fallback network 2: DNS server (empty = the one DHCP gives)"
+                default ""
+                help
+                    IPv4 address, e.g. 192.168.1.99. Used instead of the DHCP one, only on this
+                    network: a local resolver that answers the server's name with its LAN address
+                    gets around routers that don't do NAT loopback (hairpinning).
+
             config PPG_WIFI_SSID3
                 string "Fallback network 3: SSID (empty = none)"
                 default ""
@@ -329,6 +345,14 @@ menu "PPG stream (MAX30102)"
             config PPG_WIFI_PASSWORD3
                 string "Fallback network 3: password (empty = open)"
                 default ""
+
+            config PPG_WIFI_DNS3
+                string "Fallback network 3: DNS server (empty = the one DHCP gives)"
+                default ""
+                help
+                    IPv4 address, e.g. 192.168.1.99. Used instead of the DHCP one, only on this
+                    network: a local resolver that answers the server's name with its LAN address
+                    gets around routers that don't do NAT loopback (hairpinning).
 
             config PPG_WIFI_POWER_SAVE
                 bool "Wi-Fi modem sleep (saves power, adds latency / stalls)"

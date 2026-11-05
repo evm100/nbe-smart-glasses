@@ -49,7 +49,7 @@
     {% if f.type == 'subject' %}
     <fieldset id="new-subject" style="display:none">
       <legend>New subject (de-identified – no names)</legend>
-      <div class="field"><label>Subject ID *</label><input type="text" name="new_subject_id" value="{{ next_subject_id }}"></div>
+      <div class="field"><label>Subject ID *</label><input type="text" name="new_subject_id" value="{{ next_subject_id }}" pattern="S[0-9]{3,}" title="a code like {{ next_subject_id }} – no names"></div>
       {% for sf in subject_fields %}
       <div class="field"><label>{{ sf.prompt.strip() }}</label>
         {% if sf.choices %}<select name="subj_{{ sf.name }}">{% for o in sf.choices %}<option {% if o == 'na' %}selected{% endif %}>{{ o }}</option>{% endfor %}</select>

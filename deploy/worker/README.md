@@ -6,7 +6,7 @@ catalog, processing results, the device CA, OTA images, the web UI and the broke
 
 ```
                        evmserver (nbe.evm100.org)                        nbe-proc LXC (Debian 13)
-browsers ──https──▶ nginx ─▶ sglab ─▶ /srv/nbe/ppg-data   ◀──https──  sglab worker ×N   (Layers 1-2)
+browsers ──https──▶ nginx ─▶ sglab ─▶ /srv/nbe/ppg-data   ◀──https──  sglab worker ×N   (Layers 1-2, Layer-4 sweeps)
                               │  jobs table (queue)         claim, raw CSV down, outputs up
                               └─ /srv/nbe/pki/firmware    ◀──https──  build-firmware.sh (ESP-IDF in Docker)
                                     (OTA images)            nbe_node.py configure / upload
@@ -74,6 +74,15 @@ Watch it:
 journalctl -fu 'nbe-worker@*'                 # in the LXC
 nbe jobs                                      # on evmserver: queue, states, which worker
 ```
+
+More jobs at once: each `nbe-worker@N` runs one session at a time, single-threaded, so set
+`WORKERS` to about the LXC's core count (`nproc`) and re-run the setup script, e.g.
+`WORKERS=20 NBE_WORKER_TOKEN=nbe_... setup-worker.sh`. Or add instances directly:
+`systemctl enable --now nbe-worker@{3..20}`.
+
+Stop processing: **Cancel processing** on the Sessions page (or `nbe jobs --cancel` on evmserver)
+drops the queue and cancels running jobs. Their workers stop after the current stream. Layer-4
+sweeps are left alone.
 
 Test: open any session → **Re-process** (admin). The page shows *running on nbe-proc-1*, and then
 the results.

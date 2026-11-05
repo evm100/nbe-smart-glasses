@@ -1,0 +1,74 @@
+{
+  "trials": 60,
+  "nested": true,
+  "seed": 0,
+  "features": [
+    "hr_mean_bpm",
+    "pad_ms_rel",
+    "t_rise_s_med",
+    "t_max_slope_s_med",
+    "pw25_s_med",
+    "pw50_s_med",
+    "pw75_s_med",
+    "max_slope_norm_med",
+    "shape_factor_med",
+    "sys_frac_med",
+    "notch_rel_med",
+    "ipa_med",
+    "agi_med",
+    "sdnn_ms",
+    "rmssd_ms"
+  ],
+  "space": [
+    [
+      "model.kind",
+      "categorical",
+      [
+        "ridge",
+        "hgb"
+      ]
+    ],
+    [
+      "model.alpha",
+      "float",
+      [
+        0.01,
+        100,
+        "log"
+      ]
+    ],
+    [
+      "model.learning_rate",
+      "float",
+      [
+        0.01,
+        0.3,
+        "log"
+      ]
+    ],
+    [
+      "model.max_iter",
+      "int",
+      [
+        50,
+        400
+      ]
+    ],
+    [
+      "model.max_depth",
+      "int",
+      [
+        2,
+        5
+      ]
+    ],
+    [
+      "model.min_samples_leaf",
+      "int",
+      [
+        3,
+        20
+      ]
+    ]
+  ]
+}

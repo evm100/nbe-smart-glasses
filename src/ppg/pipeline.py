@@ -114,17 +114,31 @@ def condition_channel(raw: np.ndarray, fs: float, cfg: Layer1Config) -> dict[str
 def run_layer1(df: pd.DataFrame, cfg: Layer1Config | None = None) -> Layer1Result:
     """Run Layer 1 on an already-loaded DataFrame (``t`` + channel columns)."""
     cfg = cfg or Layer1Config()
-    channels = df.attrs.get("channels") or [c for c in df.columns if c != "t"]
+    sig, timing = conditioned_signals(df, cfg)
+    quality = compute_quality(sig, df_channels(df), timing["fs_used"], cfg.quality, cfg.filters.morph_band_hz)
+    return layer1_result(df, sig, quality, timing, cfg)
+
+
+def df_channels(df: pd.DataFrame) -> list[str]:
+    return df.attrs.get("channels") or [c for c in df.columns if c != "t"]
+
+
+def conditioned_signals(df: pd.DataFrame, cfg: Layer1Config) -> tuple[pd.DataFrame, dict]:
+    """Resample + condition every channel (cfg.timing, .artifacts, .filters). Returns (signals, timing)."""
+    channels = df_channels(df)
     uni, timing = resample_uniform(df, channels, cfg.timing.fs_target, cfg.timing.max_gap_s)
     fs = timing["fs_used"]
-
-    sig = pd.DataFrame({"t": uni["t"].to_numpy()})
+    cols = {"t": uni["t"].to_numpy()}
     for ch in channels:
         for name, arr in condition_channel(uni[ch].to_numpy(), fs, cfg).items():
-            sig[f"{ch}_{name}"] = arr
+            cols[f"{ch}_{name}"] = arr
+    return pd.DataFrame(cols), timing
 
-    quality = compute_quality(sig, channels, fs, cfg.quality, cfg.filters.morph_band_hz)
 
+def layer1_result(df: pd.DataFrame, sig: pd.DataFrame, quality: pd.DataFrame, timing: dict,
+                  cfg: Layer1Config) -> Layer1Result:
+    """Summary + meta around already computed signals and window quality."""
+    channels = df_channels(df)
     primary = cfg.quality.primary_channel or channels[0]
     summary = {"primary_channel": primary, "n_windows": int(len(quality))}
     if len(quality):

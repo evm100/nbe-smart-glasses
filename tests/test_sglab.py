@@ -110,6 +110,55 @@ def test_record_two_devices_and_catalog(lab):
     assert cat2.reindex() == 1 and cat2.session(sid)["streams"][1]["n_samples"] > 250
 
 
+def test_rename_malformed_subject(lab):
+    s, cat = lab
+    folder = s.raw_dir / "20261013_221650_S002---Victor_rest_T01"
+    folder.mkdir(parents=True)
+    (folder / "session.json").write_text(json.dumps({
+        "session_id": folder.name, "metadata": {"subject_id": "S002 - Victor", "protocol": "rest", "trial": 1},
+        "subject": {"subject_id": "S002 - Victor", "sex": "M"}, "streams": []}))
+    sid = cat.upsert_session(folder)
+    cat.upsert_subject({"subject_id": "S002 sam"})
+    assert cat.next_subject_id() == "S003"           # malformed ids still reserve their number
+    with pytest.raises(ValueError):
+        cat.rename_subject("S002 - Victor", "Victor")
+    assert cat.rename_subject("S002 - Victor", "S002", dry_run=True) == [sid]
+    assert cat.subject("S002") is None
+    assert cat.rename_subject("S002 - Victor", "S002") == [sid]
+    assert cat.subject("S002 - Victor") is None and cat.subject("S002")["sex"] == "M"
+    assert cat.session(sid)["subject_id"] == "S002"
+    with pytest.raises(ValueError):
+        cat.rename_subject("S002 sam", "S002")        # taken
+    # the new id is in the files, so a reindex keeps it
+    s.db_path.unlink()
+    cat2 = Catalog(s.db_path, s.data_root)
+    cat2.reindex()
+    assert cat2.session(sid)["subject_id"] == "S002" and cat2.subject("S002")["sex"] == "M"
+
+
+def test_delete_subject_with_discarded_sessions(lab):
+    s, cat = lab
+    def session(name, subj, status):
+        folder = s.raw_dir / name
+        folder.mkdir(parents=True)
+        (folder / "session.json").write_text(json.dumps({
+            "session_id": name, "status": status, "streams": [],
+            "metadata": {"subject_id": subj, "protocol": "rest", "trial": 1}, "subject": {"subject_id": subj}}))
+        return cat.upsert_session(folder)
+    gone = session("20261016_230237_S002-sam_rest_T01", "S002 sam", "discard")
+    (s.data_root / "processed" / gone / "finger").mkdir(parents=True)
+    session("20261013_221650_S001_rest_T01", "S001", "ok")
+    with pytest.raises(ValueError):
+        cat.delete_subject("S001")                     # has a kept session
+    assert cat.delete_subject("S002 sam", dry_run=True) == [gone] and cat.subject("S002 sam")
+    assert cat.delete_subject("S002 sam") == [gone]
+    assert cat.subject("S002 sam") is None and cat.session(gone) is None
+    assert (s.raw_dir / "_deleted" / gone / "session.json").exists()
+    assert not (s.data_root / "processed" / gone).exists()
+    # and it stays gone after a reindex
+    assert cat.reindex() == 1 and cat.subject("S002 sam") is None
+
+
 def test_live_rate_ignores_burst_delivery(tmp_path):
     """MQTT bursts: 1 s of samples arrives at once; the live rate must still read ~400, and
     real loss must still show."""
@@ -152,7 +201,8 @@ def test_process_and_web_api(lab):
     from sglab.web.app import create_app
 
     s, cat = lab
-    rec = _record(s, ["sim"], 35.0, events=[(20, "bp", {"sys_mmhg": 121, "dia_mmhg": 79, "hr_bpm": 72})])
+    rec = _record(s, ["sim"], 35.0, events=[(4, "cuff_start", {"label": "cuff inflation started"}),
+                                            (20, "bp", {"sys_mmhg": 121, "dia_mmhg": 79, "hr_bpm": 72})])
     dest, _ = rec.finalize({"subject_id": "S001", "protocol": "rest", "trial": 1, "keep": True})
     sid = cat.upsert_session(dest)
     res = process_session(s, cat, sid, log=lambda *_: None)
@@ -176,6 +226,19 @@ def test_process_and_web_api(lab):
     ep = c.get(f"/api/sessions/{sid}/epochs", params={"stream": stream}).json()
     assert "dia_rel" in ep["features"]
     assert c.get("/files/../config/lab.toml").status_code == 404
+
+    # Layer 3: the reading's window [cuff_start - 15 s, result] summarised from the processed beats
+    from sglab import dataset
+
+    m = dataset.build(s, cat, "bp", log=lambda *_: None)
+    assert m["summary"]["kinds"]["bp"]["roles"]["finger"] == {"rows": 1, "valid": 1, "subjects": 1, "sessions": 1}
+    import pandas as pd
+    rows = pd.read_csv(s.data_root / "datasets" / "bp" / "rows.csv")
+    r = rows.iloc[0]
+    assert r["sys_mmhg"] == 121 and r["cuff_found"] and r["subject"] == "S001" and r["clock"] == "pc"
+    assert abs(r["t_cuff_start"] - 4) < 1 and abs(r["t_ref"] - 20) < 1
+    assert abs(r["hr_mean_bpm"] - 72) < 3 and r["n_good"] >= 10 and "dia_rel_med" in rows
+    assert dataset.list_datasets(s)[0]["sessions"][0]["runs"][0]["stream"] == r["stream"]
 
 
 def test_startup_glitch_rows():

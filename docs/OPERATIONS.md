@@ -21,6 +21,8 @@ or set `SGLAB_ROOT=/path/to/smart-glasses`).
 | `sglab show <id-or-part>` | Metadata, streams, events and processing runs of one session |
 | `sglab process <id…>` / `--all` | Run Layers 1–2; skips streams already processed with the same code+config |
 | `  --force` / `--no-plot` | Re-run anyway / skip PNG figures |
+| `sglab dataset build [--name bp] [--sessions T05 …] [--config my.json]` | Layer 3: every cuff/pulse-ox reading × every processed stream → `data/datasets/<name>/` (see `docs/pipeline/PIPELINE.md`) |
+| `sglab dataset list` | Datasets built so far, with readings / valid rows per site |
 | `sglab import file.csv --subject S001 --protocol rest [--role finger] [--channel ir=IR] [--time-col ms --time-unit ms]` | Bring an existing CSV into the catalog |
 | `sglab reindex` | Rebuild the catalog from `data/raw/*/session.json` |
 | `sglab recover` | Finish recordings interrupted by a crash/closed terminal (status `incomplete`) |

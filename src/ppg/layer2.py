@@ -45,7 +45,12 @@ class Layer2Result:
             "waves": out_dir / f"{stem}_waves.npz",
             "meta": out_dir / f"{stem}_layer2_meta.json",
         }
-        self.beats.to_csv(paths["beats"], index=False, float_format="%.6g")
+        # beat times keep µs: %.6g would leave 10 ms steps after 1000 s (pulse-arrival features need ms)
+        beats = self.beats.copy()
+        for c in ("t_foot", "t_peak", "t_max_slope"):
+            if c in beats:
+                beats[c] = beats[c].map("{:.6f}".format)
+        beats.to_csv(paths["beats"], index=False, float_format="%.6g")
         self.epochs.to_csv(paths["epochs"], index=False, float_format="%.6g")
         np.savez_compressed(
             paths["waves"], beat_waves=self.waves, beat_t_foot=self.beats.get("t_foot", pd.Series(dtype=float)).to_numpy(),
