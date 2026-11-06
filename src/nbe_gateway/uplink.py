@@ -220,7 +220,8 @@ class Uplink:
               "rtx": self.stats["resends"], "disk_mb": round(self.log.disk_bytes() / 1e6, 1),
               "up_kbps": round(self.rate_bps / 1e3, 1)}
         s = d.get("status") or {}
-        for k in ("tx_drop", "cam_fps", "cam_drop", "fs_meas"):
+        for k in ("tx_drop", "cam_fps", "cam_drop", "fs_meas", "cam_grab", "cam_capped", "cam_null", "cam_wfail",
+                  "cam_wait_ms", "cam_tx_ms", "log_lost"):
             if k in s:
                 st[k] = s[k]
         return st

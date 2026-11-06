@@ -90,8 +90,13 @@ class Gateway:
         if b.connected and d.get("fw"):
             usb += f" fw {d['fw']}"
         stream = "STREAMING" if d.get("streaming") else "idle"
-        cam = d.get("status", {}).get("cam_fps")
+        st = d.get("status", {})
+        cam = st.get("cam_fps")
         cam = f" cam {cam} fps" if cam is not None else ""
+        if "cam_grab" in st:  # diagnostic firmware: where the frames go on the board
+            cam += (f" (grabbed {st['cam_grab']}, capped {st.get('cam_capped')}, sent {st.get('cam_sent')},"
+                    f" usb fail {st.get('cam_wfail')}, driver timeouts {st.get('cam_null')},"
+                    f" wait max {st.get('cam_wait_ms')} ms, usb max {st.get('cam_tx_ms')} ms)")
         srv = "server: connected" if u.connected else f"server: {u.last_error or 'connecting...'}"
         return (f"[{time.strftime('%H:%M:%S')}] {self.node} | {usb} | {stream}{cam} | frames {b.stats['frames']}"
                 f" | up {_fmt_bytes(u.rate_bps)}/s | waiting to send {_fmt_bytes(self.log.unacked())}"
@@ -134,12 +139,20 @@ def main(argv=None) -> int:
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, lambda *_: done.set())
     shown = 0
+    logged = 0
     try:
         while not done.wait(a.every):
             print(gw.status_line(), flush=True)
             for w in gw.board.warnings[shown:]:
                 print("  ! " + w, flush=True)
             shown = len(gw.board.warnings)
+            b = gw.board
+            new = b.board_log_n - logged
+            if new > len(b.board_log):
+                print(f"  board: ({new - len(b.board_log)} older log lines not shown)", flush=True)
+            for ln in b.board_log[-new:] if new > 0 else []:
+                print("  board " + ln, flush=True)
+            logged = b.board_log_n
     finally:
         print("stopping...")
         gw.stop()

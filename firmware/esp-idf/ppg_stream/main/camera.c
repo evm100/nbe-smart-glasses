@@ -105,6 +105,12 @@ static volatile bool s_aec = false;
 #endif
 static uint32_t s_seq;                  // camera task only
 static volatile uint32_t s_sent, s_window_sent;
+// diagnostics (S line): where frames go between the driver and the USB port
+static volatile uint32_t s_grab;        // frames the driver handed us
+static volatile uint32_t s_null;        // esp_camera_fb_get() gave up (4 s without a frame)
+static volatile uint32_t s_capped;      // skipped by the fps cap (not lost)
+static volatile uint32_t s_wfail;       // link_write_frame() failed (host not reading)
+static volatile uint32_t s_wait_max_us, s_tx_max_us;  // per status window
 
 static void apply_exposure(void)
 {
@@ -133,15 +139,21 @@ static void camera_step(void)
         return;
     }
     if (atomic_exchange(&s_restart, false)) s_seq = 0;
+    int64_t w0 = esp_timer_get_time();
     camera_fb_t *fb = esp_camera_fb_get();  // blocks until the next frame (grab latest)
+    uint32_t waited = (uint32_t)(esp_timer_get_time() - w0);
+    if (waited > s_wait_max_us) s_wait_max_us = waited;
     if (!fb) {
+        s_null++;
         vTaskDelay(pdMS_TO_TICKS(5));
         return;
     }
+    s_grab++;
     int64_t t_us = (int64_t)fb->timestamp.tv_sec * 1000000 + fb->timestamp.tv_usec;
     uint32_t cap = s_fps_cap;
     // the cap skips frames before they get a seq: a skipped frame is not a lost one
     if (cap && t_us - last_us < 1000000 / (int64_t)cap - 2000) {
+        s_capped++;
         esp_camera_fb_return(fb);
         return;
     }
@@ -160,8 +172,13 @@ static void camera_step(void)
     len = CROP * CROP;
 #endif
     if (atomic_load(&s_run)) {
-        link_write_frame(CAMERA_SID, s_seq, t_us, (uint16_t)w, (uint16_t)h, CAM_FMT,
-                         (uint16_t)(s_aec ? 0xFFFF : s_exposure), (uint8_t)(s_aec ? 0xFF : s_gain), px, len);
+        int64_t x0 = esp_timer_get_time();
+        if (!link_write_frame(CAMERA_SID, s_seq, t_us, (uint16_t)w, (uint16_t)h, CAM_FMT,
+                              (uint16_t)(s_aec ? 0xFFFF : s_exposure), (uint8_t)(s_aec ? 0xFF : s_gain), px, len)) {
+            s_wfail++;
+        }
+        uint32_t tx = (uint32_t)(esp_timer_get_time() - x0);
+        if (tx > s_tx_max_us) s_tx_max_us = tx;
         s_seq++;  // also when not sent: the PC sees the gap and counts the frame as dropped
         s_sent++;
         s_window_sent++;
@@ -283,7 +300,21 @@ void camera_status(pline_t *l, uint32_t window_ms)
     pl_u64(l, s_sent);
     pl_str(l, ",cam_drop=");
     pl_u64(l, link_frames_dropped());
+    // where frames go: grabbed = capped + sent; null = driver timeouts (no frame for 4 s)
+    pl_str(l, ",cam_grab=");
+    pl_u64(l, s_grab);
+    pl_str(l, ",cam_capped=");
+    pl_u64(l, s_capped);
+    pl_str(l, ",cam_null=");
+    pl_u64(l, s_null);
+    pl_str(l, ",cam_wfail=");
+    pl_u64(l, s_wfail);
+    pl_str(l, ",cam_wait_ms=");  // longest wait for a frame in this window
+    pl_u64(l, s_wait_max_us / 1000);
+    pl_str(l, ",cam_tx_ms=");    // longest USB write of a frame in this window
+    pl_u64(l, s_tx_max_us / 1000);
     s_window_sent = 0;
+    s_wait_max_us = s_tx_max_us = 0;
 }
 
 bool camera_command(const char *args)

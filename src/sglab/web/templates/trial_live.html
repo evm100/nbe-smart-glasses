@@ -122,7 +122,7 @@ async function poll() {
     stalled[x.role] = x.alive && x.stall_s > 3 ? x.stall_s : 0;
     return `<tr><td>${esc(x.role)}</td><td>${esc(x.dev)}</td><td class="num">${x.rate_hz.toFixed(0)}</td><td class="num">${fmt(x.fs)}</td>
       <td class="num">${x.samples}</td><td class="num">${x.dropped}</td><td class="num">${x.bad_lines}</td><td>${state}</td>
-      <td class="note">${esc(Object.entries(x.device || {}).filter(([k]) => ['fs_meas', 'ovf', 'alc_ovf', 'i2c_err', 'tx_drop', 'temp_c', 'cam_fps', 'cam_drop'].includes(k)).map(([k, v]) => k + '=' + v).join(' '))}</td></tr>`;
+      <td class="note">${esc(Object.entries(x.device || {}).filter(([k]) => ['fs_meas', 'ovf', 'alc_ovf', 'i2c_err', 'tx_drop', 'temp_c', 'cam_fps', 'cam_drop', 'cam_grab', 'cam_null', 'cam_wfail', 'cam_wait_ms', 'cam_tx_ms', 'log_lost'].includes(k)).map(([k, v]) => k + '=' + v).join(' '))}</td></tr>`;
   }).join('');
   showCameras(s.streams.flatMap(x => (x.video || []).map(v => Object.assign({role: x.role, dev: x.dev}, v))));
   document.getElementById('events').innerHTML = s.events.slice().reverse().map(e =>

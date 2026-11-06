@@ -62,6 +62,9 @@ class Board:
                       "reconnects": 0, "frame_seq_gaps": 0}
         self._last_frame_seq: Dict[int, int] = {}
         self.device_log: List[str] = []      # recent non-protocol text (boot messages)
+        # the board's own log forwarded as E LOG / BOOTLOG events (firmware CONFIG_PPG_FORWARD_LOGS)
+        self.board_log: List[str] = []       # last 200
+        self.board_log_n = 0                 # total ever received (the console prints the new ones)
 
     # ---------------------------------------------------------------- serial
     def _default_open(self, port: str):
@@ -197,7 +200,10 @@ class Board:
             self.on_change()
         elif kind == "E" and len(parts) >= 3:
             code = parts[2]
-            if code == "START":
+            if code in ("LOG", "BOOTLOG"):
+                self.board_log = (self.board_log + [f"{code.lower()}: " + ",".join(parts[3:])])[-200:]
+                self.board_log_n += 1
+            elif code == "START":
                 self.streaming = True
                 self._last_frame_seq.clear()
                 self.on_change()

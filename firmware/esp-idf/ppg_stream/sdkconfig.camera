@@ -16,5 +16,7 @@ CONFIG_PPG_CAM_CROP=80
 # SCCB (camera control) on I2C port 1; the MAX30102 keeps port 0 (CONFIG_PPG_I2C_PORT)
 CONFIG_SCCB_HARDWARE_I2C_DRIVER_NEW=y
 CONFIG_SCCB_HARDWARE_I2C_PORT1=y
+# full clock (the MATLAB-era Arduino build ran at 240 MHz; IDF defaults to 160)
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # frame buffers in PSRAM (the XIAO Sense has 8 MB octal PSRAM; sdkconfig.defaults enables it)
 CONFIG_CAMERA_CORE0=y

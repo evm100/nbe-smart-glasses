@@ -25,6 +25,7 @@
 #include "camera.h"
 #include "diag.h"
 #include "link.h"
+#include "logfwd.h"
 #include "max30102.h"
 #include "proto.h"
 #include "version.h"
@@ -120,6 +121,22 @@ static void send_event(const char *code, const char *text)
     send_line(&l);
 }
 
+#if CONFIG_PPG_FORWARD_LOGS
+// The board's own log (logfwd.c): queued W/E lines as LOG events, a few per pass so a burst
+// never delays the FIFO reads; the boot stash again as BOOTLOG on INFO.
+static void send_logs(void)
+{
+    char buf[PROTO_MAX_LINE - 40];
+    for (int i = 0; i < 4 && logfwd_next(buf, sizeof buf); i++) send_event("LOG", buf);
+}
+
+static void send_bootlog(void)
+{
+    char buf[PROTO_MAX_LINE - 40];
+    for (int i = 0; logfwd_boot_line(i, buf, sizeof buf); i++) send_event("BOOTLOG", buf);
+}
+#endif
+
 static void send_status(uint32_t window_ms)
 {
     char buf[PROTO_MAX_LINE];
@@ -141,6 +158,10 @@ static void send_status(uint32_t window_ms)
     pl_u64(&l, s_loop_max_us);
 #if CONFIG_PPG_CAMERA
     camera_status(&l, window_ms);
+#endif
+#if CONFIG_PPG_FORWARD_LOGS
+    pl_str(&l, ",log_lost=");
+    pl_u64(&l, logfwd_lost());
 #endif
     if (s_temp_centi != INT32_MIN) {
         pl_str(&l, ",temp_c=");
@@ -296,6 +317,9 @@ static void start_streaming(void)
 #if CONFIG_PPG_CAMERA
     camera_start();
 #endif
+#if CONFIG_PPG_FORWARD_LOGS
+    logfwd_boot_done();
+#endif
     led_set(true);
     note_state();
 }
@@ -394,8 +418,16 @@ static void sensor_task(void *arg)
         }
 
         // ---- commands from the PC (set by cmd_task)
-        if (atomic_exchange(&s_req_info, false)) send_header();
+        if (atomic_exchange(&s_req_info, false)) {
+            send_header();
+#if CONFIG_PPG_FORWARD_LOGS
+            send_bootlog();
+#endif
+        }
         if (atomic_exchange(&s_req_stop, false)) stop_streaming();
+#if CONFIG_PPG_FORWARD_LOGS
+        send_logs();
+#endif
         if (atomic_exchange(&s_req_start, false)) {
 #if CONFIG_PPG_CAMERA
             bool can_start = s_sensor_ok || camera_ok();  // either stream alone is still worth recording
@@ -518,6 +550,9 @@ static void cmd_task(void *arg)
 // ---------------------------------------------------------------- main
 void app_main(void)
 {
+#if CONFIG_PPG_FORWARD_LOGS
+    logfwd_install();  // before anything logs
+#endif
     ESP_ERROR_CHECK(link_init());
     gpio_setup();
     build_config();

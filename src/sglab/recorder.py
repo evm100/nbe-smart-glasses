@@ -187,6 +187,8 @@ class StreamWorker(threading.Thread):
                 except ValueError:
                     pass
                 return
+            if msg.code in ("LOG", "BOOTLOG"):  # the board's console (camera boards): rawlog only
+                return
             self.device_events.append({"t_s": t, "kind": "device", "source": self.header.dev if self.header else self.role,
                                        "label": f"{msg.code} {msg.text}".strip(), "t_dev_us": msg.t_us + self._dev_off_us})
             return

@@ -519,6 +519,16 @@ menu "PPG stream (MAX30102)"
             help
                 Absorbs short PC/USB stalls. 8192 B is ~0.5 s of data at 400 sps. The USB binary
                 link writes camera frames through it in 4 kB pieces.
+
+        config PPG_FORWARD_LOGS
+            bool "Send the board's log warnings to the PC as events"
+            depends on PPG_LINK_USB_BIN
+            default y
+            help
+                The console UART isn't wired on the glasses. With this, ESP_LOG warnings/errors
+                and ROM printf lines (esp32-camera's frame-loss messages) arrive as
+                $E,..,LOG,<text> in the session's raw log, and the boot log is re-sent as
+                BOOTLOG on every INFO.
     endmenu
 
     # ------------------------------------------------------------------
