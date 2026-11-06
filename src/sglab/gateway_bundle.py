@@ -258,9 +258,10 @@ def build(settings, registry, node_id: str, platform: str, vendor: dict[str, Pat
     label, triple, kind = PLATFORMS[platform]
     cfg = settings.gateway
     b = provision.bundle(settings, registry, node_id)
-    u = urllib.parse.urlsplit(b["broker_uri"] if "://" in b["broker_uri"] else "mqtts://" + b["broker_uri"])
+    uri = cfg["broker_uri"]
+    u = urllib.parse.urlsplit(uri if "://" in uri else "mqtts://" + uri)
     if not u.hostname:
-        raise BundleError("no broker address: set [provisioning] broker_uri on the server")
+        raise BundleError("no broker address: set [gateway] or [provisioning] broker_uri on the server")
     port = u.port or 8883
     node = b["node_id"]
     top = f"NBE-Gateway-{node}-{platform}"

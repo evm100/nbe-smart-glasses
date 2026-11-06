@@ -31,5 +31,9 @@ client_id = "nbe-core"
 broker_uri = "mqtts://nbe.evm100.org:8884"
 broker_ca = "bundle"                   # Let's Encrypt -> ESP-IDF certificate bundle
 
+[gateway]
+broker_uri = "mqtts://nbe.evm100.org:443"   # USB gateways: MQTT on :443 via nginx ALPN routing (enable-mqtt-443.sh);
+                                            # some operators' networks block :8884
+
 [processing]
 mode = "remote"                        # Layers 1-2 run on the nbe-proc LXC (deploy/worker), not here

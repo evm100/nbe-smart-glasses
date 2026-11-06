@@ -273,6 +273,43 @@ def _fake_runtime(tmp_path: Path, windows: bool) -> Path:
     return p
 
 
+def test_gateway_tls_offers_mqtt_alpn(tmp_path):
+    """The server's :443 router (deploy/evmserver/nginx-stream-443.conf) sends a connection to
+    mosquitto only if the ClientHello offers ALPN "mqtt"; check a real handshake carries it."""
+    pytest.importorskip("cryptography")
+    import socket
+    import ssl
+
+    from nbe_gateway.uplink import tls_context
+    from sglab.pki import PKI
+    from test_mqtt_integration import _server_cert
+
+    _server_cert(tmp_path)
+    pki = PKI(tmp_path / "pki")
+    pki.init_ca()
+    pki.issue_to("GLS03", tmp_path / "GLS03.key", tmp_path / "GLS03.crt")
+    srv = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    srv.load_cert_chain(tmp_path / "broker.crt", tmp_path / "broker.key")
+    srv.load_verify_locations(pki.ca_crt_path)
+    srv.verify_mode = ssl.CERT_REQUIRED
+    srv.set_alpn_protocols(["h2", "mqtt"])
+    seen = {}
+    with socket.create_server(("127.0.0.1", 0)) as ls:
+        def serve():
+            conn, _ = ls.accept()
+            with srv.wrap_socket(conn, server_side=True) as t:
+                seen["alpn"], seen["cn"] = t.selected_alpn_protocol(), dict(x[0] for x in t.getpeercert()["subject"])["commonName"]
+        th = threading.Thread(target=serve, daemon=True)
+        th.start()
+        ctx = tls_context({"ca_file": str(tmp_path / "public_ca.crt"), "cert_file": str(tmp_path / "GLS03.crt"),
+                           "key_file": str(tmp_path / "GLS03.key")})
+        with socket.create_connection(ls.getsockname()) as raw, ctx.wrap_socket(raw, server_hostname="localhost") as t:
+            assert t.selected_alpn_protocol() == "mqtt"
+            t.recv(1) if t.version() == "TLSv1.3" else None  # let the server finish reading the client cert
+        th.join(5)
+    assert seen == {"alpn": "mqtt", "cn": "GLS03"}
+
+
 @pytest.mark.parametrize("platform", ["windows-x64", "macos-arm64", "linux-any"])
 def test_gateway_bundle(tmp_path, platform):
     pytest.importorskip("cryptography")
@@ -321,3 +358,31 @@ def test_gateway_bundle(tmp_path, platform):
         assert b"python3 -m nbe_gateway" in z.read(f"{top}/start-gateway.sh")
     with pytest.raises(gateway_bundle.BundleError):
         gateway_bundle.build(s, reg, "GLS03", "amiga")
+
+
+def test_gateway_bundle_own_broker_uri(tmp_path):
+    """[gateway] broker_uri (e.g. :443 where :8884 is blocked) wins over the boards' [provisioning] one."""
+    pytest.importorskip("cryptography")
+    from sglab import gateway_bundle
+    from sglab.nodes import NodeRegistry
+    from sglab.pki import PKI
+    from sglab.settings import load_settings
+
+    shutil.copytree(REPO / "config", tmp_path / "config")
+    (tmp_path / "config" / "server.toml").write_text(
+        f'[pki]\ndir = "{tmp_path / "pki"}"\n[provisioning]\nbroker_uri = "mqtts://mqtt.example.org:8884"\n'
+        '[gateway]\nbroker_uri = "mqtts://mqtt.example.org:443"\n')
+    s = load_settings(tmp_path)
+    assert s.provisioning["broker_uri"].endswith(":8884") and s.gateway["broker_uri"].endswith(":443")
+    s.data_root.mkdir(parents=True, exist_ok=True)
+    PKI(s.pki_dir).init_ca()
+    reg = NodeRegistry(s.db_path, s.pki_dir)
+    reg.register("GLS03", site="glasses")
+    vend = tmp_path / "vendor"
+    for pkg in ("serial", "paho/mqtt"):
+        (vend / pkg).mkdir(parents=True)
+        (vend / pkg / "__init__.py").write_text("# fake\n")
+    _, data = gateway_bundle.build(s, reg, "GLS03", "linux-any", vendor={"serial": vend / "serial", "paho": vend / "paho"})
+    z = zipfile.ZipFile(io.BytesIO(data))
+    cfg = json.loads(z.read("NBE-Gateway-GLS03-linux-any/gateway.json"))
+    assert (cfg["broker_host"], cfg["broker_port"]) == ("mqtt.example.org", 443)

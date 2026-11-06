@@ -26,6 +26,20 @@ from .wire import nb_frame
 log = logging.getLogger("nbe_gateway")
 
 STATUS_EVERY_S = 15.0
+ALPN = "mqtt"   # lets the server run MQTT on :443 next to its websites (nginx ssl_preread routes on it)
+
+
+def tls_context(cfg: dict) -> ssl.SSLContext:
+    """mTLS as the node: client cert + key, server verified against ca_file or the system CAs."""
+    ctx = ssl.create_default_context(cafile=cfg.get("ca_file") or None)
+    if not cfg.get("ca_file"):
+        ctx.load_default_certs()
+    # Python >= 3.13 adds VERIFY_X509_STRICT, which rejects private CAs made without
+    # keyUsage / key identifiers; verify like the server's own MQTT client (sglab.mqtt_hub) does
+    ctx.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
+    ctx.load_cert_chain(cfg["cert_file"], cfg["key_file"])
+    ctx.set_alpn_protocols([ALPN])   # a broker that doesn't do ALPN (mosquitto on :8884) just ignores it
+    return ctx
 
 
 class Uplink:
@@ -60,14 +74,7 @@ class Uplink:
         import paho.mqtt.client as mqtt
 
         c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=self.node, clean_session=True)
-        ctx = ssl.create_default_context(cafile=self.cfg.get("ca_file") or None)
-        if not self.cfg.get("ca_file"):
-            ctx.load_default_certs()
-        # Python >= 3.13 adds VERIFY_X509_STRICT, which rejects private CAs made without
-        # keyUsage / key identifiers; verify like the server's own MQTT client (sglab.mqtt_hub) does
-        ctx.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
-        ctx.load_cert_chain(self.cfg["cert_file"], self.cfg["key_file"])
-        c.tls_set_context(ctx)
+        c.tls_set_context(tls_context(self.cfg))
         c.will_set(self.t_status, json.dumps({"online": False, "link": "usb-gateway"}), qos=1, retain=True)
         c.on_connect = self._on_connect
         c.on_connect_fail = self._on_connect_fail

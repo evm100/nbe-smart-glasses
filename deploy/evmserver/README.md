@@ -3,6 +3,7 @@
 ```
 browsers ──https──▶ nginx (nbe.evm100.org) ──▶ sglab 127.0.0.1:8001 ──▶ /srv/nbe/{ppg-data,pki}
 ESP32 nodes (UCSD-PROTECTED) ──mqtts :8884, client cert──▶ host mosquitto ◀── sglab (nbe-core)
+USB gateways ──mqtts :443 (ALPN mqtt), client cert──▶ nginx stream ──▶ host mosquitto
 Raspberry Pi: flash.sh <ID>  ◀── scp ── ~/nbe-firmware/out/  ◀── build-firmware.sh (ESP-IDF in Docker)
 ESP32 nodes ──https GET /ota/<token>──▶ nginx ──▶ sglab     (over-the-air updates, §4)
 ```
@@ -10,7 +11,15 @@ ESP32 nodes ──https GET /ota/<token>──▶ nginx ──▶ sglab     (ove
 > **Processing and firmware builds can run on a stronger machine** (Debian 13 LXC): see
 > `deploy/worker/README.md`. With that set up, §2 below happens in the LXC instead of here.
 
-UltraLights is untouched: its uvicorn keeps :8000, its Docker mosquitto keeps :1883.
+UltraLights keeps its uvicorn on :8000 and its Docker mosquitto on :1883.
+
+**:443 is shared.** Some networks (an operator's, for one) block :8884, so the USB gateway connects
+on :443. nginx's stream module owns :443 and routes on the TLS ALPN without decrypting (it only reads
+the ClientHello): `mqtt` goes to mosquitto, which still checks the client cert. Everything else goes
+to the websites, which now all listen on `127.0.0.1:8443 ssl proxy_protocol` (UltraLights, tdml.org and
+the rest included). `enable-mqtt-443.sh` makes that change and backs up `/etc/nginx` first. **A new
+site must use that listen line, not `listen 443`** (certbot `--nginx` writes `listen 443 ssl`: change it,
+or re-run the script). Connection log: `/var/log/nginx/nbe-mqtt-443.log`.
 
 | node | site | board |
 |---|---|---|
@@ -21,6 +30,7 @@ UltraLights is untouched: its uvicorn keeps :8000, its Docker mosquitto keeps :1
 ## 1. Server (once)
 
 1. Router: forward **TCP 8884 → 192.168.1.220** (80/443 already come here).
+   (Only the ESP32 boards use 8884. USB gateways use 443, which already comes here.)
 2. `sudo deploy/evmserver/setup-root.sh`. It asks for the web password of admin `evm100`
    (and Let's Encrypt questions if certbot has none on file). It can be re-run safely.
 3. Open https://nbe.evm100.org. The header should show **● broker** in green.
@@ -54,6 +64,8 @@ to whoever flashes the board, on a Mac or Linux: `./flash.sh GLS03` in the folde
 (first run installs esptool; macOS may ask to install the command-line tools for `python3`). Don't
 send the rest of `out/`: the Wi-Fi images contain your UCSD password. Then register GLS03 on the
 Nodes page and send the operator **Download gateway** for their system (that zip does hold the node key).
+The gateway connects to `mqtts://nbe.evm100.org:443` (`[gateway] broker_uri`). An existing setup gets
+that with `sudo deploy/evmserver/enable-mqtt-443.sh`. After that, send the operator a fresh download.
 
 ## 3. Flash (on the Pi)
 
