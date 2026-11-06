@@ -13,17 +13,17 @@ CONFIG_PPG_CAM_SIZE_240=y
 # would give 12.5 fps. Run time: "CAM FPS=n".
 CONFIG_PPG_CAM_FPS=0
 # Sensor zoom: the sensor runs in SVGA mode (2x finer than the stock CIF framing) and only the middle
-# 252x252 SVGA pixels are scaled to the 240x240 frame: the field of view the 100x100 middle of the stock
-# framing had (the reference FOV), now at 240x240 (2.4x the linear resolution), 57.6 kB/frame.
+# 252x252 SVGA pixels are scaled to the 240x240 frame. On paper that is the stock framing's 100x100
+# middle at 2.4x the resolution, but on GLS03 it showed MORE than that, so the frame is cropped below.
+# "CAM WIN=n" at run time: smaller = finer pixels + smaller view (min 240), larger = the opposite.
 # SVGA has twice the lines of CIF, so clkdiv 1 (twice the driver's CIF sensor clock) keeps the sensor at
-# ~25 fps (~1.44 MB/s); clkdiv 3 would halve it to ~12.5. "CAM CLK=n" / "CAM WIN=n" at run time
-# (WIN=0 = stock framing).
-# Same FOV at other sizes (crop C, window 60000/C rounded to 4): C=200/WIN=300 (40 kB), C=160/WIN=376.
+# ~25 fps; clkdiv 3 halves it to ~12.5 (which worked, with some driver overruns). "CAM CLK=n".
 CONFIG_PPG_CAM_WINDOW=252
 CONFIG_PPG_CAM_WIN_CLKDIV=1
-# whole frame sent (was a 120x120 crop of the stock framing, 14.4 kB/frame, before that 80x80).
-# If USB can't keep up, cam_fps drops below the sensor rate and cam_tx_ms nears the frame period (README).
-CONFIG_PPG_CAM_CROP=0
+# only the 160x160 middle of the zoomed frame is sent: narrower view, same pixel detail, 25.6 kB/frame
+# = ~640 kB/s at 25 fps. USB Serial/JTAG measured ~0.85 MB/s (57.6 kB frames took 67 ms), so 25 fps
+# needs frames under ~34 kB (crop <= ~180). The whole 240x240 frame managed ~12.5 fps.
+CONFIG_PPG_CAM_CROP=160
 # PPG sensor settings: the Kconfig defaults (tuned for the glasses), same as the Wi-Fi nodes
 # SCCB (camera control) on I2C port 1; the MAX30102 keeps port 0 (CONFIG_PPG_I2C_PORT)
 CONFIG_SCCB_HARDWARE_I2C_DRIVER_NEW=y
@@ -31,5 +31,7 @@ CONFIG_SCCB_HARDWARE_I2C_PORT1=y
 # 240 MHz is required: at IDF's default 160 the camera driver fell behind (cam_hal EV-VSYNC-OVF) and
 # only ~3 frames/min got out; at 240 (what the Arduino-era sketch ran at) the sensor's ~25 fps all arrive
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
-# frame buffers in PSRAM (the XIAO Sense has 8 MB octal PSRAM; sdkconfig.defaults enables it)
-CONFIG_CAMERA_CORE0=y
+# camera driver task on core 1, away from the USB interrupts, the USB tx task and our camera task (all
+# core 0; core 1 otherwise runs only the PPG sensor task). On core 0 the zoom at clkdiv 1 overran the
+# driver (EV-VSYNC-OVF, one frame then 4 s timeouts). Frame buffers stay in PSRAM.
+CONFIG_CAMERA_CORE1=y

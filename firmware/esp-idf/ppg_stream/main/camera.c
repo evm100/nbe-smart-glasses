@@ -73,8 +73,9 @@ static const char *TAG = "camera";
 // to 240x240, 5 sensor pixels per frame pixel. Zoomed, the sensor runs in SVGA mode (every 2nd sensor
 // pixel, 2x finer than CIF) and only a WINDOW x WINDOW square of SVGA pixels from the middle is
 // scaled to the frame, so the frame size and the driver's buffers stay the same but each frame pixel
-// covers less of the scene. WINDOW 250 = the field of view that the 100x100 middle of the stock
-// framing had, now 240x240 pixels (2.4x the linear resolution).
+// covers less of the scene. On paper WINDOW 250 = the view of the stock framing's 100x100 middle at
+// 240x240 (2.4x the linear resolution); on GLS03 the view came out wider than that, so check it on
+// the image and tune with "CAM WIN=n".
 // The driver drops frames whose size isn't the frame size, so the window must be >= the frame size
 // (the DSP scales down only). SVGA mode has twice the lines of CIF, so WIN_CLKDIV 1 (twice the sensor
 // clock the driver uses for CIF, divider 3) keeps the sensor at ~25 fps; 3 would halve it.

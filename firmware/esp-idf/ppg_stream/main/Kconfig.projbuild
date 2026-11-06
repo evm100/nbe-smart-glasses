@@ -599,8 +599,8 @@ menu "PPG stream (MAX30102)"
                 sensor runs in SVGA mode (2 sensor pixels per SVGA pixel) and the N x N SVGA
                 pixels in the middle are scaled to the frame size, so the same frame shows a
                 smaller part of the scene in more detail. Must be >= the frame size (the sensor
-                only scales down) and a multiple of 4. 250 = the field of view of the 100x100
-                middle of the stock 240x240 framing. Run time: "CAM WIN=n" (0 = stock).
+                only scales down) and a multiple of 4. On paper 250 = the view of the 100x100
+                middle of the stock 240x240 framing (the real view came out wider: check it). Run time: "CAM WIN=n" (0 = stock).
 
         config PPG_CAM_WIN_CLKDIV
             int "Sensor zoom: sensor clock divider (CLKRC)"
