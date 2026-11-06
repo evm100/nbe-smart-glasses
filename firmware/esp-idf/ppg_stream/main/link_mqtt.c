@@ -487,3 +487,16 @@ uint32_t link_dropped_bytes(void)
 {
     return s_dropped;  // only read for reporting: a torn read is harmless
 }
+
+bool link_write_frame(uint8_t sid, uint32_t seq, int64_t t_us, uint16_t w, uint16_t h, uint8_t fmt,
+                      uint16_t exposure, uint8_t gain, const uint8_t *data, size_t len)
+{
+    (void)sid; (void)seq; (void)t_us; (void)w; (void)h; (void)fmt; (void)exposure; (void)gain; (void)data;
+    (void)len;
+    return false;  // camera frames need the USB binary link
+}
+
+uint32_t link_frames_dropped(void)
+{
+    return 0;
+}

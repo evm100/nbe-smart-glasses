@@ -11,7 +11,11 @@ from .protocol import encode
 
 
 class SerialSource:
-    """Wraps pyserial. readline() returns a str (possibly '') within `timeout` s."""
+    """Wraps pyserial. readline() returns a protocol line, a camera frame (VideoFrame) or ''
+    within `timeout` s.
+
+    Reads both USB links of the firmware: text lines (protocol v1) and binary record envelopes
+    (protocol v2, CONFIG_PPG_LINK_USB_BIN); nbe_gateway.wire.EnvelopeDecoder tells them apart."""
 
     def __init__(self, port: str, baud: int = 921600, timeout: float = 0.2):
         import serial  # pyserial
@@ -25,13 +29,31 @@ class SerialSource:
             except (ValueError, TypeError):  # platforms without the exclusive option
                 self.ser = serial.Serial(port, baud, timeout=timeout)
         self.ser.reset_input_buffer()
+        from nbe_gateway.wire import EnvelopeDecoder
+
+        self.decoder = EnvelopeDecoder()
+        self.pending: deque = deque()
 
     def write(self, cmd: str) -> None:
         self.ser.write((cmd.strip() + "\n").encode())
         self.ser.flush()
 
-    def readline(self) -> str:
-        return self.ser.readline().decode("ascii", "replace")
+    def readline(self):
+        if not self.pending:
+            from .framing import FrameError, record_items
+            from nbe_gateway.wire import WireError, split_records
+
+            data = self.ser.read(max(1, self.ser.in_waiting))
+            for kind, item in self.decoder.feed(data):
+                if kind == "text":
+                    self.pending.append(item + "\r\n")
+                    continue
+                try:
+                    for _off, k, body in split_records(item):
+                        self.pending.extend(record_items(k, body))
+                except (WireError, FrameError):
+                    continue
+        return self.pending.popleft() if self.pending else ""
 
     def close(self) -> None:
         try:

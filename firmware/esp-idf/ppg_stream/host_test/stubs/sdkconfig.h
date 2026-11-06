@@ -47,6 +47,16 @@
 #define CONFIG_PPG_UART_RX_GPIO 8
 #elif defined(TEST_MQTT)
 #define CONFIG_PPG_LINK_MQTT 1
+#elif defined(TEST_USB_BIN)
+// camera glasses (sdkconfig.camera): USB binary link + OV2640
+#define CONFIG_PPG_LINK_USB_BIN 1
+#define CONFIG_PPG_CAMERA 1
+#define CONFIG_PPG_CAM_SIZE_240 1
+#define CONFIG_PPG_CAM_FPS 15
+#define CONFIG_PPG_CAM_EXPOSURE 300
+#define CONFIG_PPG_CAM_GAIN 2
+#define CONFIG_PPG_CAM_VFLIP 1
+#define CONFIG_PPG_CAM_HMIRROR 1
 #else
 #define CONFIG_PPG_LINK_USB_SERIAL_JTAG 1
 #endif

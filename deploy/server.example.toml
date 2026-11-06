@@ -32,5 +32,11 @@ client_id = "nbe-core"
 broker_uri = "mqtts://mqtt.example.org:8884"
 broker_ca = "bundle"                   # "bundle" = public CA (ESP-IDF CA bundle); or a PEM path for a private CA
 
+[gateway]                              # USB gateway downloads (Nodes page): all optional
+# python_release = "20261021"          # astral-sh/python-build-standalone release bundled for Windows/macOS/Linux
+# python_version = "3.12.15"
+# keep_gb = 20                         # local copy kept on the operator's computer
+# cache_dir = "/srv/nbe/cache/gateway" # downloaded runtimes (default: next to the data folder)
+
 [processing]
 mode = "local"                         # "remote" = queue jobs for `sglab worker` on another machine (deploy/worker)

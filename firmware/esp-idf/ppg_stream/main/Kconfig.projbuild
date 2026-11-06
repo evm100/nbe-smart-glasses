@@ -211,7 +211,7 @@ menu "PPG stream (MAX30102)"
         config PPG_LED_RED_MA_X10
             int "Red LED current (units of 0.1 mA, 0-510)"
             range 0 510
-            default 510
+            default 500
             help
                 64 = 6.4 mA. The sensor's step is 0.2 mA, so the value is rounded to
                 an even number. Raise it for weak signals (glasses), lower it if the raw
@@ -251,8 +251,12 @@ menu "PPG stream (MAX30102)"
                 UART = a separate USB-UART adapter on the pins below.
                 Wi-Fi + MQTT = node of the NBE server (needs credentials: run
                 firmware/tools/nbe_node.py configure <ID>, which also selects this).
+                USB binary = USB-C with binary records (protocol v2), for the NBE USB gateway on
+                the operator's PC (or sglab record). Required for the camera.
             config PPG_LINK_USB_SERIAL_JTAG
-                bool "USB Serial/JTAG (USB-C)"
+                bool "USB Serial/JTAG (USB-C), text lines"
+            config PPG_LINK_USB_BIN
+                bool "USB Serial/JTAG (USB-C), binary records (camera boards, USB gateway)"
             config PPG_LINK_UART
                 bool "UART"
             config PPG_LINK_MQTT
@@ -510,9 +514,96 @@ menu "PPG stream (MAX30102)"
         config PPG_TX_BUFFER_BYTES
             int "Transmit buffer (bytes)"
             range 1024 65536
+            default 32768 if PPG_LINK_USB_BIN
             default 8192
             help
-                Absorbs short PC/USB stalls. 8192 B is ~0.5 s of data at 400 sps.
+                Absorbs short PC/USB stalls. 8192 B is ~0.5 s of data at 400 sps. The USB binary
+                link writes camera frames through it in 4 kB pieces.
+    endmenu
+
+    # ------------------------------------------------------------------
+    menu "Camera (XIAO ESP32-S3 Sense, OV2640)"
+        config PPG_CAMERA
+            bool "Stream the OV2640 camera (protocol v2 stream 'cam')"
+            depends on PPG_LINK_USB_BIN
+            default n
+            help
+                Frames go out between START and STOP with their own seq and the capture time on
+                the PPG's clock. Needs PSRAM (Octal) and the USB binary link. SCCB must use I2C
+                port 1 (Component config -> Camera configuration -> SCCB port 1; sdkconfig.camera
+                sets it) because the MAX30102 uses port 0.
+
+        choice PPG_CAM_SIZE
+            prompt "Frame size"
+            depends on PPG_CAMERA
+            default PPG_CAM_SIZE_240
+            help
+                Grayscale bytes per frame = width x height. USB Serial/JTAG moves roughly
+                0.6-1 MB/s, so 240x240 (57.6 kB) at 15 fps is ~0.86 MB/s. Watch cam_fps and
+                cam_drop in the S line / live page when changing this.
+            config PPG_CAM_SIZE_96
+                bool "96 x 96"
+            config PPG_CAM_SIZE_QQVGA
+                bool "160 x 120"
+            config PPG_CAM_SIZE_240
+                bool "240 x 240"
+            config PPG_CAM_SIZE_QVGA
+                bool "320 x 240"
+            config PPG_CAM_SIZE_VGA
+                bool "640 x 480 (JPEG only in practice)"
+        endchoice
+
+        config PPG_CAM_JPEG
+            bool "JPEG frames (OV2640 hardware encoder) instead of raw grayscale"
+            depends on PPG_CAMERA
+            default n
+            help
+                ~5-10x smaller, but lossy. Raw grayscale is the default so feature extraction can
+                be tuned on the real pixels.
+
+        config PPG_CAM_JPEG_QUALITY
+            int "JPEG quality (0-63, lower = better)"
+            depends on PPG_CAM_JPEG
+            range 0 63
+            default 10
+
+        config PPG_CAM_FPS
+            int "Frame rate cap (frames/s, 0 = as fast as the sensor and USB allow)"
+            depends on PPG_CAMERA
+            range 0 60
+            default 15
+            help
+                Can be changed at run time: "CAM FPS=10".
+
+        config PPG_CAM_AUTO_EXPOSURE
+            bool "Automatic exposure and gain"
+            depends on PPG_CAMERA
+            default n
+            help
+                Off by default: auto exposure makes the image brightness hunt, which reads as eye
+                motion. Fixed values below; run-time "CAM EXP=300 GAIN=2" / "CAM AEC=1".
+
+        config PPG_CAM_EXPOSURE
+            int "Fixed exposure (aec_value, 0-1200)"
+            depends on PPG_CAMERA
+            range 0 1200
+            default 300
+
+        config PPG_CAM_GAIN
+            int "Fixed analog gain (0-30)"
+            depends on PPG_CAMERA
+            range 0 30
+            default 2
+
+        config PPG_CAM_VFLIP
+            bool "Flip vertically"
+            depends on PPG_CAMERA
+            default y
+
+        config PPG_CAM_HMIRROR
+            bool "Mirror horizontally"
+            depends on PPG_CAMERA
+            default y
     endmenu
 
     # ------------------------------------------------------------------

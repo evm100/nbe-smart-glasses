@@ -21,6 +21,18 @@
   </table>
 </div>
 
+<div id="cam-section" hidden>
+  <h2>Camera <span class="note">(newest frame, compressed preview – the raw frames are stored in full)</span></h2>
+  <div class="cams" id="cams"></div>
+</div>
+<style>
+  .cams { display: flex; flex-wrap: wrap; gap: 14px; }
+  .cam { padding: 10px; display: grid; gap: 6px; justify-items: start; }
+  .cam img { width: 320px; max-width: 100%; aspect-ratio: var(--ar, 1); image-rendering: auto;
+             background: var(--grid); border-radius: 4px; display: block; }
+  .cam .stats { font-variant-numeric: tabular-nums; }
+</style>
+
 <h2>Live signal <span class="note">(last 8 s, first channel, raw counts)</span></h2>
 <div class="card"><canvas id="live" style="display:block; width:100%; height:340px"></canvas></div>
 
@@ -110,12 +122,54 @@ async function poll() {
     stalled[x.role] = x.alive && x.stall_s > 3 ? x.stall_s : 0;
     return `<tr><td>${esc(x.role)}</td><td>${esc(x.dev)}</td><td class="num">${x.rate_hz.toFixed(0)}</td><td class="num">${fmt(x.fs)}</td>
       <td class="num">${x.samples}</td><td class="num">${x.dropped}</td><td class="num">${x.bad_lines}</td><td>${state}</td>
-      <td class="note">${esc(Object.entries(x.device || {}).filter(([k]) => ['fs_meas', 'ovf', 'alc_ovf', 'i2c_err', 'tx_drop', 'temp_c'].includes(k)).map(([k, v]) => k + '=' + v).join(' '))}</td></tr>`;
+      <td class="note">${esc(Object.entries(x.device || {}).filter(([k]) => ['fs_meas', 'ovf', 'alc_ovf', 'i2c_err', 'tx_drop', 'temp_c', 'cam_fps', 'cam_drop'].includes(k)).map(([k, v]) => k + '=' + v).join(' '))}</td></tr>`;
   }).join('');
+  showCameras(s.streams.flatMap(x => (x.video || []).map(v => Object.assign({role: x.role, dev: x.dev}, v))));
   document.getElementById('events').innerHTML = s.events.slice().reverse().map(e =>
     `<tr><td class="num">${e.t_s.toFixed(1)}</td><td>${esc(e.kind)}</td><td>${esc(e.source)}</td><td class="num">${fmt(e.sys_mmhg)}</td>
      <td class="num">${fmt(e.dia_mmhg)}</td><td class="num">${fmt(e.hr_bpm)}</td><td class="num">${fmt(e.spo2_pct)}</td><td>${esc(e.label)}</td></tr>`).join('');
 }
+
+// ---- camera previews: newest frame of each camera stream, a few times per second -------------
+const cams = {};  // stream -> {img, stats, count, busy}
+function showCameras(list) {
+  const box = document.getElementById('cams');
+  document.getElementById('cam-section').hidden = !list.length;
+  for (const v of list) {
+    let c = cams[v.stream];
+    if (!c) {
+      const card = document.createElement('div'); card.className = 'card cam';
+      card.innerHTML = `<b>${esc(v.role)} · ${esc(v.dev)} · ${esc(v.stream)}</b><img alt="waiting for the first frame"><div class="note stats"></div>`;
+      box.append(card);
+      c = cams[v.stream] = {img: card.querySelector('img'), stats: card.querySelector('.stats'), count: -1, busy: false, url: null};
+      c.img.style.setProperty('--ar', `${v.w || 1} / ${v.h || 1}`);
+    }
+    const mb = (v.bytes / 1e6).toFixed(1);
+    const cam = !v.sensor_ok ? '<span style="color:var(--bad)">camera not found on the board</span> · ' : '';
+    const exp = v.exposure == null ? '' : v.exposure === 65535 ? ' · auto exposure' : ` · exposure ${v.exposure} gain ${v.gain}`;
+    const warn = v.fs && v.frames > 10 && v.fps < 0.8 * v.fs ? ' style="color:var(--warn)"' : '';
+    c.stats.innerHTML = `${cam}${v.w}×${v.h} ${esc(v.fmt)} · <span${warn}>${v.fps.toFixed(1)} fps</span> (cap ${v.fs || '–'}) · ` +
+      `${v.frames} frames · ${v.dropped} dropped · ${mb} MB${exp}`;
+  }
+}
+async function fetchCams() {
+  for (const [name, c] of Object.entries(cams)) {
+    if (c.busy) continue;
+    c.busy = true;
+    try {
+      const r = await fetch(`${API}/video/${encodeURIComponent(name)}.jpg`, {cache: 'no-store'});
+      const n = +(r.headers.get('X-Frame-Count') || -1);
+      if (r.status === 200 && n !== c.count) {
+        const url = URL.createObjectURL(await r.blob());
+        c.img.onload = () => { if (c.url) URL.revokeObjectURL(c.url); c.url = url; };
+        c.img.src = url; c.count = n;
+      }
+    } catch (e) { /* try again */ }
+    c.busy = false;
+  }
+  setTimeout(fetchCams, document.hidden ? 1000 : 150);
+}
+fetchCams();
 
 // ---- live plot: incremental fetch + continuous scrolling on a canvas ------------------------
 // The server sends only new points (cursor `after`). The page keeps the last WINDOW seconds,

@@ -3,8 +3,10 @@
 Topics (prefix default "nbe"; one set per node ID):
 
     nbe/dev/<ID>/status   node -> server, retained JSON, plus last-will {"online": false}
-    nbe/dev/<ID>/data     node -> server, QoS 1: a batch of PPG protocol v1 lines
-                          ($H/$D/$E/$S ... *CS\\r\\n) exactly as on USB serial
+    nbe/dev/<ID>/data     node -> server: acknowledged binary frames of records (sglab.framing; firmware
+                          < 0.6: QoS 1 batches of protocol v1 lines). Protocol v2 camera frames reach the
+                          recorder as VideoFrame objects (attach(..., on_frame=)). A USB gateway
+                          (nbe_gateway) publishes here for its board, exactly like a Wi-Fi node.
     nbe/dev/<ID>/cmd      server -> node, QoS 1: INFO | START | STOP | OTA <token> (see sglab.firmware)
     nbe/core/status       server -> nodes, retained {"online": true} + last-will {"online": false};
                           nodes stop streaming when the server disappears
@@ -41,6 +43,7 @@ class MqttHub:
         self.lock = threading.Lock()
         self.status: dict[str, dict] = {}
         self.sinks: dict[str, Callable[[bytes], None]] = {}
+        self.frame_sinks: dict[str, Callable] = {}  # camera frames (protocol v2), in order with the lines
         self.idle_cbs: dict[str, Callable[[bool], None]] = {}  # node reports streaming true/false
         self.receivers: dict[str, FrameReceiver] = {}  # binary frame reassembly + ACKs per node
         self.on_mac: Callable[[str, str], None] | None = None  # node reported a (new) MAC -> registry
@@ -135,10 +138,13 @@ class MqttHub:
             if is_frame(payload):  # firmware >= 0.6: acknowledged binary frames -> protocol lines
                 with self.lock:
                     rx = self.receivers.setdefault(node_id, FrameReceiver())
-                lines, reply = rx.feed(payload)
+                items, reply = rx.feed_items(payload)
                 if reply:
                     self.client.publish(f"{self.prefix}/dev/{node_id}/cmd", reply, qos=0)
-                payload = "".join(lines).encode()
+                if any(not isinstance(x, str) for x in items):  # camera frames: deliver in order
+                    self._deliver_mixed(node_id, items)
+                    return
+                payload = "".join(items).encode()
                 if not payload:
                     return
             with self.lock:
@@ -151,6 +157,28 @@ class MqttHub:
                 self.stats["unrouted"] += 1
                 if b"$D," in payload:  # samples, not just a boot banner / INFO answer
                     self._maybe_stop_orphan(node_id)
+
+    def _deliver_mixed(self, node_id: str, items: list) -> None:
+        with self.lock:
+            sink, fsink = self.sinks.get(node_id), self.frame_sinks.get(node_id)
+            if node_id in self.status:
+                self.status[node_id]["_last_data"] = time.time()
+        if sink is None:
+            self.stats["unrouted"] += 1
+            self._maybe_stop_orphan(node_id)
+            return
+        run: list[str] = []
+        for x in items:
+            if isinstance(x, str):
+                run.append(x)
+                continue
+            if run:
+                sink("".join(run).encode())
+                run = []
+            if fsink:
+                fsink(x)
+        if run:
+            sink("".join(run).encode())
 
     def _maybe_stop_orphan(self, node_id: str) -> None:
         """A node streams but no trial owns it (server restarted mid-trial, a STOP was lost...)."""
@@ -192,18 +220,21 @@ class MqttHub:
         self.client.publish(f"{self.prefix}/dev/{node_id}/cmd", cmd.strip().upper(), qos=1)
 
     def attach(self, node_id: str, sink: Callable[[bytes], None],
-               on_idle: Callable[[bool], None] | None = None) -> None:
+               on_idle: Callable[[bool], None] | None = None, on_frame: Callable | None = None) -> None:
         with self.lock:
             if node_id in self.sinks:
                 raise RuntimeError(f"node {node_id} is already recording")
             self.sinks[node_id] = sink
             if on_idle:
                 self.idle_cbs[node_id] = on_idle
+            if on_frame:
+                self.frame_sinks[node_id] = on_frame
 
     def detach(self, node_id: str) -> None:
         with self.lock:
             self.sinks.pop(node_id, None)
             self.idle_cbs.pop(node_id, None)
+            self.frame_sinks.pop(node_id, None)
 
 
 class MqttSource:
@@ -216,9 +247,9 @@ class MqttSource:
     def __init__(self, hub: MqttHub, node_id: str):
         self.hub, self.node_id = hub, node_id
         self.port = f"mqtt://{node_id}"
-        self.q: queue.Queue[str] = queue.Queue()
+        self.q: queue.Queue = queue.Queue()  # protocol lines (str) and camera frames (VideoFrame)
         self.idle = threading.Event()
-        hub.attach(node_id, self._feed, self._on_idle)
+        hub.attach(node_id, self._feed, self._on_idle, on_frame=self.q.put)
 
     def _on_idle(self, idle: bool) -> None:
         if idle:
@@ -239,7 +270,8 @@ class MqttSource:
     def write(self, cmd: str) -> None:
         self.hub.publish_cmd(self.node_id, cmd)
 
-    def readline(self) -> str:
+    def readline(self):
+        """A protocol line, a VideoFrame (camera boards), or "" after 0.2 s without data."""
         try:
             return self.q.get(timeout=0.2)
         except queue.Empty:

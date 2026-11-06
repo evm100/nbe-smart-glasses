@@ -120,6 +120,7 @@ acl_file {tmp_path / 'acl'}
     reg = NodeRegistry(s.db_path, s.pki_dir)
     reg.register("FNG02", site="finger")
     reg.register("FNG03", site="glasses")
+    reg.register("GLS03", site="glasses")  # camera glasses behind a USB gateway
     yield s, tls, port
     proc.terminate()
     proc.wait(5)
@@ -151,7 +152,7 @@ def test_trial_over_mqtt_mtls(stack):
             return {d["key"]: d for d in c.get("/api/devices").json()["devices"]}
         assert _wait(lambda: dev()["mqtt://FNG02"]["online"], 10), dev()
         assert dev()["mqtt://FNG03"]["online"] is False  # registered, never connected
-        assert set(dev()) == {"mqtt://FNG02", "mqtt://FNG03"}  # local devices hidden on this server
+        assert set(dev()) == {"mqtt://FNG02", "mqtt://FNG03", "mqtt://GLS03"}  # local devices hidden on this server
 
         r = c.post("/trial/start", data={"devices": ["mqtt://FNG02"], "subject_id": "S001", "protocol": "rest",
                                          "trial": "1", "posture": "sitting", "operator": "EV"}, follow_redirects=False)
@@ -206,3 +207,158 @@ def test_node_offline_via_last_will(stack):
     node.client.loop_stop()
     assert _wait(lambda: hub.node_state("FNG02")["state"] == "offline", 10), hub.node_state("FNG02")
     hub.stop()
+
+
+class FakeCameraBoard:
+    """A camera board (firmware 0.7, USB binary link) on a serial port: 240x240 gray frames at
+    15 fps plus 200 sps PPG, streaming between START and STOP, in USB envelopes."""
+
+    def __init__(self, dev="GLS03"):
+        import threading
+
+        self.dev, self.buf, self.lock = dev, bytearray(), threading.Lock()
+        self.streaming, self.closed = False, False
+        self.frames_sent = self.samples_sent = 0
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _headers(self):
+        from nbe_gateway.wire import envelope, text_record
+        from sglab.protocol import encode
+
+        lines = [encode(f"H,proto=1,dev={self.dev},fw=0.7.0-idf,sensor=MAX30102,fs=200,ch=ir|red,site=glasses,sensor_ok=1"),
+                 encode(f"H,proto=2,dev={self.dev},fw=0.7.0-idf,sid=1,stream=cam,kind=video,sensor=OV2640,ch=frame,"
+                        "fs=15,w=240,h=240,fmt=gray8,aec=0,exposure=300,gain=2,site=glasses,sensor_ok=1")]
+        return envelope(b"".join(text_record(x) for x in lines))
+
+    def _put(self, b):
+        with self.lock:
+            self.buf += b
+
+    def _run(self):
+        from nbe_gateway.wire import FMT_GRAY8, VideoFrame, envelope, frame_record, text_record
+        from sglab.protocol import encode
+
+        t0 = time.monotonic()
+        next_frame = next_sample = 0.0
+        while not self.closed:
+            time.sleep(0.005)
+            if not self.streaming:
+                t0 = time.monotonic()
+                next_frame = next_sample = 0.0
+                continue
+            now = time.monotonic() - t0
+            recs = b""
+            while next_sample <= now:
+                t_us = 1_000_000 + int(next_sample * 1e6)
+                recs += text_record(encode(f"D,{self.samples_sent},{t_us},{100000 + self.samples_sent % 50},90000"))
+                self.samples_sent += 1
+                next_sample += 0.005
+            if self.samples_sent and self.samples_sent % 200 == 0:
+                recs += text_record(encode(f"S,{1_000_000 + int(now * 1e6)},fs_meas=200.0,cam_fps=15.0,cam_drop=0"))
+            if recs:
+                self._put(envelope(recs))
+            if next_frame <= now:
+                k = self.frames_sent
+                px = bytes((k + x + 3 * y) & 0xFF for y in range(240) for x in range(240))
+                self._put(envelope(frame_record(VideoFrame(1, k, 1_000_000 + int(next_frame * 1e6), 240, 240,
+                                                           FMT_GRAY8, 300, 2, px))))
+                self.frames_sent += 1
+                next_frame += 1 / 15
+
+    # pyserial-like
+    @property
+    def in_waiting(self):
+        return len(self.buf)
+
+    def read(self, n=1):
+        end = time.monotonic() + 0.05
+        while not self.buf and time.monotonic() < end and not self.closed:
+            time.sleep(0.002)
+        if self.closed:
+            raise OSError("port closed")
+        with self.lock:
+            out = bytes(self.buf[:max(n, 1)])
+            del self.buf[:len(out)]
+        return out
+
+    def write(self, data):
+        from nbe_gateway.wire import envelope, text_record
+        from sglab.protocol import encode
+
+        for cmd in data.decode().split():
+            if cmd == "INFO":
+                self._put(self._headers())
+            elif cmd == "START":
+                self.frames_sent = self.samples_sent = 0
+                self._put(self._headers() + envelope(text_record(encode("E,1000000,START,"))))
+                self.streaming = True
+            elif cmd == "STOP":
+                self.streaming = False
+                self._put(envelope(text_record(encode("E,9000000,STOP,"))))
+
+    def flush(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+def test_camera_trial_through_usb_gateway(stack, tmp_path):
+    """Website trial on GLS03: fake board -> real gateway (paho, mTLS as GLS03) -> mosquitto with the
+    deploy ACL -> sglab hub -> recorder; then the live preview, and every frame and sample saved."""
+    from fastapi.testclient import TestClient
+
+    from nbe_gateway.app import Gateway
+    from sglab.catalog import Catalog
+    from sglab.video import read_frames
+    from sglab.web.app import create_app
+
+    s, tls, port = stack
+    Catalog(s.db_path, s.data_root).upsert_subject({"subject_id": "S001"})
+    nd = s.pki_dir / "nodes"
+    board = FakeCameraBoard()
+    gw = Gateway({"node_id": "GLS03", "broker_host": "localhost", "broker_port": port, "topic_prefix": "nbe",
+                  "cert_file": str(nd / "GLS03.crt"), "key_file": str(nd / "GLS03.key"),
+                  "ca_file": str(tls / "public_ca.crt"), "serial_port": "FAKE", "data_dir": str(tmp_path / "gw")},
+                 board_open=lambda port: board)
+    gw.start()
+    try:
+        with TestClient(create_app(s)) as c:
+            def dev():
+                return {d["key"]: d for d in c.get("/api/devices").json()["devices"]}
+            assert _wait(lambda: dev()["mqtt://GLS03"]["online"], 15), (
+                dev()["mqtt://GLS03"], gw.uplink.connected, gw.uplink.last_error, gw.board.connected, gw.board.warnings,
+                (tmp_path / "mosquitto.log").read_text()[-1500:])
+            r = c.post("/trial/start", data={"devices": ["mqtt://GLS03"], "subject_id": "S001", "protocol": "rest",
+                                             "trial": "1", "posture": "sitting", "operator": "EV"}, follow_redirects=False)
+            assert r.status_code == 303, r.text
+            tid = r.headers["location"].rsplit("/", 1)[1]
+
+            def cam():
+                v = c.get(f"/api/trials/{tid}").json()["streams"][0].get("video") or [{}]
+                return v[0]
+            assert _wait(lambda: cam().get("frames", 0) >= 40, 20), cam()
+            img = c.get(f"/api/trials/{tid}/video/{cam()['stream']}.jpg")
+            assert img.status_code == 200 and img.content[:2] == b"\xff\xd8" and int(img.headers["X-Frame-Count"]) >= 40
+            assert c.get(f"/api/trials/{tid}/video/nope.jpg").status_code == 404
+            assert c.post(f"/api/trials/{tid}/stop").status_code == 200
+            assert _wait(lambda: not board.streaming, 5)  # STOP went server -> broker -> gateway -> USB
+            r = c.post(f"/trials/{tid}/finish", data={"quality": "good", "keep": "on"}, follow_redirects=False)
+            sid = r.headers["location"].rsplit("/", 1)[1]
+            st = c.app.state.ctx.hub.node_state("GLS03")
+            assert st.get("link") == "usb-gateway" and st.get("sensor") == "MAX30102+OV2640"
+    finally:
+        gw.stop()
+        board.close()
+
+    sess = Catalog(s.db_path, s.data_root).session(sid)
+    doc = json.loads((s.data_root / sess["path"] / "session.json").read_text())
+    (v,) = doc["video"]
+    frames = list(read_frames(s.data_root / sess["path"] / v["file"]))
+    n = len(frames)
+    assert n >= 40 and v["stats"]["n_dropped_seq"] == 0 and [f.seq for f in frames] == list(range(n))
+    assert all(f.data[:240] == bytes((f.data[0] + x) & 0xFF for x in range(240)) for f in frames)
+    ppg = doc["streams"][0]
+    assert ppg["stats"]["n_dropped_seq"] == 0 and ppg["stats"]["n_samples"] > 400
+    assert gw.log.unacked() == 0  # the gateway's disk copy is all acknowledged

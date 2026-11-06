@@ -483,3 +483,31 @@ dir = "{tmp_path / 'pki'}"
     # a node in a trial is not updated
     app.state.ctx.manager.busy = lambda: {"mqtt://GLS01": {"owner": "x"}}
     assert c.post("/api/nodes/GLS01/ota", headers=H).status_code == 409
+
+
+def test_gateway_download_admin_only(server, tmp_path, monkeypatch):
+    from sglab import gateway_bundle
+
+    s, app = server
+    vend = tmp_path / "vend"
+    for pkg in ("serial", "paho/mqtt"):
+        (vend / pkg).mkdir(parents=True)
+        (vend / pkg / "__init__.py").write_text("")
+    monkeypatch.setattr(gateway_bundle, "vendor_dir", lambda cfg, name: vend / name)
+    monkeypatch.setattr(gateway_bundle, "runtime_archive", lambda cfg, triple: (_ for _ in ()).throw(
+        gateway_bundle.BundleError("offline in tests")))
+    admin = login(app, "ada")
+    assert admin.post("/admin/nodes", data={"node_id": "GLS03", "site": "glasses"}, headers=ORIGIN,
+                      follow_redirects=False).status_code == 303
+    page = admin.get("/admin/nodes").text
+    assert "USB gateway" in page and "windows-x64" in page
+    r = admin.get("/admin/gateway.zip", params={"node": "gls03", "platform": "linux-any"})
+    assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
+    assert 'NBE-Gateway-GLS03-linux-any.zip' in r.headers["content-disposition"]
+    names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
+    assert "NBE-Gateway-GLS03-linux-any/certs/client.key" in names
+    # a platform that needs a runtime the server can't fetch: a clear error, not a broken zip
+    r = admin.get("/admin/gateway.zip", params={"node": "GLS03", "platform": "windows-x64"})
+    assert r.status_code == 502 and "offline in tests" in r.text
+    assert admin.get("/admin/gateway.zip", params={"node": "NOPE1", "platform": "linux-any"}).status_code == 404
+    assert login(app, "olga").get("/admin/gateway.zip", params={"node": "GLS03", "platform": "linux-any"}).status_code == 403

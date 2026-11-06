@@ -1,6 +1,7 @@
-# PPG serial protocol v1 (ESP32 → PC)
+# PPG serial protocol v1 / v2 (ESP32 → PC)
 
-Implementations: `esp-idf/ppg_stream/` (main, ESP-IDF v6) and `arduino/ppg_stream/` (reference).
+Implementations: `esp-idf/ppg_stream/` (main, ESP-IDF v6) and `arduino/ppg_stream/` (reference, v1).
+v2 (camera boards, USB gateway): see "Protocol v2" below.
 
 This is what the firmware sends over USB serial so `sglab record` can capture it.
 It is plain ASCII, so you can still read it in the Arduino serial monitor while
@@ -175,6 +176,97 @@ A `START` event after the first one begins a new `seq` epoch;
 if the device clock went backwards (reboot), later device times are shifted onto the old
 timeline via the PC clock so `t_dev_us` stays monotonic. Nodes that cannot reach the broker
 for `CONFIG_PPG_NET_REBOOT_S` (default 300 s) reboot themselves.
+
+## Protocol v2: several streams per board, camera frames, USB gateway
+
+Firmware ≥ 0.7 adds what a board with more than one sensor needs. Everything above stays valid:
+a v1 board is a v2 board with one stream.
+
+### Streams
+
+The board's **primary stream** (stream id 0) is its PPG: the `H` line without `sid`, and the `D`
+lines / samples records, exactly as in v1. **Every further stream declares itself with its own
+`H` line** carrying `proto=2`, `sid=<1..255>`, `stream=<name>` and `kind=`:
+
+```
+$H,proto=2,dev=GLS03,fw=0.7.0-idf,sid=1,stream=cam,kind=video,sensor=OV2640,ch=frame,fs=15,w=240,h=240,fmt=gray8,aec=0,exposure=300,gain=2,site=glasses,sensor_ok=1*66
+```
+
+| key | meaning |
+|---|---|
+| `sid` | stream id used in that stream's binary records |
+| `stream` | name; files are called `<role>_<dev>_<stream>.*` |
+| `kind` | `video` (camera frames). Later kinds (e.g. further sample streams) get their own record type |
+| `fs` | frame-rate cap (frames/s); the real rate is in `cam_fps` of the `S` line |
+| `w`, `h`, `fmt` | frame size and format: `gray8` (raw 8-bit grayscale, w·h bytes) or `jpeg` |
+| `aec`, `exposure`, `gain` | auto exposure on/off, else the fixed exposure / gain |
+
+`H` lines are sent for every stream on boot, on `INFO` and on `START`. `E` and `S` lines are for the
+whole board. The camera adds `cam_fps`, `cam_sent`, `cam_drop` (frames the board could not send) to
+the `S` line.
+
+The server never needs to know in advance which sensors a node has: streams describe themselves.
+
+### Frame record (type 0x03)
+
+A third record type next to text (0x01) and samples (0x02), in the same record stream as everything
+else (so it travels in MQTT data frames and USB envelopes alike):
+
+```
+record  0x03 | body length (uvarint) | body
+body    sid u8 | seq u32 | t_us u64 | w u16 | h u16 | fmt u8 | exposure u16 | gain u8 | pixels
+```
+
+* `seq` counts frames of that stream from 0 at `START`; a gap = a lost frame.
+* `t_us` = capture time (start of the frame) on the **same `esp_timer` clock as the PPG's `t_us`**,
+  so frames and pulses line up without any PC clock.
+* `exposure` / `gain` = the values the frame was taken with (`0xFFFF` / `0xFF` = automatic).
+
+### USB binary link (`CONFIG_PPG_LINK_USB_BIN`)
+
+Camera boards stream over USB-C as binary records instead of text lines (a 240×240 frame is
+57.6 kB; as text it would be a third larger, and the samples shrink to 2–5 bytes each as on MQTT):
+
+```
+envelope  0xA5 0x5A | len u32 | crc32 u32 (zlib CRC-32 of the records) | records
+```
+
+Little-endian. Envelopes hold whole records. The board writes small records (text + samples)
+every 10 ms and each camera frame as its own envelope. When the PC stops reading the board gives up
+an envelope part-way; the reader skips to the next `0xA5 0x5A` whose CRC matches (anything else
+between envelopes is boot text and is passed on line by line). Lost samples / frames show as `seq`
+gaps. Commands to the board are the plain text lines of v1 (`INFO`, `START`, `STOP`) plus:
+
+| command | effect |
+|---|---|
+| `CAM FPS=10 EXP=300 GAIN=2 AEC=0` | any subset: change the camera at run time; the board answers with fresh `H` lines |
+
+Readers: `nbe_gateway.wire.EnvelopeDecoder` (both `sglab record` on a local port and the gateway).
+
+### USB gateway (`nbe_gateway`)
+
+A board on USB reaches the server through the operator's computer, which runs the NBE USB gateway
+(downloaded from the server's Nodes page with the node's certificate inside). The gateway
+
+1. reads envelopes from USB and appends the records, unchanged, to a log on its disk (the local
+   raw copy and the send buffer; `data/<NODE>/seg_*.bin`, kept up to `keep_gb`),
+2. **is the node on MQTT** (client certificate CN = node ID): it sends that log as the MQTT data frames
+   above, with its own `boot` / offsets and the same ACK / RESEND / go-back-N, and publishes the
+   node's status (plus `"link": "usb-gateway"`, `usb`, `disk_mb`, `up_kbps`),
+3. passes `INFO` / `START` / `STOP` / `CAM ...` from the cmd topic to the board (`OTA` is not
+   supported over USB), and `STOP`s the board when the server's `core/status` goes offline,
+4. adds `$E,<t_us>,SYNC,<unix ms>` every 10 s while streaming, pairing the board's clock with the
+   computer's (NTP) clock as Wi-Fi nodes do with SNTP.
+
+Because its buffer is a disk instead of 2 MB of PSRAM, an internet outage only delays data. The
+server handles a gateway exactly like a Wi-Fi node.
+
+### Storage
+
+Camera streams are stored next to the PPG CSV in the session folder (`sglab/video.py`):
+`<role>_<dev>_<stream>.frames` (every frame as received) and `<role>_<dev>_<stream>.csv` (one row per
+frame: `t_s, seq, t_dev_us, exposure, gain, offset, nbytes`). They are listed under `"video"` in
+`session.json`, not under `"streams"` (those are the PPG streams processing reads).
 
 ## One ESP32, two sensors?
 

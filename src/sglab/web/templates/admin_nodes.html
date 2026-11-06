@@ -82,6 +82,38 @@ setInterval(pollFw, 3000);
 <datalist id="sites"><option>finger</option><option>glasses</option><option>ear</option><option>wrist</option></datalist>
 {% if unknown %}<div class="warn">Seen on the broker but not registered / enabled: {{ unknown | join(', ') }}</div>{% endif %}
 
+<h2>USB gateway</h2>
+<div class="card stack" style="display:grid; gap:10px">
+  <div class="note">For boards that stream over <b>USB</b> to the operator's computer instead of Wi-Fi (camera glasses
+    flashed with <code>sdkconfig.camera</code>, or any board on the USB link). The gateway runs on that computer, keeps a
+    local copy of everything, and forwards it to this server <i>as the node</i> – so the node then shows up on the
+    devices page and records like any Wi-Fi node. The download contains everything it needs (its own Python, the node's
+    certificate): unzip, double-click, done. Register the node above first.</div>
+  <form class="row-inline" method="get" action="/admin/gateway.zip">
+    <select name="node" required>
+      {% for n in nodes %}<option value="{{ n.node_id }}" {% if n.site == 'glasses' %}selected{% endif %}>{{ n.node_id }}{% if n.name %} – {{ n.name }}{% endif %}</option>{% endfor %}
+    </select>
+    <select name="platform" id="gw-platform">
+      {% for key, label in gateway_platforms %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+    </select>
+    <button class="primary" type="submit" {% if not nodes or not pki_ready %}disabled{% endif %}>Download gateway</button>
+    <span class="note">~15–30 MB; the first download per system takes a little longer (the server fetches that Python once)</span>
+  </form>
+  <div class="note">The zip holds the node's private key: send it only to the operator who runs that board, and
+    <b>rotate</b> the node's certificate if it goes astray (then download a new gateway).</div>
+</div>
+<script>
+// preselect the operator's likely system for the admin's own download
+(function () {
+  const p = navigator.userAgentData?.platform || navigator.platform || '', ua = navigator.userAgent;
+  const sel = document.getElementById('gw-platform'); if (!sel) return;
+  if (/Win/i.test(p)) sel.value = 'windows-x64';
+  else if (/Mac/i.test(p)) sel.value = 'macos-arm64';
+  else if (/aarch64|arm/i.test(ua)) sel.value = 'linux-arm64';
+  else if (/Linux/i.test(p)) sel.value = 'linux-x64';
+})();
+</script>
+
 <h2>Register a node</h2>
 <form class="card row-inline" method="post" action="/admin/nodes">
   <input type="text" name="node_id" placeholder="ID, e.g. FNG02" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{1,31}" required style="width:130px">

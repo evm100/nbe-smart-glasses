@@ -3,7 +3,8 @@
 //
 // Tasks
 //   sensor_task  (core 1): FIFO reads -> D lines, H/E/S lines, start/stop handling
-//   cmd_task     (core 0): reads INFO / START / STOP / OTA <token> from the PC or the MQTT cmd topic
+//   cmd_task     (core 0): reads INFO / START / STOP / CAM ... / OTA <token> from the PC or the MQTT cmd topic
+//   camera_task  (core 0, camera boards): frames -> link_write_frame() (camera.c)
 //   (MQTT link only: Wi-Fi/MQTT tasks in link_mqtt.c / net.c batch and publish the lines)
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -21,6 +22,7 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
+#include "camera.h"
 #include "diag.h"
 #include "link.h"
 #include "max30102.h"
@@ -97,6 +99,11 @@ static void send_header(void)
     pl_str(&l, ",site=" CONFIG_PPG_SITE ",board=" CONFIG_PPG_BOARD_NAME);
     pl_str(&l, s_sensor_ok ? ",sensor_ok=1" : ",sensor_ok=0");
     send_line(&l);
+#if CONFIG_PPG_CAMERA
+    pl_begin(&l, buf, sizeof buf);  // protocol v2: the camera stream declares itself (sid=1)
+    camera_header(&l);
+    send_line(&l);
+#endif
 }
 
 static void send_event(const char *code, const char *text)
@@ -132,6 +139,9 @@ static void send_status(uint32_t window_ms)
     pl_u64(&l, link_dropped_bytes());
     pl_str(&l, ",loop_us_max=");
     pl_u64(&l, s_loop_max_us);
+#if CONFIG_PPG_CAMERA
+    camera_status(&l, window_ms);
+#endif
     if (s_temp_centi != INT32_MIN) {
         pl_str(&l, ",temp_c=");
         pl_fixed(&l, s_temp_centi, 2);
@@ -276,19 +286,25 @@ static void start_streaming(void)
     static uint32_t red[MAX30102_FIFO_DEPTH], ir[MAX30102_FIFO_DEPTH];
     int n;
     uint8_t ovf;
-    max30102_read_fifo(&s_sensor, red, ir, &n, &ovf);
+    if (s_sensor_ok) max30102_read_fifo(&s_sensor, red, ir, &n, &ovf);
     s_seq = 0;
     s_ovf_events = s_i2c_errors = s_alc_ovf_events = 0;
     send_header();
     send_event("START", "");
     send_sync();
     s_streaming = true;
+#if CONFIG_PPG_CAMERA
+    camera_start();
+#endif
     led_set(true);
     note_state();
 }
 
 static void stop_streaming(void)
 {
+#if CONFIG_PPG_CAMERA
+    camera_stop();
+#endif
     if (s_streaming) {
         s_streaming = false;
         send_event("STOP", "");
@@ -381,7 +397,12 @@ static void sensor_task(void *arg)
         if (atomic_exchange(&s_req_info, false)) send_header();
         if (atomic_exchange(&s_req_stop, false)) stop_streaming();
         if (atomic_exchange(&s_req_start, false)) {
-            if (s_sensor_ok) {
+#if CONFIG_PPG_CAMERA
+            bool can_start = s_sensor_ok || camera_ok();  // either stream alone is still worth recording
+#else
+            bool can_start = s_sensor_ok;
+#endif
+            if (can_start) {
                 start_streaming();
             } else {
                 send_header();
@@ -459,6 +480,10 @@ static void handle_command(const char *c)
         atomic_store(&s_req_start, true);
     } else if (strcmp(c, "STOP") == 0) {
         atomic_store(&s_req_stop, true);
+#if CONFIG_PPG_CAMERA
+    } else if (strncmp(c, "CAM ", 4) == 0) {
+        if (camera_command(c + 4)) atomic_store(&s_req_info, true);  // headers carry the new settings
+#endif
     } else if (strncmp(c, "OTA ", 4) == 0) {
         atomic_store(&s_req_stop, true);  // the server only sends it outside trials; stop anyway
         link_ota(c + 4);
@@ -500,6 +525,9 @@ void app_main(void)
     char boot[48] = FW_VERSION " reset=";  // why the last run ended: brownout, panic, task_wdt...
     strlcat(boot, diag_reset_reason(), sizeof boot);
     send_event("BOOT", boot);  // the sensor is opened by sensor_task (sensor_first_open)
+#if CONFIG_PPG_CAMERA
+    if (!camera_init()) send_event("SENSOR_ERR", "camera not found - check the ribbon / PSRAM setting");
+#endif
 
 #if CONFIG_PPG_AUTOSTART
     atomic_store(&s_req_start, true);

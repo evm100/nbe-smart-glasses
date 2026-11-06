@@ -7,6 +7,9 @@ data/raw/<session_id>/):
     events.csv              operator entries (cuff BP, pulse-ox, markers) + device events
     <role>_<dev>.csv        one row per sample: t_s, seq, t_dev_us, <channels...>
     <role>_<dev>.rawlog     every line exactly as received, with PC receive time
+    <role>_<dev>_<stream>.frames / .csv   camera streams of protocol v2 boards (sglab.video):
+                            raw frames + one index row per frame; listed under "video" in
+                            session.json (not "streams", which are the PPG streams processing reads)
 
 Time base: ``t_s`` = seconds since the session started, from the PC's monotonic
 clock. Every stream and every event uses it, which is what lets us line up the
@@ -28,6 +31,7 @@ import numpy as np
 
 from .protocol import Event, Header, ProtocolError, Sample, Status, parse_line
 from .sources import open_source
+from .video import VideoWriter
 
 # auto-restart: a stream that stops delivering samples gets START again (node rebooted, Wi-Fi
 # came back after the server's last will stopped it, a START/STOP got lost, ...)
@@ -87,6 +91,8 @@ class StreamWorker(threading.Thread):
         self._sync: list[tuple[float, float]] = []  # (t_dev_s, unix_s) from $E SYNC (SNTP-synced nodes)
         self._csv = None
         self._writer = None
+        self.video: dict[int, VideoWriter] = {}  # protocol v2 camera streams by sid
+        self.video_pre_header = 0
 
     # -- helpers ----------------------------------------------------------
     def _now(self) -> float:
@@ -109,6 +115,9 @@ class StreamWorker(threading.Thread):
             self.stats["n_text_lines"] += 1
             return
         if isinstance(msg, Header):
+            if msg.extra.get("kind") == "video":  # protocol v2: a camera stream declares itself
+                self._video_header(msg)
+                return
             if self.header is None:
                 self.header = msg
                 self.live = deque(maxlen=int(max(msg.fs, 1) * 12))
@@ -184,11 +193,40 @@ class StreamWorker(threading.Thread):
         if isinstance(msg, Status):
             self.status = msg.values
 
+    def _video_header(self, h: Header) -> None:
+        try:
+            sid = int(h.extra.get("sid", 1))
+        except ValueError:
+            return
+        kv = {"dev": h.dev, "fs": h.fs, "fw": h.fw, "proto": h.proto, **h.extra}
+        vw = self.video.get(sid)
+        if vw is None:
+            name = f"{_safe(self.role)}_{_safe(h.dev)}_{_safe(h.extra.get('stream', f's{sid}'))}"
+            self.video[sid] = VideoWriter(self.folder, name, kv)
+        else:
+            vw.update_header(kv)
+
+    def _handle_frame(self, fr, t: float) -> None:
+        vw = self.video.get(fr.sid)
+        if vw is None:  # frames before their header (lost): ask for it, like samples do
+            self.video_pre_header += 1
+            now = time.monotonic()
+            if now - getattr(self, "_last_info_mono", -INFO_EVERY_S) >= INFO_EVERY_S:
+                self._last_info_mono = now
+                self.src.write("INFO")
+            return
+        vw.add(fr, t, fr.t_us + self._dev_off_us)
+        # frames prove the board is streaming: no auto-restart (a START would reset the camera's seq
+        # too) just because the PPG sensor is missing
+        self._last_sample_mono = time.monotonic()
+
     def _on_device_start(self, t_us: int, t: float) -> None:
         """The device (re)started its stream: seq starts again at 0. If its clock went
         backwards it rebooted; shift its times onto the old device timeline (via the PC clock)
         so t_dev_us stays monotonic and one clock fit still covers the whole recording."""
         self._n_starts += 1
+        for vw in self.video.values():
+            vw.new_epoch()
         if self._n_starts == 1:
             return
         self.stats["n_device_restarts"] += 1
@@ -256,6 +294,8 @@ class StreamWorker(threading.Thread):
                         raw.flush()
                         if self._csv:
                             self._csv.flush()
+                        for vw in self.video.values():
+                            vw.flush()
                         m_t, m_n = self._rate_mark
                         dev_rate = self._device_rate()
                         self.rate_hz = dev_rate if dev_rate is not None else (self.stats["n_samples"] - m_n) / (now - m_t)
@@ -270,6 +310,8 @@ class StreamWorker(threading.Thread):
         finally:
             if self._csv:
                 self._csv.close()
+            for vw in self.video.values():
+                vw.close()
             self.src.close()
 
     def _read_one(self, raw):
@@ -277,6 +319,10 @@ class StreamWorker(threading.Thread):
         if not line:
             return
         t = self._now()
+        if not isinstance(line, str):  # a camera frame (protocol v2): its own file, a marker here
+            raw.write(f"{t:.6f}\t#FRAME sid={line.sid} seq={line.seq} t_us={line.t_us} bytes={len(line.data)}\n")
+            self._handle_frame(line, t)
+            return
         self.stats["n_lines"] += 1
         raw.write(f"{t:.6f}\t{line.rstrip()}\n")
         self._handle(line, t)
@@ -328,6 +374,7 @@ class StreamWorker(threading.Thread):
             "epoch_fit": self.epoch_fit(),
             "device_status": self.status,   # last S line from the firmware (fs_meas, ovf, temp_c...)
             "error": self.error,
+            "video": [vw.summary() for vw in self.video.values()],
             # how ppg.io should read this CSV
             "io": {"time_col": "t_dev_us", "time_unit": "us",
                    "channels": {c: c for c in (h.channels if h else [])}},
@@ -405,7 +452,8 @@ class Recording:
                         "last": w.last_values, "error": w.error, "alive": w.is_alive(),
                         "stall_s": round(w.stall_s(), 1), "auto_restarts": w.stats["n_auto_restarts"],
                         "device_restarts": w.stats["n_device_restarts"],
-                        "device": dict(w.status)})
+                        "device": dict(w.status),
+                        "video": [vw.live() for vw in w.video.values()]})
         return out
 
     def stop(self) -> None:
@@ -438,6 +486,8 @@ class Recording:
             "subject": self.subject_snapshot,
             "reference_devices": self.settings.lab.get("reference", {}),
             "streams": [w.summary() for w in self.workers] if final else [],
+            # camera streams (sglab.video): kept out of "streams" so PPG processing never sees them
+            "video": [v for w in self.workers for v in (w.summary()["video"] if final else [])],
             "n_events": len(self.all_events()),
         }
         (self.folder / "session.json").write_text(json.dumps(doc, indent=2, default=str))

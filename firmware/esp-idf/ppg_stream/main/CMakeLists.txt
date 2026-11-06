@@ -20,6 +20,8 @@ if(CONFIG_PPG_LINK_MQTT)
         endif()
         list(APPEND embed "certs/broker_ca.crt")
     endif()
+elseif(CONFIG_PPG_LINK_USB_BIN)
+    list(APPEND srcs "link_usb_bin.c" "frame.c" "camera.c")
 else()
     list(APPEND srcs "link.c")
 endif()
@@ -30,6 +32,7 @@ idf_component_register(
     REQUIRES esp_driver_i2c esp_driver_gpio esp_driver_uart esp_driver_usb_serial_jtag esp_timer
              esp_wifi esp_netif esp_event nvs_flash mbedtls wpa_supplicant
              esp_https_ota esp_http_client app_update esp_app_format
-    # espressif/mqtt comes from idf_component.yml (manifest dependencies are added automatically)
+    # espressif/mqtt and espressif/esp32-camera come from idf_component.yml (manifest
+    # dependencies are added automatically)
     EMBED_TXTFILES ${embed}
 )

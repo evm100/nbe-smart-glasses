@@ -92,6 +92,16 @@ class Settings:
         return p
 
     @property
+    def gateway(self) -> dict:
+        """[gateway]: what goes into the USB gateway downloads (sglab.gateway_bundle)."""
+        g = dict(self.srv.get("gateway", {}))
+        g.setdefault("python_release", "20261021")   # astral-sh/python-build-standalone release tag
+        g.setdefault("python_version", "3.12.15")
+        g.setdefault("keep_gb", 20)
+        g["cache_dir"] = Path(g.get("cache_dir") or (self.data_root.parent / "cache" / "gateway")).resolve()
+        return g
+
+    @property
     def processing_mode(self) -> str:
         """[processing] mode: "local" = in this process, "remote" = queue for `sglab worker` (sglab.jobs)."""
         m = self.srv.get("processing", {}).get("mode", "local")

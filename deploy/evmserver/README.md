@@ -43,6 +43,18 @@ deploy/evmserver/build-firmware.sh             # GLS01 HED01 FNG01 -> ~/nbe-firm
 
 Re-run it after changing your UCSD password (then re-flash all three), or after firmware changes.
 
+### Camera glasses (USB gateway)
+
+```bash
+deploy/evmserver/build-firmware.sh --camera GLS03   # no Wi-Fi file needed -> ~/nbe-firmware/out/GLS03.bin
+```
+
+The camera image holds no Wi-Fi password and no node key, so `GLS03.bin` + `flash.sh` can be sent
+to whoever flashes the board, on a Mac or Linux: `./flash.sh GLS03` in the folder with both files
+(first run installs esptool; macOS may ask to install the command-line tools for `python3`). Don't
+send the rest of `out/`: the Wi-Fi images contain your UCSD password. Then register GLS03 on the
+Nodes page and send the operator **Download gateway** for their system (that zip does hold the node key).
+
 ## 3. Flash (on the Pi)
 
 ```bash

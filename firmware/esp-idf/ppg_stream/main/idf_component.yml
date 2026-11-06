@@ -3,3 +3,6 @@
 dependencies:
   idf: ">=6.0"
   espressif/mqtt: "*"
+  # OV2640 on the XIAO ESP32-S3 Sense (CONFIG_PPG_CAMERA). Uses the new I2C master driver on
+  # IDF >= 5.4, so it can share the chip with the MAX30102's i2c_master bus.
+  espressif/esp32-camera: "^2.1"

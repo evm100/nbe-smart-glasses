@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from ..commands import CommandError
 from ..control import TrialError, form_to_meta
@@ -190,6 +190,21 @@ def api_trial_live(request: Request, tid: str, seconds: float = 8.0, after: str 
     except ValueError:
         raise HTTPException(400, "after: comma-separated integers") from None
     return ctx.manager.live(tid, min(max(seconds, 1.0), 30.0), after=cursors)
+
+
+@router.get("/api/trials/{tid}/video/{stream}.jpg")
+def api_trial_video(request: Request, tid: str, stream: str, user=operator):
+    """Newest frame of a camera stream as a small JPEG (the live page polls it). X-Frame-Count lets
+    the page skip frames it already shows; 204 before the first frame."""
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    try:
+        p = ctx.manager.video_preview(tid, stream, quality=int(ctx.settings.lab.get("ui", {}).get("preview_quality", 40)))
+    except TrialError as e:
+        raise HTTPException(404, str(e)) from None
+    if p is None:
+        return Response(status_code=204)
+    return Response(p[1], media_type="image/jpeg", headers={"Cache-Control": "no-store", "X-Frame-Count": str(p[0])})
 
 
 @router.post("/api/trials/{tid}/event")

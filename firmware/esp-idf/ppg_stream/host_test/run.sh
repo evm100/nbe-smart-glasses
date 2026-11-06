@@ -14,6 +14,9 @@ gcc $CF -DCONFIG_PPG_FIFO_POLL_MS=100 -o sim_slow $SRC
 # MQTT link: run the real batching code against a fake esp-mqtt (each batch must hold whole lines)
 MQ="-DTEST_MQTT -Istubs_net"
 gcc $CF $MQ -o sim_mqtt sim.c ../main/max30102.c ../main/proto.c ../main/diag.c ../main/frame.c ../main/link_mqtt.c mqtt_fake.c
+# camera glasses: USB binary link + fake OV2640 (frames + samples in envelopes, checked below)
+gcc $CF -DTEST_USB_BIN -Istubs_cam -o sim_usbbin sim.c ../main/max30102.c ../main/proto.c ../main/diag.c \
+    ../main/frame.c ../main/link_usb_bin.c ../main/camera.c
 # compile-check the Wi-Fi code and the other Kconfig variants against stub headers
 gcc $CF $MQ -fsyntax-only ../main/net.c
 gcc $CF $MQ -DTEST_EAP -fsyntax-only ../main/net.c
@@ -40,5 +43,9 @@ open("out_mqtt.txt", "w", newline="").write("".join(out))
 print("framing:", rx.stats)
 assert rx.stats["gaps"] >= 1 and rx.stats["lost_bytes"] == 0 and rx.stats["bad_frames"] == 0
 PY
+./sim_usbbin 3 > out_usbbin.bin 2>usbbin_log.txt || { cat usbbin_log.txt; exit 1; }
+grep "usb bin" usbbin_log.txt
+"${PYTHON:-python3}" check_usbbin.py out_usbbin.bin
 "${PYTHON:-python3}" check_output.py
-rm -f sim sim_int sim_uart sim_hr sim_slow sim_mqtt mqtt_log.txt frames_mqtt.bin out_mqtt_usb.txt
+rm -f sim sim_int sim_uart sim_hr sim_slow sim_mqtt mqtt_log.txt frames_mqtt.bin out_mqtt_usb.txt \
+      sim_usbbin out_usbbin.bin usbbin_log.txt

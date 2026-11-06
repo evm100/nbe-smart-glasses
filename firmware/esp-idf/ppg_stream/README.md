@@ -62,6 +62,34 @@ USB-C port carries only protocol lines. To get logs on USB instead, change
 *Component config → ESP System Settings → Channel for console output*, but they will
 then mix with the data (sglab ignores non-`$` lines, but a log line can split a data line).
 
+### Camera glasses (XIAO ESP32-S3 Sense: OV2640 + MAX30102) → USB gateway
+
+Camera boards stream over USB-C as **binary records** (protocol v2, `../../PROTOCOL.md`
+"Protocol v2") to the **NBE USB gateway** on the operator's computer, which forwards everything
+to the server as this node. The board itself needs no Wi-Fi and no certificates.
+
+```bash
+rm -f sdkconfig
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.camera" menuconfig   # check Identity -> Device ID (GLS03)
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.camera" build
+idf.py -p <PORT> flash
+```
+
+`sdkconfig.camera` selects the USB binary link, the camera (240×240 grayscale, 15 fps cap, fixed
+exposure 300 / gain 2 as on the old MATLAB rig), and puts the camera's SCCB on I2C port 1 so the
+MAX30102 keeps port 0. The MAX30102 is wired as usual (D4/D5). Then on the server: register the node
+(Nodes page), **Download gateway** for the operator's system, unzip it there, double-click the start
+script, plug in the glasses. The node shows as online on the devices page and records like a Wi-Fi
+node; the trial page shows a live camera preview.
+
+Camera settings at run time (sent by the server, or typed into a serial terminal):
+`CAM FPS=10 EXP=400 GAIN=4 AEC=0`. The S line reports `cam_fps` (frames actually sent per second)
+and `cam_drop` (frames the board couldn't send because the PC didn't read fast enough).
+
+**Bandwidth to check on the first hardware run:** 240×240 at 15 fps is ~0.86 MB/s over USB
+Serial/JTAG. If `cam_fps` stays below the cap, or `cam_drop` grows, lower the cap (`CAM FPS=10`) or the
+frame size (menuconfig → Camera).
+
 ## menuconfig → "PPG stream (MAX30102)"
 
 | Menu | Settings | Defaults |
@@ -69,7 +97,8 @@ then mix with the data (sglab ignores non-`$` lines, but a log line can split a 
 | Identity | Device ID (`dev=`), measurement site, board name | FNG01, finger |
 | Wiring | I2C port, SDA/SCL GPIO, I2C clock, internal pull-ups, INT GPIO, marker button GPIO, status LED GPIO + polarity | 0, 5/6, 400 kHz, on, −1, −1, 21 active-low |
 | Sensor | LED mode (SpO2 red+IR / HR red-only), sample rate 50–3200, on-chip averaging 1–32, pulse width 69–411 µs, ADC range 2048–16384 nA, red/IR LED current (0.1 mA units), FIFO poll period, FIFO almost-full level | SpO2, 400 sps, 1, 411 µs, 16384 nA, 6.4 mA, 5 ms |
-| Link | USB Serial/JTAG (USB-C), UART (+ number, baud, TX/RX GPIO), or Wi-Fi + MQTT; TX buffer size | USB, 8192 B |
+| Link | USB Serial/JTAG (USB-C) text lines, USB binary records (camera boards / USB gateway), UART (+ number, baud, TX/RX GPIO), or Wi-Fi + MQTT; TX buffer size | USB, 8192 B (32768 B binary) |
+| Camera | OV2640 on/off (USB binary link only), frame size 96×96…640×480, raw grayscale or JPEG (+ quality), fps cap, auto / fixed exposure + gain, flip / mirror | off; 240×240 gray8, 15 fps, exposure 300, gain 2 |
 | Link → Wi-Fi | SSID, password / WPA2-Enterprise (PEAP), fallback networks 2 + 3 (password/open, tried in order when the one before isn't found or keeps refusing), modem sleep, max transmit power, 20 MHz only, SNTP server | UCSD-DEVICE, PSK, off, 20 dBm, off, pool.ntp.org |
 | Link → MQTT | broker URI, topic prefix, broker CA (public bundle / private PEM), send period, largest frame, unacknowledged window, store-and-forward buffer, outbox limit (status only), status period, stop when the server goes offline | written by nbe_node.py; 250 ms, 8 kB, 64 kB, 2 MB with PSRAM, 64 kB, 15 s, on |
 | Behaviour | Autostart without `START`, status-line period, die-temperature reporting, quiet logs after boot | off, 1000 ms, on, on |
@@ -163,16 +192,20 @@ CMakeLists.txt          project (ESP-IDF)
 sdkconfig.defaults      target esp32s3, 1 kHz tick, console on UART0, 8 MB flash, PSRAM, OTA partitions + rollback
 partitions.csv          two ~4 MB app slots for over-the-air updates
 sdkconfig.nbe           (generated, not committed) per-node values from nbe_node.py
+sdkconfig.camera        overlay for camera glasses (USB binary link + OV2640), see "Camera glasses"
 main/Kconfig.projbuild  the menuconfig menu
-main/idf_component.yml  managed components (espressif/mqtt)
+main/idf_component.yml  managed components (espressif/mqtt, espressif/esp32-camera)
 main/app_main.c         tasks: sensor (FIFO → D lines, status, SYNC, start/stop) + commands
 main/max30102.c/.h      register-level driver on i2c_master
 main/proto.c/.h         line builder with XOR checksum (no printf)
 main/link.h             transport interface used by app_main
 main/link.c             USB Serial/JTAG or UART transport
 main/link_mqtt.c        MQTT transport: batching, store-and-forward, status/LWT, commands
+main/link_usb_bin.c     USB binary transport (protocol v2 envelopes: text + samples + camera frames)
+main/camera.c/.h        OV2640 stream (sid 1 "cam"): capture task, H line, CAM command, S-line stats
+main/frame.c/.h         binary records (MQTT frames, USB envelopes, frame records), CRC-32
 main/ota.c/.h           over-the-air update ("OTA <token>" command), rollback if the new build can't reach the broker
 main/net.c/.h           Wi-Fi station (PSK or PEAP, up to 3 saved networks), reconnect back-off, SNTP
 main/certs/             (generated, not committed) node certificate + key
-host_test/              PC build + simulator (USB, UART, MQTT batching) + output checker
+host_test/              PC build + simulator (USB, UART, MQTT batching, USB binary + fake camera) + output checkers
 ```
