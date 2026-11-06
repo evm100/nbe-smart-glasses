@@ -532,7 +532,9 @@ def cmd_tune(a):
     from .settings import find_root
 
     if a.sub == "fetch":
-        n = tune.fetch(Path(a.out), a.server, None, a.sessions)
+        from .settings import load_settings
+
+        n = tune.fetch(Path(a.out), a.server, None, a.sessions, selection=load_settings(find_root()).selection)
         console.print(f"{n} session(s) with a finger stream in {a.out}")
     elif a.sub == "run":
         out = Path(a.out or f"runs/tune/{a.site}-{a.stage}")

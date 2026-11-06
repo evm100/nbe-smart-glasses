@@ -7,6 +7,13 @@ data_root = "data"            # raw/, processed/, datasets/, catalog.sqlite live
 baud = 921600                 # must match the firmware (ignored for native USB-CDC)
 start_timeout_s = 3.0         # how long to wait for the H line after START
 
+# Sessions that `sglab tune` (filter/beat-detection search, scorecard) and `sglab dataset build`
+# (so every model and sweep) leave out. Recording, processing and the web UI still show them.
+# After changing this, rebuild datasets (`sglab dataset build`) and start new tune studies.
+[selection]
+exclude_subjects = ["S001"]   # S001 = bench testing / bring-up, never a real subject
+# not_before = "2026-11-01"   # skip sessions recorded before a sensor-config change (local time)
+
 # Named devices so you can type `sglab record glasses finger` instead of ports.
 # `role` is stored with every stream and used for file names.
 [devices.finger]

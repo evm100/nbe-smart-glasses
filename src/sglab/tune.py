@@ -56,6 +56,7 @@ from ppg.tuning import (feature_jitter, median_wave, pool_agreement, pool_jitter
 from .processing import (_first_sample_dev_s, _first_sample_session_time, _prepared_csv, pipeline_configs, site_overrides,
                          stream_configs, stream_layer1)
 
+from .settings import Selection
 from .timebase import run_clock, session_clocks
 
 REF_ROLE = "finger"
@@ -155,7 +156,9 @@ class Pair:
     t0_unix: float | None = None   # session start, anchors the SNTP clock (sglab.timebase)
 
 
-def find_pairs(data: Path, site: str, include: list[str] | None = None, skip_bad: bool = True) -> list[Pair]:
+def find_pairs(data: Path, site: str, include: list[str] | None = None, skip_bad: bool = True,
+               selection: Selection | None = None) -> list[Pair]:
+    """selection: [selection] in lab.toml (excluded subjects, sessions before a date) – skipped."""
     pairs = []
     for sj in sorted(Path(data).rglob("session.json")):
         if "_incoming" in sj.parts:
@@ -167,6 +170,9 @@ def find_pairs(data: Path, site: str, include: list[str] | None = None, skip_bad
         if doc.get("status") == "discard":
             continue
         if skip_bad and (doc.get("metadata") or {}).get("quality") == "bad":
+            continue
+        subj = (doc.get("metadata") or {}).get("subject_id") or (doc.get("subject") or {}).get("subject_id")
+        if selection and selection.reason(subj, doc.get("started_at")):
             continue
         by_role = {st.get("role"): st for st in doc.get("streams", [])
                    if st.get("file") and (sj.parent / st["file"]).exists()}
@@ -441,14 +447,17 @@ def run(data: Path, site: str, stage: str, out: Path, trials: int, hours: float,
             raise ValueError(f"{out} is a {meta['site']}/{meta['stage']} study; use another --out")
         log(f"resuming {out} ({meta['site']}/{meta['stage']})")
     else:
-        pairs = find_pairs(data, site, sessions, skip_bad)
+        from .settings import load_settings
+
+        selection = load_settings(root or Path.cwd()).selection
+        pairs = find_pairs(data, site, sessions, skip_bad, selection)
         if not pairs:
             raise ValueError(f"no session in {data} has both a '{REF_ROLE}' and a '{site}' stream")
         tune_p, hold_p = split_pairs(pairs, holdout_every)
         base_overlay = recommended_overlay(base) if base else None
         t1, t2, r1, r2 = starting_configs(root or Path.cwd(), site, base_overlay)
         meta = {"site": site, "stage": stage, "data": str(Path(data).resolve()), "sessions": sessions,
-                "skip_bad": skip_bad, "ppg_version": ppg.__version__,
+                "skip_bad": skip_bad, "selection": selection.to_dict(), "ppg_version": ppg.__version__,
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "base_study": str(base) if base else None,
                 "base_overlay": base_overlay,
                 "tune": [p.session_id for p in tune_p], "holdout": [p.session_id for p in hold_p],
@@ -688,7 +697,7 @@ def apply(study_dir: Path, root: Path, trial: int | None = None) -> tuple[Path, 
 # fetch: copy sessions with a finger stream from the lab server (nbe_node.py admin login)
 # --------------------------------------------------------------------------
 def fetch(out: Path, server: str | None = None, token: str | None = None, include: list[str] | None = None,
-          log=print) -> int:
+          log=print, selection: Selection | None = None) -> int:
     if not (server and token):
         conf_dir = Path(os.environ.get("NBE_NODE_CONFIG") or Path.home() / ".config" / "nbe-node")
         conf = json.loads((conf_dir / "config.json").read_text()) if (conf_dir / "config.json").exists() else {}
@@ -707,6 +716,8 @@ def fetch(out: Path, server: str | None = None, token: str | None = None, includ
     for s in sessions:
         sid = s["session_id"]
         if include and not any(i in sid for i in include):
+            continue
+        if selection and selection.reason(s.get("subject_id"), s.get("started_at")):
             continue
         d = out / sid
         with get(f"/files/{q(s['path'])}/session.json") as r:

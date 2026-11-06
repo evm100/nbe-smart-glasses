@@ -2,13 +2,57 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 try:
     import tomllib  # py3.11+
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore
+
+
+def subject_code(subject_id: str | None) -> str | None:
+    """The S### code: some subject ids carry more than the code (e.g. 'S002 - name')."""
+    m = re.match(r"\s*(S\d+)", subject_id or "")
+    return m.group(1) if m else subject_id
+
+
+def _when(x) -> datetime:
+    d = datetime.fromisoformat(str(x).replace("Z", "+00:00"))
+    return d if d.tzinfo else d.astimezone()  # naive = this machine's local time
+
+
+@dataclass(frozen=True)
+class Selection:
+    """Which sessions tuning and model training may use ([selection] in lab.toml).
+
+    Recording, processing and the web UI still see everything; only `sglab tune` (Layer 1-2
+    search, scorecard) and `sglab dataset build` (and so every model / sweep) skip these."""
+    exclude_subjects: frozenset = frozenset()
+    not_before: str | None = None  # ISO date/time; sessions that started earlier are skipped
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "Selection":
+        d = d or {}
+        nb = d.get("not_before") or None
+        if nb is not None:
+            _when(nb)  # fail early on a typo
+        return cls(frozenset(subject_code(str(s)) for s in d.get("exclude_subjects", [])),
+                   str(nb) if nb is not None else None)
+
+    def reason(self, subject_id: str | None, started_at) -> str | None:
+        """Why a session is left out (None = use it)."""
+        code = subject_code(subject_id)
+        if code in self.exclude_subjects:
+            return f"subject {code} excluded"
+        if self.not_before and started_at and _when(started_at) < _when(self.not_before):
+            return f"before {self.not_before}"
+        return None
+
+    def to_dict(self) -> dict:
+        return {"exclude_subjects": sorted(self.exclude_subjects), "not_before": self.not_before}
 
 
 def find_root(start: Path | None = None) -> Path:
@@ -39,6 +83,10 @@ class Settings:
         if override:
             return Path(override).resolve()
         return (self.root / self.lab.get("paths", {}).get("data_root", "data")).resolve()
+
+    @property
+    def selection(self) -> Selection:
+        return Selection.from_dict(self.lab.get("selection"))
 
     # ---- server / deployment ------------------------------------------------
     @property

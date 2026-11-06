@@ -98,6 +98,15 @@ def test_tune_end_to_end(root, tmp_path):
         _session(data, f"2026010{i}_S001_rest_T0{i}", seed=i)
     pairs = tune.find_pairs(data, "glasses")
     assert len(pairs) == 3
+    from sglab.settings import Selection
+
+    doc = json.loads((data / pairs[0].session_id / "session.json").read_text())
+    doc["metadata"]["subject_id"] = "S001"
+    (data / pairs[0].session_id / "session.json").write_text(json.dumps(doc))
+    sel = Selection.from_dict({"exclude_subjects": ["S001"]})
+    assert [p.session_id for p in tune.find_pairs(data, "glasses", selection=sel)] == [p.session_id for p in pairs[1:]]
+    doc["metadata"]["subject_id"] = "S002"
+    (data / pairs[0].session_id / "session.json").write_text(json.dumps(doc))
     t1, t2, r1, r2 = tune.starting_configs(root, "glasses", None)
     ev = tune.Evaluator(pairs, "glasses", t1, t2, r1, r2).load(log=lambda m: None)
     m = ev({})

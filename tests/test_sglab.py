@@ -203,7 +203,7 @@ def test_process_and_web_api(lab):
     s, cat = lab
     rec = _record(s, ["sim"], 35.0, events=[(4, "cuff_start", {"label": "cuff inflation started"}),
                                             (20, "bp", {"sys_mmhg": 121, "dia_mmhg": 79, "hr_bpm": 72})])
-    dest, _ = rec.finalize({"subject_id": "S001", "protocol": "rest", "trial": 1, "keep": True})
+    dest, _ = rec.finalize({"subject_id": "S002", "protocol": "rest", "trial": 1, "keep": True})
     sid = cat.upsert_session(dest)
     res = process_session(s, cat, sid, log=lambda *_: None)
     assert res[0]["status"] == "ok"
@@ -235,10 +235,31 @@ def test_process_and_web_api(lab):
     import pandas as pd
     rows = pd.read_csv(s.data_root / "datasets" / "bp" / "rows.csv")
     r = rows.iloc[0]
-    assert r["sys_mmhg"] == 121 and r["cuff_found"] and r["subject"] == "S001" and r["clock"] == "pc"
+    assert r["sys_mmhg"] == 121 and r["cuff_found"] and r["subject"] == "S002" and r["clock"] == "pc"
     assert abs(r["t_cuff_start"] - 4) < 1 and abs(r["t_ref"] - 20) < 1
     assert abs(r["hr_mean_bpm"] - 72) < 3 and r["n_good"] >= 10 and "dia_rel_med" in rows
     assert dataset.list_datasets(s)[0]["sessions"][0]["runs"][0]["stream"] == r["stream"]
+
+    # [selection] in lab.toml: excluded subjects and sessions before a cutoff never reach a dataset
+    assert m["selection"]["exclude_subjects"] == ["S001"] and m["skipped"] == {}
+    s.lab["selection"] = {"exclude_subjects": ["S002"]}
+    m = dataset.build(s, cat, "bp", log=lambda *_: None)
+    assert m["summary"] == {"n_rows": 0} and m["skipped"] == {"subject S002 excluded": [sid]}
+    s.lab["selection"] = {"not_before": "2999-01-01"}
+    m = dataset.build(s, cat, "bp", log=lambda *_: None)
+    assert m["summary"] == {"n_rows": 0} and list(m["skipped"]) == ["before 2999-01-01"]
+
+
+def test_selection():
+    from sglab.settings import Selection
+
+    sel = Selection.from_dict({"exclude_subjects": ["S001"], "not_before": "2026-11-01"})
+    assert sel.reason("S001 - bench", "2026-12-01T10:00:00+00:00") == "subject S001 excluded"
+    assert sel.reason("S004", "2026-10-31T23:00:00+00:00") == "before 2026-11-01"
+    assert sel.reason("S004", "2026-11-02T00:00:00+00:00") is None
+    assert sel.reason(None, None) is None
+    with pytest.raises(ValueError):
+        Selection.from_dict({"not_before": "last tuesday"})
 
 
 def test_startup_glitch_rows():

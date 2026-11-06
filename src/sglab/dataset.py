@@ -28,6 +28,7 @@ import ppg
 from ppg.config import Layer3Config
 from ppg.layer3 import pulse_arrival, reference_readings, window_rows
 
+from .settings import subject_code  # noqa: F401  (re-exported)
 from .timebase import read_events, run_clock, session_clocks
 
 SUBJECT_COLS = ["sex", "age_years", "height_cm", "weight_kg", "fitzpatrick"]
@@ -36,12 +37,6 @@ SUBJECT_COLS = ["sex", "age_years", "height_cm", "weight_kg", "fitzpatrick"]
 def layer3_config(settings) -> Layer3Config:
     p = settings.root / "config" / "pipeline_layer3.json"
     return Layer3Config.from_json(p) if p.exists() else Layer3Config()
-
-
-def subject_code(subject_id: str | None) -> str | None:
-    """The S### code: some subject ids carry more than the code (e.g. 'S002 - name')."""
-    m = re.match(r"\s*(S\d+)", subject_id or "")
-    return m.group(1) if m else subject_id
 
 
 def _stream_beats(settings, run: dict, st: dict, t0_unix: float | None):
@@ -111,9 +106,14 @@ def build(settings, catalog, name: str = "bp", cfg: Layer3Config | None = None,
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
         raise ValueError(f"dataset name {name!r}: use letters, digits, - _ .")
     cfg = cfg or layer3_config(settings)
-    frames, tpls, used = [], [], []
+    sel = settings.selection
+    frames, tpls, used, skipped = [], [], [], {}
     for s in sorted(catalog.sessions(), key=lambda x: x["session_id"]):
         if sessions and not any(q in s["session_id"] for q in sessions):
+            continue
+        why = sel.reason(s.get("subject_id"), s.get("started_at"))
+        if why:
+            skipped.setdefault(why, []).append(s["session_id"])
             continue
         rows, tp, u = session_rows(settings, catalog, s, cfg)
         if u["n_readings"]:
@@ -123,6 +123,8 @@ def build(settings, catalog, name: str = "bp", cfg: Layer3Config | None = None,
             tpls.append(tp)
             log(f"  {s['session_id']}: {u['n_readings']} reading(s) x {len(u['runs'])} stream(s), "
                 f"{int(rows['valid'].sum())} valid")
+    for why, sids in sorted(skipped.items()):
+        log(f"  skipped {len(sids)} session(s): {why} ([selection] in config/lab.toml)")
     if not used:
         log(f"  no sessions with cuff/pulse-ox readings in {settings.data_root} "
             f"(wrong data root? on the server run as nbe with SGLAB_SERVER_CONFIG)")
@@ -142,7 +144,7 @@ def build(settings, catalog, name: str = "bp", cfg: Layer3Config | None = None,
     manifest = {
         "name": name, "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "ppg_version": ppg.__version__, "layer3": cfg.to_dict(), "summary": summarise(df),
-        "sessions": used,
+        "selection": sel.to_dict(), "skipped": skipped, "sessions": used,
     }
     (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
     shutil.rmtree(out, ignore_errors=True)

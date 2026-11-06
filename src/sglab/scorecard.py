@@ -144,7 +144,8 @@ def score(data: Path, site: str, specs: list[str], root: Path, split: str = "tes
           max_ppv_drop: float = 0.05, max_ibi_rise_ms: float = 0.5, out: Path | None = None,
           log=print) -> dict:
     cands = [resolve(s, site, root) for s in (specs or ["current"])]
-    pairs = find_pairs(data, site, sessions, skip_bad)
+    settings = load_settings(root)
+    pairs = find_pairs(data, site, sessions, skip_bad, settings.selection)
     if split == "test":
         pairs = [p for p in pairs if is_test(p, load_test_split(root))]
         if not pairs:
@@ -153,7 +154,6 @@ def score(data: Path, site: str, specs: list[str], root: Path, split: str = "tes
                              f"includes sessions the studies were tuned on)")
     elif not pairs:
         raise ValueError(f"no session in {data} has both a '{REF_ROLE}' and a '{site}' stream")
-    settings = load_settings(root)
     b1, b2 = pipeline_configs(settings)
     r1, r2 = stream_configs(b1, b2, site_overrides(settings), {"role": REF_ROLE})
     ev = Evaluator(pairs, site, cands[0].cfg1, cands[0].cfg2, r1, r2).load(log)
