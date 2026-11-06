@@ -192,19 +192,20 @@ def api_trial_live(request: Request, tid: str, seconds: float = 8.0, after: str 
     return ctx.manager.live(tid, min(max(seconds, 1.0), 30.0), after=cursors)
 
 
-@router.get("/api/trials/{tid}/video/{stream}.jpg")
-def api_trial_video(request: Request, tid: str, stream: str, user=operator):
-    """Newest frame of a camera stream as a small JPEG (the live page polls it). X-Frame-Count lets
-    the page skip frames it already shows; 204 before the first frame."""
+@router.get("/api/trials/{tid}/video/{stream}/frame")
+def api_trial_video(request: Request, tid: str, stream: str, after: int = -1, user=operator):
+    """Newest frame of a camera stream (lossless PNG for grayscale, JPEG as the board sent it).
+    The live page passes `after` = the X-Frame-Count it shows: the call then waits (up to 1 s) for
+    the next frame, so the preview runs at the camera's frame rate. 204 if none arrived."""
     ctx = C(request)
     _trial_or_404(ctx, tid)
     try:
-        p = ctx.manager.video_preview(tid, stream, quality=int(ctx.settings.lab.get("ui", {}).get("preview_quality", 40)))
+        p = ctx.manager.video_preview(tid, stream, after=after, wait_s=1.0 if after >= 0 else 0.0)
     except TrialError as e:
         raise HTTPException(404, str(e)) from None
-    if p is None:
+    if p is None or p[0] <= after:
         return Response(status_code=204)
-    return Response(p[1], media_type="image/jpeg", headers={"Cache-Control": "no-store", "X-Frame-Count": str(p[0])})
+    return Response(p[1], media_type=p[2], headers={"Cache-Control": "no-store", "X-Frame-Count": str(p[0])})
 
 
 @router.post("/api/trials/{tid}/event")

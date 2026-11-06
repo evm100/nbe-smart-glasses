@@ -339,9 +339,13 @@ def test_camera_trial_through_usb_gateway(stack, tmp_path):
                 v = c.get(f"/api/trials/{tid}").json()["streams"][0].get("video") or [{}]
                 return v[0]
             assert _wait(lambda: cam().get("frames", 0) >= 40, 20), cam()
-            img = c.get(f"/api/trials/{tid}/video/{cam()['stream']}.jpg")
-            assert img.status_code == 200 and img.content[:2] == b"\xff\xd8" and int(img.headers["X-Frame-Count"]) >= 40
-            assert c.get(f"/api/trials/{tid}/video/nope.jpg").status_code == 404
+            img = c.get(f"/api/trials/{tid}/video/{cam()['stream']}/frame")
+            n = int(img.headers["X-Frame-Count"])
+            assert img.status_code == 200 and img.content[:8] == b"\x89PNG\r\n\x1a\n" and n >= 40
+            assert img.headers["content-type"] == "image/png"
+            nxt = c.get(f"/api/trials/{tid}/video/{cam()['stream']}/frame?after={n}")  # waits for the next frame
+            assert nxt.status_code == 200 and int(nxt.headers["X-Frame-Count"]) > n
+            assert c.get(f"/api/trials/{tid}/video/nope/frame").status_code == 404
             assert c.post(f"/api/trials/{tid}/stop").status_code == 200
             assert _wait(lambda: not board.streaming, 5)  # STOP went server -> broker -> gateway -> USB
             r = c.post(f"/trials/{tid}/finish", data={"quality": "good", "keep": "on"}, follow_redirects=False)

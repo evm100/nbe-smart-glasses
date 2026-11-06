@@ -232,7 +232,10 @@ def test_gateway_to_recording_nothing_lost(lab, tmp_path):
     assert len((dest / v["index"]).read_text().splitlines()) == 61
     assert doc["streams"][0]["stream"] == "glasses_GLS03" and all(s.get("kind") != "video" for s in doc["streams"])
     assert live["frames"] == 60 and live["dropped"] == 0 and live["w"] == W
-    assert prev and prev[1][:2] == b"\xff\xd8"  # a JPEG preview
+    assert prev and prev[2] == "image/png"  # lossless: decodes to exactly the last recorded frame
+    from PIL import Image
+    last = list(read_frames(dest / doc["video"][0]["file"]))[-1]
+    assert Image.open(io.BytesIO(prev[1])).tobytes() == last.data
     # the gateway added a SYNC (device clock <-> this PC's UTC), as Wi-Fi nodes do with SNTP
     assert ",SYNC," in (dest / "glasses_GLS03.rawlog").read_text()
 

@@ -22,13 +22,14 @@
 </div>
 
 <div id="cam-section" hidden>
-  <h2>Camera <span class="note">(newest frame, compressed preview – the raw frames are stored in full)</span></h2>
+  <h2>Camera <span class="note">(every frame as it arrives, lossless – the same pixels that are recorded)</span></h2>
   <div class="cams" id="cams"></div>
 </div>
 <style>
   .cams { display: flex; flex-wrap: wrap; gap: 14px; }
   .cam { padding: 10px; display: grid; gap: 6px; justify-items: start; }
-  .cam img { width: 320px; max-width: 100%; aspect-ratio: var(--ar, 1); image-rendering: auto;
+  /* a small crop (80x80) scaled up by a whole number with sharp pixels: no blur, no moiré */
+  .cam img { width: var(--disp, 320px); max-width: 100%; aspect-ratio: var(--ar, 1); image-rendering: pixelated;
              background: var(--grid); border-radius: 4px; display: block; }
   .cam .stats { font-variant-numeric: tabular-nums; }
 </style>
@@ -130,7 +131,7 @@ async function poll() {
      <td class="num">${fmt(e.dia_mmhg)}</td><td class="num">${fmt(e.hr_bpm)}</td><td class="num">${fmt(e.spo2_pct)}</td><td>${esc(e.label)}</td></tr>`).join('');
 }
 
-// ---- camera previews: newest frame of each camera stream, a few times per second -------------
+// ---- camera previews: every frame of each camera stream (the server holds each request until the next frame) --
 const cams = {};  // stream -> {img, stats, count, busy}
 function showCameras(list) {
   const box = document.getElementById('cams');
@@ -141,8 +142,11 @@ function showCameras(list) {
       const card = document.createElement('div'); card.className = 'card cam';
       card.innerHTML = `<b>${esc(v.role)} · ${esc(v.dev)} · ${esc(v.stream)}</b><img alt="waiting for the first frame"><div class="note stats"></div>`;
       box.append(card);
-      c = cams[v.stream] = {img: card.querySelector('img'), stats: card.querySelector('.stats'), count: -1, busy: false, url: null};
+      c = cams[v.stream] = {img: card.querySelector('img'), stats: card.querySelector('.stats'), count: -1, url: null};
       c.img.style.setProperty('--ar', `${v.w || 1} / ${v.h || 1}`);
+      const side = Math.max(v.w || 1, v.h || 1);  // largest whole-number scale that fits ~480 px
+      c.img.style.setProperty('--disp', `${(v.w || 1) * Math.max(1, Math.floor(480 / side))}px`);
+      pollCam(v.stream, c);
     }
     const mb = (v.bytes / 1e6).toFixed(1);
     const cam = !v.sensor_ok ? '<span style="color:var(--bad)">camera not found on the board</span> · ' : '';
@@ -152,24 +156,22 @@ function showCameras(list) {
       `${v.frames} frames · ${v.dropped} dropped · ${mb} MB${exp}`;
   }
 }
-async function fetchCams() {
-  for (const [name, c] of Object.entries(cams)) {
-    if (c.busy) continue;
-    c.busy = true;
+async function pollCam(name, c) {
+  // one request in flight per camera: on a slow link the preview skips frames instead of queueing them
+  for (;;) {
     try {
-      const r = await fetch(`${API}/video/${encodeURIComponent(name)}.jpg`, {cache: 'no-store'});
-      const n = +(r.headers.get('X-Frame-Count') || -1);
-      if (r.status === 200 && n !== c.count) {
-        const url = URL.createObjectURL(await r.blob());
-        c.img.onload = () => { if (c.url) URL.revokeObjectURL(c.url); c.url = url; };
-        c.img.src = url; c.count = n;
+      if (document.hidden) { await new Promise(r => setTimeout(r, 1000)); continue; }
+      const r = await fetch(`${API}/video/${encodeURIComponent(name)}/frame?after=${c.count}`, {cache: 'no-store'});
+      if (r.status === 200) {
+        const n = +(r.headers.get('X-Frame-Count') || -1), url = URL.createObjectURL(await r.blob());
+        const old = c.url; c.url = url; c.count = n; c.img.src = url;
+        if (old) URL.revokeObjectURL(old);
+      } else if (r.status !== 204) {
+        await new Promise(r => setTimeout(r, 1000));  // trial ended / stream gone: back off
       }
-    } catch (e) { /* try again */ }
-    c.busy = false;
+    } catch (e) { await new Promise(r => setTimeout(r, 1000)); }
   }
-  setTimeout(fetchCams, document.hidden ? 1000 : 150);
 }
-fetchCams();
 
 // ---- live plot: incremental fetch + continuous scrolling on a canvas ------------------------
 // The server sends only new points (cursor `after`). The page keeps the last WINDOW seconds,

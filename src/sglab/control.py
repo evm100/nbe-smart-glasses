@@ -217,15 +217,17 @@ class TrialManager:
                 out.update(folder=t.rec.folder.name, streams=t.rec.live_status(), events=t.rec.all_events())
             return out
 
-    def video_preview(self, tid: str, stream: str, quality: int = 40) -> tuple[int, bytes] | None:
-        """(frame count, small JPEG) of a camera stream's newest frame, None before the first."""
+    def video_preview(self, tid: str, stream: str, after: int = -1,
+                      wait_s: float = 0.0) -> tuple[int, bytes, str] | None:
+        """(frame count, image, media type) of a camera stream's newest frame, None before the
+        first; waits up to wait_s for one newer than `after` (VideoWriter.preview)."""
         t = self.get(tid)
         with t.lock:
             workers = list(t.rec.workers) if t.rec else []
         for w in workers:
             for vw in list(w.video.values()):
                 if vw.name == stream:
-                    return vw.preview(quality)
+                    return vw.preview(after, wait_s)
         raise TrialError(f"no camera stream {stream!r} in trial {tid}")
 
     def live(self, tid: str, seconds: float = 8.0, max_points: int = 800, after: list[int] | None = None) -> list[dict]:

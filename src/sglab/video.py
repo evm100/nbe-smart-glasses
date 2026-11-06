@@ -76,18 +76,17 @@ def gray_array(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return m["px"], m[["seq", "t_dev_us", "t_s", "exposure", "gain"]]
 
 
-def preview_jpeg(fr: VideoFrame, quality: int = 40, max_side: int = 320) -> bytes:
-    """A small JPEG of one frame for the live page (frames that are JPEG already pass through)."""
+def preview_image(fr: VideoFrame) -> tuple[bytes, str]:
+    """(image, media type) of one frame for the live page: grayscale frames as a lossless PNG
+    (the operator sees exactly the pixels that are recorded), JPEG frames pass through as sent."""
     if fr.fmt == FMT_JPEG:
-        return fr.data
+        return fr.data, "image/jpeg"
     from PIL import Image  # matplotlib depends on Pillow
 
-    img = Image.frombytes("L", (fr.w, fr.h), fr.data)
-    if max(fr.w, fr.h) > max_side:
-        img.thumbnail((max_side, max_side))
     out = io.BytesIO()
-    img.save(out, "JPEG", quality=quality)
-    return out.getvalue()
+    # fast zlib level: an 80x80 crop is ~4-5 kB either way, and this runs per frame per viewer stream
+    Image.frombytes("L", (fr.w, fr.h), fr.data).save(out, "PNG", compress_level=1)
+    return out.getvalue(), "image/png"
 
 
 class VideoWriter:
@@ -106,9 +105,10 @@ class VideoWriter:
         self._csv = csv.writer(self._idx)
         self._csv.writerow(["t_s", "seq", "t_dev_us", "exposure", "gain", "offset", "nbytes"])
         self.lock = threading.Lock()
+        self._new_frame = threading.Condition(self.lock)  # wakes preview() waiters (live page long-poll)
         self.latest: VideoFrame | None = None
         self.latest_t_s: float | None = None
-        self._preview: tuple[int, bytes] | None = None   # (count when made, jpeg)
+        self._preview: tuple[int, bytes, str] | None = None   # (count when made, image, media type)
         self._recent: deque = deque()                    # device times of the last FPS_WINDOW_S
         self.stats = {"n_frames": 0, "n_dropped_seq": 0, "n_duplicates": 0, "n_bad_size": 0, "bytes": 0,
                       "n_seq_resets": 0, "t_first_s": None, "t_last_s": None}
@@ -143,6 +143,8 @@ class VideoWriter:
             self._f.write(fr.data)
             self._csv.writerow([f"{t_s:.6f}", fr.seq, t_dev_us, fr.exposure, fr.gain, off, len(fr.data)])
             self.latest, self.latest_t_s = fr, t_s
+            self.stats["n_frames"] += 1
+            self._new_frame.notify_all()
         self._seen.add(fr.seq)
         if len(self._seen) > 20000:
             self._seen = {q for q in self._seen if q > fr.seq - 10000}
@@ -150,7 +152,6 @@ class VideoWriter:
         self._epoch_max = fr.seq if self._epoch_max is None else max(self._epoch_max, fr.seq)
         self._epoch_n += 1
         st = self.stats
-        st["n_frames"] += 1
         st["bytes"] += len(fr.data)
         st["n_dropped_seq"] = self._dropped_closed + (self._epoch_max - self._epoch_min + 1) - self._epoch_n
         if st["t_first_s"] is None:
@@ -177,15 +178,20 @@ class VideoWriter:
             self._f.close()
             self._idx.close()
 
-    def preview(self, quality: int = 40) -> tuple[int, bytes] | None:
-        """(frame count, JPEG of the newest frame), re-encoded only when a new frame came in."""
-        with self.lock:
+    def preview(self, after: int = -1, wait_s: float = 0.0) -> tuple[int, bytes, str] | None:
+        """(frame count, image, media type) of the newest frame, encoded once per frame. With
+        `after` (the count the caller already shows), waits up to wait_s for a newer frame, so the
+        live page gets every frame as it arrives without polling."""
+        with self._new_frame:
+            if wait_s > 0:
+                self._new_frame.wait_for(lambda: self.stats["n_frames"] > after, timeout=wait_s)
             fr, n = self.latest, self.stats["n_frames"]
         if fr is None:
             return None
-        if self._preview is None or self._preview[0] != n:
-            self._preview = (n, preview_jpeg(fr, quality))
-        return self._preview
+        p = self._preview
+        if p is None or p[0] != n:
+            p = self._preview = (n, *preview_image(fr))
+        return p
 
     def live(self) -> dict:
         st = self.stats
