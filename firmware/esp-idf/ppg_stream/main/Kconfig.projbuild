@@ -567,6 +567,17 @@ menu "PPG stream (MAX30102)"
             range 0 63
             default 10
 
+        config PPG_CAM_CROP
+            int "Centre crop: send only the middle N x N pixels (0 = whole frame)"
+            depends on PPG_CAMERA && !PPG_CAM_JPEG
+            range 0 640
+            default 0
+            help
+                Cuts the square N x N out of the middle of each frame and sends only that, at the
+                frame size's pixel scale (no downscaling). The camera glasses use 80 on a 240 x 240
+                frame (sdkconfig.camera): 6.4 kB per frame instead of 57.6 kB. Must not exceed
+                the frame's width or height.
+
         config PPG_CAM_FPS
             int "Frame rate cap (frames/s, 0 = as fast as the sensor and USB allow)"
             depends on PPG_CAMERA

@@ -68,6 +68,22 @@ static const char *TAG = "camera";
 #define CAM_H 240
 #endif
 
+// Centre crop (gray8 only): the 80x80 middle of the 240x240 feed at the same pixel scale, only the
+// part of the field of view the eye is in. 12 kB/frame -> 6.4 kB: far below what USB moves.
+#if !CONFIG_PPG_CAM_JPEG && CONFIG_PPG_CAM_CROP > 0
+#define CROP CONFIG_PPG_CAM_CROP
+#if CROP > CAM_W || CROP > CAM_H
+#error "PPG_CAM_CROP is larger than the frame size"
+#endif
+#define OUT_W CROP
+#define OUT_H CROP
+static uint8_t s_crop[CROP * CROP];
+#else
+#define CROP 0
+#define OUT_W CAM_W
+#define OUT_H CAM_H
+#endif
+
 #if CONFIG_PPG_CAM_JPEG
 #define CAM_FMT FMT_JPEG
 #define CAM_FMT_NAME "jpeg"
@@ -130,10 +146,22 @@ static void camera_step(void)
         return;
     }
     last_us = t_us;
+    const uint8_t *px = fb->buf;
+    size_t w = fb->width, h = fb->height, len = fb->len;
+#if CROP
+    if (w < CROP || h < CROP || len < w * h) {  // not the frame size we configured: skip it
+        esp_camera_fb_return(fb);
+        return;
+    }
+    const uint8_t *src = fb->buf + ((h - CROP) / 2) * w + (w - CROP) / 2;
+    for (int y = 0; y < CROP; y++) memcpy(s_crop + y * CROP, src + y * w, CROP);
+    px = s_crop;
+    w = h = CROP;
+    len = CROP * CROP;
+#endif
     if (atomic_load(&s_run)) {
-        link_write_frame(CAMERA_SID, s_seq, t_us, (uint16_t)fb->width, (uint16_t)fb->height, CAM_FMT,
-                         (uint16_t)(s_aec ? 0xFFFF : s_exposure), (uint8_t)(s_aec ? 0xFF : s_gain), fb->buf,
-                         fb->len);
+        link_write_frame(CAMERA_SID, s_seq, t_us, (uint16_t)w, (uint16_t)h, CAM_FMT,
+                         (uint16_t)(s_aec ? 0xFFFF : s_exposure), (uint8_t)(s_aec ? 0xFF : s_gain), px, len);
         s_seq++;  // also when not sent: the PC sees the gap and counts the frame as dropped
         s_sent++;
         s_window_sent++;
@@ -203,7 +231,8 @@ bool camera_init(void)
     apply_exposure();
     s_ok = true;
     xTaskCreatePinnedToCore(camera_task, "ppg_camera", 4096, NULL, 5, NULL, 0);
-    ESP_LOGI(TAG, "OV2640 %dx%d %s, cap %d fps", CAM_W, CAM_H, CAM_FMT_NAME, CONFIG_PPG_CAM_FPS);
+    ESP_LOGI(TAG, "OV2640 %dx%d %s (sent %dx%d), cap %d fps", CAM_W, CAM_H, CAM_FMT_NAME, OUT_W, OUT_H,
+             CONFIG_PPG_CAM_FPS);
     return true;
 }
 
@@ -218,9 +247,9 @@ void camera_header(pline_t *l)
     pl_str(l, ",sensor=OV2640,ch=frame,fs=");
     pl_u64(l, s_fps_cap);
     pl_str(l, ",w=");
-    pl_u64(l, CAM_W);
+    pl_u64(l, OUT_W);
     pl_str(l, ",h=");
-    pl_u64(l, CAM_H);
+    pl_u64(l, OUT_H);
     pl_str(l, ",fmt=" CAM_FMT_NAME);
     if (s_aec) {
         pl_str(l, ",aec=1");

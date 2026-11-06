@@ -10,6 +10,8 @@ CONFIG_PPG_TX_BUFFER_BYTES=32768
 CONFIG_PPG_CAMERA=y
 CONFIG_PPG_CAM_SIZE_240=y
 CONFIG_PPG_CAM_FPS=15
+# only the 80x80 middle of the 240x240 feed is sent (6.4 kB/frame; the full frame was too much for USB)
+CONFIG_PPG_CAM_CROP=80
 # PPG sensor settings: the Kconfig defaults (tuned for the glasses), same as the Wi-Fi nodes
 # SCCB (camera control) on I2C port 1; the MAX30102 keeps port 0 (CONFIG_PPG_I2C_PORT)
 CONFIG_SCCB_HARDWARE_I2C_DRIVER_NEW=y

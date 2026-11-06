@@ -108,7 +108,7 @@ for id in "${NODES[@]}"; do
   progress $! "$BASE/work/$id/build.log" "building $id" \
       || { tail -n 40 "$BASE/work/$id/build.log"; echo "build of $id failed (full log: $BASE/work/$id/build.log)"; exit 1; }
   cp "$w/build/merged-binary.bin" "$BASE/out/$id.bin"
-  grep -E '^CONFIG_PPG_(DEVICE_ID|SITE|WIFI_SSID[23]?|WIFI_DNS[23]?|WIFI_AUTH_EAP|WIFI_EAP_USERNAME|MQTT_BROKER_URI|LINK_USB_BIN|CAMERA|CAM_FPS)=' "$w/sdkconfig" | sed 's/^/   /'
+  grep -E '^CONFIG_PPG_(DEVICE_ID|SITE|WIFI_SSID[23]?|WIFI_DNS[23]?|WIFI_AUTH_EAP|WIFI_EAP_USERNAME|MQTT_BROKER_URI|LINK_USB_BIN|CAMERA|CAM_FPS|CAM_CROP)=' "$w/sdkconfig" | sed 's/^/   /'
   echo "   -> $BASE/out/$id.bin ($(stat -c %s "$BASE/out/$id.bin") bytes, USB flash)"
   if (( ! CAMERA )) && [[ -z "${NBE_NO_UPLOAD:-}" ]]; then  # camera boards: no OTA (flashed over USB)
     python3 "$TOOL" upload "$id" "$w/build/ppg_stream.bin" | sed 's/^/   /' \
