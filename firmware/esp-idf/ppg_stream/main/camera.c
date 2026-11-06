@@ -68,6 +68,33 @@ static const char *TAG = "camera";
 #define CAM_H 240
 #endif
 
+// Sensor zoom (CONFIG_PPG_CAM_WINDOW > 0, gray8 only): the stock 240x240 framing reads the sensor in
+// CIF mode (1/4 of its 1600x1200 pixels in each direction) and scales a 1200x1200 square of it down
+// to 240x240, 5 sensor pixels per frame pixel. Zoomed, the sensor runs in SVGA mode (every 2nd sensor
+// pixel, 2x finer than CIF) and only a WINDOW x WINDOW square of SVGA pixels from the middle is
+// scaled to the frame, so the frame size and the driver's buffers stay the same but each frame pixel
+// covers less of the scene. WINDOW 250 = the field of view that the 100x100 middle of the stock
+// framing had, now 240x240 pixels (2.4x the linear resolution).
+// The driver drops frames whose size isn't the frame size, so the window must be >= the frame size
+// (the DSP scales down only). SVGA mode has twice the lines of CIF, so WIN_CLKDIV 1 (twice the sensor
+// clock the driver uses for CIF, divider 3) keeps the sensor at ~25 fps; 3 would halve it.
+#ifndef CONFIG_PPG_CAM_WINDOW
+#define CONFIG_PPG_CAM_WINDOW 0
+#endif
+#ifndef CONFIG_PPG_CAM_WIN_CLKDIV
+#define CONFIG_PPG_CAM_WIN_CLKDIV 1
+#endif
+#if CONFIG_PPG_CAM_WINDOW && CONFIG_PPG_CAM_JPEG
+#error "PPG_CAM_WINDOW is for gray8 frames"
+#endif
+#define SVGA_W 800
+#define SVGA_H 600
+#define OV2640_MODE_SVGA 1      // ov2640_sensor_mode_t in the driver (private header): UXGA, SVGA, CIF
+#define OV2640_CLKRC 0x111      // set_reg(): bit 8 = sensor bank, 0x11 = CLKRC
+#define OV2640_CLKRC_2X 0x80    // what the driver sets on the S3 for gray8 (clock doubler on)
+static volatile uint32_t s_win = CONFIG_PPG_CAM_WINDOW;
+static volatile uint32_t s_clkdiv = CONFIG_PPG_CAM_WIN_CLKDIV;
+
 // Centre crop (gray8 only): the 80x80 middle of the 240x240 feed at the same pixel scale, only the
 // part of the field of view the eye is in. 12 kB/frame -> 6.4 kB: far below what USB moves.
 #if !CONFIG_PPG_CAM_JPEG && CONFIG_PPG_CAM_CROP > 0
@@ -128,6 +155,38 @@ static void apply_exposure(void)
         s->set_aec2(s, 0);
         s->set_aec_value(s, (int)s_exposure);
     }
+}
+
+// Window the sensor (s_win > 0) or go back to the stock framing (s_win == 0). Rewrites the sensor's
+// mode registers, so flip/mirror and exposure are set again afterwards.
+static bool apply_window(void)
+{
+    sensor_t *s = esp_camera_sensor_get();
+    if (!s) return false;
+    int err;
+    uint32_t win = s_win;
+    if (win) {
+        int ox = (SVGA_W - (int)win) / 2, oy = (SVGA_H - (int)win) / 2;
+        // set_res_raw(mode, -, -, -, offsetX, offsetY, windowX, windowY, outX, outY, -, -) on the OV2640
+        err = s->set_res_raw(s, OV2640_MODE_SVGA, 0, 0, 0, ox, oy, (int)win, (int)win, CAM_W, CAM_H, true, false);
+        if (!err) err = s->set_reg(s, OV2640_CLKRC, 0xFF, OV2640_CLKRC_2X | (s_clkdiv & 0x3F));
+    } else {
+        err = s->set_framesize(s, CAM_FRAMESIZE);
+    }
+#if CONFIG_PPG_CAM_VFLIP
+    s->set_vflip(s, 1);
+#endif
+#if CONFIG_PPG_CAM_HMIRROR
+    s->set_hmirror(s, 1);
+#endif
+    apply_exposure();
+    if (err) {
+        ESP_LOGE(TAG, "sensor window %u (clkdiv %u) failed: %d", (unsigned)win, (unsigned)s_clkdiv, err);
+    } else if (win) {
+        ESP_LOGI(TAG, "sensor window %ux%u SVGA px (%u sensor px) -> %dx%d, clkdiv %u", (unsigned)win,
+                 (unsigned)win, (unsigned)win * 2, CAM_W, CAM_H, (unsigned)s_clkdiv);
+    }
+    return !err;
 }
 
 // One pass: wait for a frame, send it (or skip it for the rate cap).
@@ -246,6 +305,7 @@ bool camera_init(void)
     s->set_hmirror(s, 1);
 #endif
     apply_exposure();
+    if (s_win) apply_window();
     s_ok = true;
     xTaskCreatePinnedToCore(camera_task, "ppg_camera", 4096, NULL, 5, NULL, 0);
     ESP_LOGI(TAG, "OV2640 %dx%d %s (sent %dx%d), cap %d fps", CAM_W, CAM_H, CAM_FMT_NAME, OUT_W, OUT_H,
@@ -268,6 +328,14 @@ void camera_header(pline_t *l)
     pl_str(l, ",h=");
     pl_u64(l, OUT_H);
     pl_str(l, ",fmt=" CAM_FMT_NAME);
+    // sensor zoom: the frame is a win x win square of SVGA pixels (2 sensor px each) scaled to the
+    // frame size; absent = stock framing
+    if (s_win) {
+        pl_str(l, ",win=");
+        pl_u64(l, s_win);
+        pl_str(l, ",clkdiv=");
+        pl_u64(l, s_clkdiv);
+    }
     if (s_aec) {
         pl_str(l, ",aec=1");
     } else {
@@ -319,7 +387,7 @@ void camera_status(pline_t *l, uint32_t window_ms)
 
 bool camera_command(const char *args)
 {
-    bool changed = false;
+    bool changed = false, rewindow = false;
     const char *p = args;
     while (*p) {
         while (*p == ' ') p++;
@@ -340,12 +408,24 @@ bool camera_command(const char *args)
         } else if (strncmp(p, "AEC=", 4) == 0) {
             s_aec = v != 0;
             changed = true;
+#if !CONFIG_PPG_CAM_JPEG
+        } else if (strncmp(p, "WIN=", 4) == 0 && (v == 0 || (v >= (CAM_W > CAM_H ? CAM_W : CAM_H) && v <= SVGA_H))) {
+            s_win = (uint32_t)(v & ~3L);  // the OV2640 window registers count in 4s
+            changed = rewindow = true;
+        } else if (strncmp(p, "CLK=", 4) == 0 && v >= 0 && v <= 63) {
+            s_clkdiv = (uint32_t)v;
+            changed = rewindow = true;
+#endif
         }
         const char *sp = strchr(p, ' ');
         if (!sp) break;
         p = sp;
     }
-    if (changed && s_ok) apply_exposure();
+    if (rewindow && s_ok) {
+        apply_window();  // also sets the exposure again
+    } else if (changed && s_ok) {
+        apply_exposure();
+    }
     return changed;
 }
 #endif

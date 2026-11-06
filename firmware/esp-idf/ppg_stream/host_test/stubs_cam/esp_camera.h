@@ -38,6 +38,10 @@ typedef struct sensor {
     int (*set_exposure_ctrl)(struct sensor *, int);
     int (*set_aec2)(struct sensor *, int);
     int (*set_aec_value)(struct sensor *, int);
+    int (*set_framesize)(struct sensor *, framesize_t);
+    int (*set_reg)(struct sensor *, int reg, int mask, int value);
+    int (*set_res_raw)(struct sensor *, int startX, int startY, int endX, int endY, int offsetX, int offsetY,
+                       int totalX, int totalY, int outputX, int outputY, _Bool scale, _Bool binning);
 } sensor_t;
 esp_err_t esp_camera_init(const camera_config_t *config);
 camera_fb_t *esp_camera_fb_get(void);

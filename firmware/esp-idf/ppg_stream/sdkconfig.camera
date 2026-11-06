@@ -9,12 +9,21 @@ CONFIG_PPG_LINK_USB_BIN=y
 CONFIG_PPG_TX_BUFFER_BYTES=32768
 CONFIG_PPG_CAMERA=y
 CONFIG_PPG_CAM_SIZE_240=y
-# no cap: every frame the sensor makes (~25 fps at 240x240; 120x120 crop = ~360 kB/s). The cap can only
-# skip whole sensor frames, so 15 would give 12.5 fps. Run time: "CAM FPS=n".
+# no cap: every frame the sensor makes (~25 fps). The cap can only skip whole sensor frames, so 15
+# would give 12.5 fps. Run time: "CAM FPS=n".
 CONFIG_PPG_CAM_FPS=0
-# only the 120x120 middle of the 240x240 feed is sent (14.4 kB/frame; the full frame was too much for USB).
-# Was 80 (6.4 kB). If USB can't keep up, cam_fps drops below ~25 and cam_tx_ms nears 40 (see README).
-CONFIG_PPG_CAM_CROP=120
+# Sensor zoom: the sensor runs in SVGA mode (2x finer than the stock CIF framing) and only the middle
+# 252x252 SVGA pixels are scaled to the 240x240 frame: the field of view the 100x100 middle of the stock
+# framing had (the reference FOV), now at 240x240 (2.4x the linear resolution), 57.6 kB/frame.
+# SVGA has twice the lines of CIF, so clkdiv 1 (twice the driver's CIF sensor clock) keeps the sensor at
+# ~25 fps (~1.44 MB/s); clkdiv 3 would halve it to ~12.5. "CAM CLK=n" / "CAM WIN=n" at run time
+# (WIN=0 = stock framing).
+# Same FOV at other sizes (crop C, window 60000/C rounded to 4): C=200/WIN=300 (40 kB), C=160/WIN=376.
+CONFIG_PPG_CAM_WINDOW=252
+CONFIG_PPG_CAM_WIN_CLKDIV=1
+# whole frame sent (was a 120x120 crop of the stock framing, 14.4 kB/frame, before that 80x80).
+# If USB can't keep up, cam_fps drops below the sensor rate and cam_tx_ms nears the frame period (README).
+CONFIG_PPG_CAM_CROP=0
 # PPG sensor settings: the Kconfig defaults (tuned for the glasses), same as the Wi-Fi nodes
 # SCCB (camera control) on I2C port 1; the MAX30102 keeps port 0 (CONFIG_PPG_I2C_PORT)
 CONFIG_SCCB_HARDWARE_I2C_DRIVER_NEW=y

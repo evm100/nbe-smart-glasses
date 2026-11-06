@@ -83,17 +83,24 @@ script, plug in the glasses. The node shows as online on the devices page and re
 node; the trial page shows a live camera preview.
 
 Camera settings at run time (sent by the server, or typed into a serial terminal):
-`CAM FPS=10 EXP=400 GAIN=4 AEC=0`. The S line reports `cam_fps` (frames actually sent per second)
+`CAM FPS=10 EXP=400 GAIN=4 AEC=0 WIN=252 CLK=1`. The S line reports `cam_fps` (frames actually sent per second)
 and `cam_drop` (frames the board couldn't send because the PC didn't read fast enough).
 
-**First hardware runs:** the full 240×240 frame (57.6 kB) is too much for USB Serial/JTAG, hence the
-80×80 centre crop (menuconfig → Camera → Centre crop, `CONFIG_PPG_CAM_CROP`): 6.4 kB per frame,
+**First hardware runs:** frames barely got out (a few per minute). That turned out to be the CPU clock
+(below), not USB bandwidth; the 80×80 centre crop (menuconfig → Camera → Centre crop, `CONFIG_PPG_CAM_CROP`): 6.4 kB per frame,
 ~160 kB/s at the sensor's ~25 fps. At IDF's default 160 MHz CPU the camera driver fell behind and only
 ~3 frames/min got out; `sdkconfig.camera` sets 240 MHz. The cap (`CAM FPS=n`) skips whole sensor frames
 (one every ~40 ms), so 15 gives 12.5 fps; 0 sends them all. If `cam_fps` drops or `cam_drop` grows,
 the gateway console's camera counters and `board log:` lines show where frames are lost.
 
-Now 120×120 (14.4 kB, ~360 kB/s). **Finding the USB limit:** frame writes block until USB takes
+**Sensor zoom (current):** instead of cropping the stock framing (CIF mode, 5 sensor pixels per frame
+pixel), the sensor runs in SVGA mode and only its middle 252×252 SVGA pixels are scaled to the 240×240
+frame (`CONFIG_PPG_CAM_WINDOW`, run time `CAM WIN=n`, 0 = stock). Same field of view as the old 100×100
+crop, 2.4× the linear resolution, 57.6 kB/frame. SVGA mode has twice the lines, so `CAM CLK=1` (twice
+the driver's CIF sensor clock) keeps the sensor at ~25 fps (~1.44 MB/s); `CAM CLK=3` would halve it. The H line carries `win=` and `clkdiv=` when zoomed. Exposure is counted in
+sensor lines, so the image brightness may differ from the stock framing: adjust `EXP`/`GAIN`.
+
+Before that, 120×120 crop of the stock framing (14.4 kB, ~360 kB/s). **Finding the USB limit:** frame writes block until USB takes
 them, so a crop that's too big rarely shows up as `cam_drop`. Instead the camera task falls behind
 and the driver (grab-latest) quietly replaces frames nobody picked up. Signs, in the order they appear:
 `usb max` (`cam_tx_ms`) climbing toward the 40 ms frame period, then `cam_fps` dropping below ~25
@@ -109,7 +116,7 @@ not USB, can't keep up; nothing is lost but the live view lags).
 | Wiring | I2C port, SDA/SCL GPIO, I2C clock, internal pull-ups, INT GPIO, marker button GPIO, status LED GPIO + polarity | 0, 5/6, 400 kHz, on, −1, −1, 21 active-low |
 | Sensor | LED mode (SpO2 red+IR / HR red-only), sample rate 50–3200, on-chip averaging 1–32, pulse width 69–411 µs, ADC range 2048–16384 nA, red/IR LED current (0.1 mA units), FIFO poll period, FIFO almost-full level | SpO2, 400 sps, 1, 411 µs, 16384 nA, 6.4 mA, 5 ms |
 | Link | USB Serial/JTAG (USB-C) text lines, USB binary records (camera boards / USB gateway), UART (+ number, baud, TX/RX GPIO), or Wi-Fi + MQTT; TX buffer size | USB, 8192 B (32768 B binary) |
-| Camera | OV2640 on/off (USB binary link only), frame size 96×96…640×480, centre crop (gray8), raw grayscale or JPEG (+ quality), fps cap, auto / fixed exposure + gain, flip / mirror | off; 240×240 gray8, no crop (sdkconfig.camera: 120), 15 fps (sdkconfig.camera: 0 = no cap), exposure 300, gain 2 |
+| Camera | OV2640 on/off (USB binary link only), frame size 96×96…640×480, centre crop (gray8), sensor zoom window + clock divider, raw grayscale or JPEG (+ quality), fps cap, auto / fixed exposure + gain, flip / mirror | off; 240×240 gray8, no crop (sdkconfig.camera: whole frame, zoom window 252 / clkdiv 1), 15 fps (sdkconfig.camera: 0 = no cap), exposure 300, gain 2 |
 | Link → Wi-Fi | SSID, password / WPA2-Enterprise (PEAP), fallback networks 2 + 3 (password/open, tried in order when the one before isn't found or keeps refusing), modem sleep, max transmit power, 20 MHz only, SNTP server | UCSD-DEVICE, PSK, off, 20 dBm, off, pool.ntp.org |
 | Link → MQTT | broker URI, topic prefix, broker CA (public bundle / private PEM), send period, largest frame, unacknowledged window, store-and-forward buffer, outbox limit (status only), status period, stop when the server goes offline | written by nbe_node.py; 250 ms, 8 kB, 64 kB, 2 MB with PSRAM, 64 kB, 15 s, on |
 | Behaviour | Autostart without `START`, status-line period, die-temperature reporting, quiet logs after boot | off, 1000 ms, on, on |

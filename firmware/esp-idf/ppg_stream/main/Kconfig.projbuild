@@ -588,6 +588,31 @@ menu "PPG stream (MAX30102)"
                 frame (sdkconfig.camera): 6.4 kB per frame instead of 57.6 kB. Must not exceed
                 the frame's width or height.
 
+        config PPG_CAM_WINDOW
+            int "Sensor zoom: SVGA-mode window side (0 = stock framing)"
+            depends on PPG_CAMERA && !PPG_CAM_JPEG
+            range 0 600
+            default 0
+            help
+                0: the driver's framing (240x240 = the sensor in CIF mode, a 1200x1200 square of
+                its 1600x1200 pixels scaled down, 5 sensor pixels per frame pixel). N > 0: the
+                sensor runs in SVGA mode (2 sensor pixels per SVGA pixel) and the N x N SVGA
+                pixels in the middle are scaled to the frame size, so the same frame shows a
+                smaller part of the scene in more detail. Must be >= the frame size (the sensor
+                only scales down) and a multiple of 4. 250 = the field of view of the 100x100
+                middle of the stock 240x240 framing. Run time: "CAM WIN=n" (0 = stock).
+
+        config PPG_CAM_WIN_CLKDIV
+            int "Sensor zoom: sensor clock divider (CLKRC)"
+            depends on PPG_CAMERA && !PPG_CAM_JPEG
+            range 0 63
+            default 1
+            help
+                Only with the sensor zoom. Sensor clock = 2 x XCLK / (n + 1). SVGA has twice
+                the lines of CIF (the stock 240x240, divider 3, ~25 fps), so 1 keeps ~25 fps and
+                3 halves it. Run time:
+                "CAM CLK=n".
+
         config PPG_CAM_FPS
             int "Frame rate cap (frames/s, 0 = as fast as the sensor and USB allow)"
             depends on PPG_CAMERA

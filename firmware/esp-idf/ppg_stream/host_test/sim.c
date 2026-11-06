@@ -31,7 +31,8 @@ static uint32_t g_native;
 static int64_t g_next_frame_us = 1050000;
 static int g_in_cam;
 static int s_dummy_ret(sensor_t *s, int v) { (void)s; (void)v; return 0; }
-static sensor_t g_sensor = {s_dummy_ret, s_dummy_ret, s_dummy_ret, s_dummy_ret, s_dummy_ret, s_dummy_ret, s_dummy_ret};
+static sensor_t g_sensor = {s_dummy_ret, s_dummy_ret, s_dummy_ret, s_dummy_ret, s_dummy_ret, s_dummy_ret, s_dummy_ret,
+                             NULL, NULL, NULL};  // window calls: not used with PPG_CAM_WINDOW 0
 esp_err_t esp_camera_init(const camera_config_t *c) { (void)c; return ESP_OK; }
 sensor_t *esp_camera_sensor_get(void) { return &g_sensor; }
 camera_fb_t *esp_camera_fb_get(void)
