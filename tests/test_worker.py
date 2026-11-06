@@ -269,4 +269,4 @@ def test_local_train_and_sweep_from_the_page(tmp_path):
     assert [t["state"] for t in ctx.model_tasks] == ["done", "done"], ctx.model_tasks
     assert {r["name"] for r in list_runs(s)} == {"bp-glasses-ridge-cal", "bp-glasses-sweep-cal"}
     page = ada.get("/models").text
-    assert "Scores over time" in page and "NaN" not in page.split("const H =")[1].split(";")[0]
+    assert "Score history" in page and "NaN" not in page.split("const H =")[1].split(";")[0]

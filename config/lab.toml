@@ -20,6 +20,7 @@ role = "glasses"
 # Simulated devices for practising / testing without hardware:
 #   sglab record sim                 (one fake finger sensor)
 #   sglab record sim sim_glasses     (fake finger + weaker fake glasses signal)
+#   sglab record sim sim_cam         (fake finger + camera glasses: PPG + eye camera, like GLS03)
 [devices.sim]
 port = "sim://SIMF01"
 role = "finger"
@@ -29,6 +30,11 @@ sim = { fs = 100, hr_bpm = 72, seed = 1 }
 port = "sim://SIMG01"
 role = "glasses"
 sim = { fs = 100, hr_bpm = 72, seed = 1, dc = 40000, perfusion = 0.004, noise_frac = 0.06, dia_amp = [0.25, 0.15] }
+
+[devices.sim_cam]
+port = "sim://SIMC01"
+role = "glasses"
+sim = { fs = 100, hr_bpm = 72, seed = 2, dc = 40000, perfusion = 0.004, noise_frac = 0.05, dia_amp = [0.25, 0.15], camera = true }
 
 # Reference instruments, saved into every session's metadata.
 [reference]

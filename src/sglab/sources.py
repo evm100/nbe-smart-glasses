@@ -73,7 +73,7 @@ class SimSource:
                  drop_prob: float = 0.0, corrupt_prob: float = 0.0, seed: int = 0,
                  realtime: bool = True, dia_amp: tuple = (0.6, 0.3), duration_s: float = 600.0,
                  dc: float = 120_000, perfusion: float = 0.02, noise_frac: float = 0.03,
-                 motion: tuple = ()):
+                 motion: tuple = (), camera: bool = False, cam_fps: float = 25.0, cam_size: int = 160):
         from ppg.synthetic import make_recording
 
         self.port = "sim://" + dev
@@ -94,6 +94,11 @@ class SimSource:
         self._t_start = None
         self._boot_us = int(self.rng.integers(1e6, 5e6))
         self._push(encode(f"E,{self._now_us()},BOOT,"))
+        # optional fake eye camera (protocol v2 video stream, like GLS03): frames are queued as
+        # VideoFrame objects next to the text lines, as the USB gateway's source does
+        self.camera, self.cam_fps, self.cam_size = camera, cam_fps, cam_size
+        self._eye = None
+        self._cam_seq = 0
 
     def _now_us(self) -> int:
         return self._boot_us + int((time.monotonic() - self._t0) * 1e6)
@@ -102,7 +107,12 @@ class SimSource:
         return encode(f"H,proto=1,dev={self.dev},fw=sim-0.1,sensor=SIM,fs={self.fs:g},ch=ir|red,"
                       f"adc=18,led_ma=6.4|6.4,pw_us=411,avg=1,site=sim")
 
-    def _push(self, line: str) -> None:
+    def _cam_header(self) -> str:
+        n = self.cam_size
+        return encode(f"H,proto=2,dev={self.dev},fw=sim-0.1,sid=1,stream=cam,kind=video,sensor=SIM-EYE,ch=frame,"
+                      f"fs={self.cam_fps:g},w={n},h={n},fmt=gray8,aec=0,exposure=300,gain=2,site=sim,sensor_ok=1")
+
+    def _push(self, line) -> None:
         with self._lock:
             self._out.append(line)
 
@@ -110,9 +120,14 @@ class SimSource:
         c = cmd.strip().upper()
         if c == "INFO":
             self._push(self._header())
+            if self.camera:
+                self._push(self._cam_header())
         elif c == "START":
             self._seq = 0
+            self._cam_seq = 0
             self._push(self._header())
+            if self.camera:
+                self._push(self._cam_header())
             self._push(encode(f"E,{self._now_us()},START,"))
             self._t_start = time.monotonic()
             self._streaming = True
@@ -134,6 +149,8 @@ class SimSource:
                 self._last_status = now
                 self._push(encode(f"S,{self._now_us()},fs_meas={self.fs:.1f},ovf=0,alc_ovf=0,i2c_err=0,tx_drop=0,temp_c=31.25"))
         t_start_us = self._boot_us + int((self._t_start - self._t0) * 1e6)
+        if self.camera:
+            self._generate_frames(t_start_us)
         while self._seq < due:
             i = self._seq
             t_us = t_start_us + int(i * 1e6 / self.fs)
@@ -145,6 +162,22 @@ class SimSource:
             if r < self.drop_prob + self.corrupt_prob:
                 line = line[:10] + "9" + line[11:]
             self._push(line)
+
+    def _generate_frames(self, t_start_us: int) -> None:
+        from nbe_gateway.wire import FMT_GRAY8, VideoFrame
+
+        from .eyetrack import SyntheticEye
+
+        if self._eye is None:
+            self._eye = SyntheticEye(self.cam_size, seed=int(self.rng.integers(1 << 30)))
+        el = (time.monotonic() - self._t_start) if self.realtime else (self._seq / self.fs)
+        due = int(el * self.cam_fps) + 1
+        while self._cam_seq < due:
+            ts = self._cam_seq / self.cam_fps
+            px = self._eye.frame(ts).tobytes()
+            self._push(VideoFrame(1, self._cam_seq, t_start_us + int(ts * 1e6), self.cam_size, self.cam_size,
+                                  FMT_GRAY8, 300, 2, px))
+            self._cam_seq += 1
 
     def readline(self) -> str:
         self._generate()

@@ -1,6 +1,8 @@
 """Devices page, trial pages and the trial API (operator role)."""
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
@@ -205,7 +207,74 @@ def api_trial_video(request: Request, tid: str, stream: str, after: int = -1, us
         raise HTTPException(404, str(e)) from None
     if p is None or p[0] <= after:
         return Response(status_code=204)
-    return Response(p[1], media_type=p[2], headers={"Cache-Control": "no-store", "X-Frame-Count": str(p[0])})
+    headers = {"Cache-Control": "no-store", "X-Frame-Count": str(p[0])}
+    ov = ctx.manager.eye_overlay(tid, stream, p[0])
+    if ov is not None:  # the eye tracker's result for exactly this frame (drawn over it)
+        headers["X-Eye"] = json.dumps({k: ov.get(k) for k in ("state", "x", "y", "r", "gx", "gy", "cx", "cy", "win",
+                                                             "closure", "closed", "head_move", "cal", "why")},
+                                      separators=(",", ":"))
+    return Response(p[1], media_type=p[2], headers=headers)
+
+
+@router.get("/api/trials/{tid}/eye/{stream}")
+def api_trial_eye(request: Request, tid: str, stream: str, after: int = -1, user=operator):
+    """Live eye tracking of a camera stream: summary (blinks/min, PERCLOS, gaze shifts...) and every
+    tracked frame newer than `after` (the `next` of the previous reply)."""
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    try:
+        e = ctx.manager.eye(tid, stream, after)
+    except TrialError as err:
+        raise HTTPException(404, str(err)) from None
+    if e is None:
+        raise HTTPException(404, f"{stream}: no eye tracking (JPEG stream or too small)")
+    return e
+
+
+@router.post("/api/trials/{tid}/eye/{stream}/recalibrate")
+def api_trial_eye_recal(request: Request, tid: str, stream: str, user=operator):
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    try:
+        ok = ctx.manager.eye_recalibrate(tid, stream)
+    except TrialError as err:
+        raise HTTPException(404, str(err)) from None
+    return {"ok": ok}
+
+
+@router.get("/api/trials/{tid}/insights")
+def api_trial_insights(request: Request, tid: str, user=operator):
+    """Live PPG features per stream (HR, HRV, perfusion, quality, beat markers, ensemble beat) and
+    the live BP estimate (sglab.liveppg)."""
+    from ..bpmodel import json_safe
+
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    return json_safe(ctx.manager.insights(tid))
+
+
+@router.post("/api/trials/{tid}/bp-model")
+async def api_trial_bp_model(request: Request, tid: str, user=operator):
+    """{"model": "name/run_id" | "auto", "role": "glasses" | ...}: which model run estimates BP live."""
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    body = await request.json()
+    try:
+        ctx.manager.set_bp_model(tid, body.get("model"), body.get("role"))
+    except TrialError as err:
+        return JSONResponse({"error": str(err)}, status_code=400)
+    return {"ok": True}
+
+
+@router.get("/api/bp-models")
+def api_bp_models(request: Request, role: str | None = None, user=viewer):
+    """Model runs that can estimate BP (have a saved model), newest first, + the default per site."""
+    from ..bpmodel import available_runs, default_run, json_safe
+
+    s = C(request).settings
+    runs = available_runs(s, role)
+    defaults = {r: (default_run(s, r) or {}).get("key") for r in ("finger", "glasses", "head")}
+    return json_safe({"runs": runs, "defaults": defaults})
 
 
 @router.post("/api/trials/{tid}/event")

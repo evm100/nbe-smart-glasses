@@ -117,6 +117,13 @@ class VideoWriter:
         self._epoch_n = 0
         self._dropped_closed = 0
         self._seen: set[int] = set()
+        # live eye tracking (gray8 only): every frame, inline - ~3 ms per 160x160 frame
+        self.tracker = None
+        if self.fmt == FMT_GRAY8 and self.w >= 32 and self.h >= 32:
+            from .eyetrack import EyeTracker
+            self.tracker = EyeTracker(self.w, self.h)
+        self._overlays: deque = deque(maxlen=64)  # (frame count, tracker output) for the preview
+        self.track_error: str | None = None
 
     def new_epoch(self) -> None:
         """The board started its stream again (START): seq restarts at 0."""
@@ -137,6 +144,13 @@ class VideoWriter:
         if (fr.w, fr.h) != (self.w, self.h) or fr.fmt != self.fmt:
             self.stats["n_bad_size"] += 1
             return
+        # track before publishing the frame, so a preview of frame n always has frame n's overlay
+        ov = None
+        if self.tracker is not None and self.track_error is None:
+            try:  # on the session clock, like the PPG samples and the events
+                ov = self.tracker.update(np.frombuffer(fr.data, np.uint8), t_s)
+            except Exception as e:  # never let tracking break the recording
+                self.track_error = f"{type(e).__name__}: {e}"
         with self.lock:
             off = self._f.tell()
             self._f.write(REC_HDR.pack(len(fr.data), fr.seq, t_dev_us, t_s, fr.exposure, fr.gain, fr.fmt))
@@ -144,6 +158,8 @@ class VideoWriter:
             self._csv.writerow([f"{t_s:.6f}", fr.seq, t_dev_us, fr.exposure, fr.gain, off, len(fr.data)])
             self.latest, self.latest_t_s = fr, t_s
             self.stats["n_frames"] += 1
+            if ov is not None:
+                self._overlays.append((self.stats["n_frames"], ov))
             self._new_frame.notify_all()
         self._seen.add(fr.seq)
         if len(self._seen) > 20000:
@@ -178,6 +194,30 @@ class VideoWriter:
             self._f.close()
             self._idx.close()
 
+    def overlay(self, count: int) -> dict | None:
+        """Tracker output of frame number `count` (as in preview()), else the newest before it."""
+        for n, o in reversed(self._overlays):
+            if n <= count:
+                return o
+        return None
+
+    def eye(self, after: int = -1) -> dict | None:
+        """Live eye-tracking readout: summary stats + per-frame points newer than `after`."""
+        if self.tracker is None:
+            return None
+        pts = self.tracker.since(after)
+        return {"stream": self.name, "w": self.w, "h": self.h, "error": self.track_error,
+                "summary": self.tracker.summary(),
+                "points": [{k: p[k] for k in ("n", "t", "state", "closure", "motion", "thr", "event", "gx", "gy",
+                                               "cx", "cy", "dur") if k in p} for p in pts],
+                "next": pts[-1]["n"] if pts else after}
+
+    def recalibrate_eye(self) -> bool:
+        if self.tracker is None:
+            return False
+        self.tracker.recalibrate()
+        return True
+
     def preview(self, after: int = -1, wait_s: float = 0.0) -> tuple[int, bytes, str] | None:
         """(frame count, image, media type) of the newest frame, encoded once per frame. With
         `after` (the count the caller already shows), waits up to wait_s for a newer frame, so the
@@ -200,7 +240,7 @@ class VideoWriter:
                 "dropped": st["n_dropped_seq"], "bytes": st["bytes"],
                 "sensor_ok": self.header.get("sensor_ok") != "0",
                 "exposure": self.latest.exposure if self.latest else None,
-                "gain": self.latest.gain if self.latest else None}
+                "gain": self.latest.gain if self.latest else None, "tracking": self.tracker is not None}
 
     def summary(self) -> dict:
         st = self.stats

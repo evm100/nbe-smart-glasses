@@ -2,39 +2,149 @@
 {% block title %}Models · NBE PPG lab{% endblock %}
 {% block head %}<script src="/static/plotly.min.js"></script>
 <style>
-.verdict { display: flex; gap: 6px; align-items: center; }
 .pill.same::before { content: "▲ "; color: var(--warn); }
 details.guide summary { cursor: pointer; font-weight: 600; }
 details.guide dl.kv { margin-top: 10px; }
 details.guide dd { color: var(--text-2); }
 .mae { font-variant-numeric: tabular-nums; }
 .mae small { color: var(--muted); }
+.hero { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 4fr); gap: 16px; margin-top: 14px; }
+@media (max-width: 980px) { .hero { grid-template-columns: minmax(0, 1fr); } }
+.hero h3 { margin: 0; font-size: 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.site { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-2); }
+.cmp { display: grid; gap: 14px; margin: 14px 0 6px; }
+.cmp .row { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 10px; align-items: center; }
+.cmp .row > b { font-size: 13px; }
+.bars { display: grid; gap: 4px; }
+.bar { display: grid; grid-template-columns: minmax(0, 1fr) 76px; gap: 8px; align-items: center; font-size: 12px; color: var(--text-2); }
+.bar .track { height: 14px; background: var(--grid); border-radius: 4px; overflow: hidden; }
+.bar .fill { height: 100%; border-radius: 4px; }
+.bar .fill.model { background: var(--accent); } .bar .fill.base { background: var(--muted); opacity: .55; }
+.bar span { font-variant-numeric: tabular-nums; text-align: right; }
+.facts { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 10px; }
+.facts div { font-size: 12px; color: var(--text-2); } .facts b { display: block; font-size: 18px; color: var(--text); font-variant-numeric: tabular-nums; }
+.stepper { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 8px; }
+@media (max-width: 760px) { .stepper { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.step { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--surface); }
+.step .n { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.step b { display: block; margin: 2px 0 4px; }
+.step p { margin: 0; font-size: 12px; color: var(--text-2); }
+.step.done { border-color: var(--good); } .step.done .n::after { content: " ✓"; color: var(--good); }
+.step.now { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); }
 </style>{% endblock %}
 {% block content %}
 <h1>Models</h1>
-<div class="sub">Layer 4: blood pressure from the PPG, scored only on people (or sessions) the model never saw.</div>
+<div class="sub">Blood pressure from the PPG (Layer 4). Every score below comes from readings the model never trained on.</div>
 
 {% if msg == 'sweep' %}<div class="warn">Sweep {% if remote %}queued for the processing worker{% else %}started{% endif %}. Reload this page to follow it.</div>
 {% elif msg == 'train' %}<div class="warn">Training started; it takes a few seconds. Reload to see the run.</div>
 {% elif msg == 'dataset' %}<div class="warn">Rebuilding the dataset from the processed sessions. Reload in a moment.</div>{% endif %}
 
-<details class="card guide" {% if not rows %}open{% endif %}>
-<summary>How to read these results</summary>
-<dl class="kv">
-  <dt>MAE</dt><dd>Mean absolute error: how far off a prediction is on average, in mmHg, ignoring whether it is too high or too low. Lower is better. A cuff itself is typically within ~5 mmHg of an arterial line.</dd>
-  <dt>Baseline</dt><dd>The simple guess the model has to beat. Calibrated runs (the default): “BP stays at the session's first cuff reading”. Otherwise: “everyone has the average BP”. A model that doesn't beat it has learned nothing useful, however small its MAE looks.</dd>
-  <dt>Bias ± SD</dt><dd>Average signed error (does it read high or low?) and how much the errors scatter. The AAMI standard for BP devices asks for bias within ±5 and SD ≤ 8 mmHg, on 85+ people.</dd>
-  <dt>r change</dt><dd>Does the predicted change from the calibration go up and down with the measured one? 1 = follows perfectly, 0 = no relation. This is the number to watch for cold-pressor / exercise sessions.</dd>
-  <dt>Folds</dt><dd>Each prediction comes from a model trained without that subject (or that session, while there is only one subject). That is what makes the scores honest: a model always looks great on the data it was fitted to.</dd>
-  <dt>Holdout</dt><dd>Subjects locked away from all training and tuning (<code>holdout_subjects</code> in the settings), scored once at the end. Worth setting once there are ~10 subjects.</dd>
-  <dt>Sweep</dt><dd>Tries many model settings and feature sets and keeps the best. The best of many always looks a bit lucky, so a sweep also reports a <b>nested</b> score: the whole search repeated without each subject, its winner scored on them. Trust the nested number.</dd>
-</dl>
-</details>
+{% set ds = datasets | selectattr('name', 'equalto', 'bp') | list %}
+{% set kinds = (ds[0].summary.kinds or {}) if ds else {} %}
+{% set nvalid = ((kinds.get('bp') or {}).get('roles') or {}).values() | map(attribute='valid') | sum if kinds.get('bp') else 0 %}
+<div class="stepper">
+  <div class="step {{ 'done' if ds and nvalid else 'now' }}"><div class="n">Step 1</div><b>Record with a cuff</b>
+    <p>Sessions with 2+ cuff readings, ideally while BP changes (cold pressor, exercise, posture).</p></div>
+  <div class="step {{ 'done' if ds and nvalid else '' }}"><div class="n">Step 2</div><b>Build the dataset</b>
+    <p>{% if ds %}{{ nvalid }} usable readings, built {{ ds[0].built_at[:10] }}.{% else %}Not built yet.{% endif %}</p></div>
+  <div class="step {{ 'done' if best else ('now' if ds and nvalid else '') }}"><div class="n">Step 3</div><b>Train &amp; validate</b>
+    <p>{% if best %}{{ rows | length }} run{{ 's' if rows|length != 1 }} so far.{% else %}Scored on people it never saw.{% endif %}</p></div>
+  <div class="step {{ 'now' if best else '' }}"><div class="n">Step 4</div><b>Test on new sessions</b>
+    <p>Predict a fresh recording before it joins the training data (below, or live during a trial).</p></div>
+</div>
 
-<div class="grid2" style="margin-top:16px">
+{% if best %}
+{% for b in best %}{% set m = b.m %}
+<div class="hero">
+  <div class="card">
+    <div class="site">{{ b.role }} PPG · best run so far</div>
+    <h3><a href="/models/{{ m.name }}/{{ m.run_id }}">{{ m.name }}</a> <span class="note">{{ m.run_id }}</span>
+      {% if m.sweep %}<span class="pill">sweep</span>{% endif %}</h3>
+    <div class="cmp">
+    {% set mx = [b.x.targets | map(attribute='mae') | max, b.x.targets | map(attribute='base_mae') | max] | max %}
+    {% for t in b.x.targets %}
+      <div class="row"><b>{{ t.label | capitalize }}</b>
+        <div class="bars">
+          <div class="bar"><div class="track"><div class="fill model" style="width:{{ (100 * t.mae / mx) | round(1) }}%"></div></div><span>model {{ '%.1f' % t.mae }}</span></div>
+          <div class="bar"><div class="track"><div class="fill base" style="width:{{ (100 * t.base_mae / mx) | round(1) }}%"></div></div><span>baseline {{ '%.1f' % t.base_mae }}</span></div>
+        </div></div>
+    {% endfor %}
+    </div>
+    <div class="note">Average error in mmHg (shorter is better). Baseline = {{ 'assume BP stays at the calibration cuff reading' if m.calibrated else "everyone's average BP" }}.
+      {% for t in b.x.targets %}{% if loop.first %}<br>{% endif %}<span class="pill {{ t.verdict }}">{{ t.label }}: {{ {'good': 'beats baseline', 'same': 'same as baseline', 'bad': 'worse than baseline'}[t.verdict] }}</span> {% endfor %}</div>
+    <div class="facts">
+      <div><b>{{ m.n_dev }}</b>readings scored</div>
+      <div><b>{{ m.subjects | length }}</b>subject{{ 's' if m.subjects|length != 1 }}</div>
+      <div><b>{{ m.n_folds }}</b>{{ m.cv_unit }} folds</div>
+      {% set rc = b.x.targets[0].r_change %}{% if rc is not none and rc == rc %}<div><b>{{ '%.2f' % rc }}</b>r of BP change</div>{% endif %}
+      <div><b>{{ m.features | length }}</b>features</div>
+    </div>
+    {% for n in b.x.notes %}<div class="warn" style="margin-top:10px">{{ n }}</div>{% endfor %}
+  </div>
+  <div class="card">
+    <div class="note">Every dot is a cuff reading predicted by a model that never saw that {{ m.cv_unit }}. On the diagonal = perfect.</div>
+    <div class="plot scatter" data-run="{{ m.name }}/{{ m.run_id }}" style="height:300px"></div>
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="card" style="margin-top:14px"><b>No trained model yet.</b>
+  <p class="note">Record sessions with cuff readings, process them, then build the dataset and train (bottom of this page).
+  Once a run exists it appears here with its error against the baseline, and the live trial page shows its BP estimate.</p></div>
+{% endif %}
+
+<h2>Test on a recorded session</h2>
+<div class="card scroll">
+  <div class="note" style="margin-bottom:6px">Run the model over a session's PPG and compare with its cuff readings. The fair test is a session of someone the model never trained on — record one, process it, and check here <em>before</em> rebuilding the dataset.</div>
+  <table>
+    <thead><tr><th>Session</th><th>Subject</th><th>Protocol</th><th class="num">Cuff readings</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {% for x in tests %}
+      <tr><td><a href="/sessions/{{ x.sid }}">{{ x.sid }}</a></td><td>{{ x.subject or '' }}</td><td>{{ x.protocol or '' }}</td>
+        <td class="num">{{ x.n_bp }}</td>
+        <td>{% if not x.processed %}<span class="pill incomplete">not processed</span>{% elif x.seen %}<span class="pill">in training data ({{ x.seen | join(', ') }})</span>{% else %}<span class="pill good">new to the model</span>{% endif %}</td>
+        <td><a href="/sessions/{{ x.sid }}#bp-sec">predict →</a></td></tr>
+    {% else %}<tr><td colspan="6" class="note">No sessions with cuff readings yet.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if history %}
+<h2>Score history</h2>
+<div class="card">
+  <div class="controls">
+    <label>Model <select id="hist-name">{% for n in names %}<option {% if best and n == best[0].m.name %}selected{% endif %}>{{ n }}</option>{% endfor %}</select></label>
+    <span class="note">Each run of one model setup, oldest left: progress = the solid line dropping below the dotted baseline as data grows.</span>
+  </div>
+  <div id="hist" class="plot" style="height:300px"></div>
+</div>
+{% endif %}
+
+<h2>All runs</h2>
+<div class="card scroll"><table>
+<thead><tr><th>Run</th><th>Trained (UTC)</th><th>Site</th><th>Model</th><th>Validation</th><th class="num">Readings</th>
+  <th>Systolic MAE <small>(baseline)</small></th><th>Diastolic MAE <small>(baseline)</small></th></tr></thead>
+<tbody>
+{% for r in rows %}{% set m = r.m %}
+<tr>
+  <td><a href="/models/{{ m.name }}/{{ m.run_id }}">{{ m.name }}</a> <span class="note">{{ m.run_id }}</span></td>
+  <td>{{ m.trained_at[:16] | replace('T', ' ') }}</td><td>{{ m.role }}</td>
+  <td>{{ m.model }}{% if m.sweep %} <span class="pill">sweep</span>{% endif %}</td>
+  <td>{{ m.n_folds }} {{ m.cv_unit }}s</td><td class="num">{{ m.n_dev }}</td>
+  {% for t in r.x.targets %}
+  <td class="mae"><span class="pill {{ t.verdict }}">{{ '%.1f' % t.mae }}</span> <small>({{ '%.1f' % t.base_mae }})</small></td>
+  {% endfor %}
+</tr>
+{% else %}
+<tr><td colspan="8" class="note">No runs yet: build the dataset, then Train or Sweep (or <code>sglab model train</code>).</td></tr>
+{% endfor %}
+</tbody></table></div>
+
+<h2>Training</h2>
+<div class="grid2">
 <div class="card">
   <h2 style="margin-top:0">Dataset</h2>
-  {% set ds = datasets | selectattr('name', 'equalto', 'bp') | list %}
   {% if ds %}{% set d = ds[0] %}
     <div class="note">built {{ d.built_at[:16] | replace('T', ' ') }} UTC</div>
     {% set k = (d.summary.kinds or {}).get('bp') %}
@@ -55,7 +165,7 @@ details.guide dd { color: var(--text-2); }
   {% if is_operator %}
   <form method="post" action="/models/train"><button class="primary">Train with these settings</button></form>
   <h2>Sweep</h2>
-  <p class="note">Searches model kind, settings and which of {{ spec.features | length }} features to use{% if remote %}; runs on the processing worker{% endif %}. Each trial is quick; the nested check repeats the search once per subject, so 60 trials with 10 subjects is ~660 trials.</p>
+  <p class="note">Searches model kind, settings and which of {{ spec.features | length }} features to use{% if remote %}; runs on the processing worker{% endif %}. The nested check repeats the search once per subject, so 60 trials with 10 subjects is ~660 trials.</p>
   <form method="post" action="/models/sweep" class="row-inline">
     <label>site <select name="role">{% for r in ['finger', 'glasses', 'head'] %}<option {% if r == cfg.role %}selected{% endif %}>{{ r }}</option>{% endfor %}</select></label>
     <label>trials <input type="number" name="trials" value="{{ spec.trials }}" min="5" max="500"></label>
@@ -76,57 +186,67 @@ details.guide dd { color: var(--text-2); }
 </table></div>
 {% endif %}
 
-{% if history %}
-<h2>Scores over time</h2>
-<div class="card">
-  <div class="note">Cross-validated MAE of every run, oldest left. Solid: model. Dotted: its baseline. Diamonds: a sweep's nested (honest) score. Progress = the solid line dropping below the dotted one.</div>
-  <div id="hist" class="plot" style="height:320px"></div>
-</div>
-{% endif %}
+<details class="card guide" style="margin-top:24px">
+<summary>How to read these results</summary>
+<dl class="kv">
+  <dt>MAE</dt><dd>Mean absolute error: how far off a prediction is on average, in mmHg, ignoring whether it is too high or too low. Lower is better. A cuff itself is typically within ~5 mmHg of an arterial line.</dd>
+  <dt>Baseline</dt><dd>The simple guess the model has to beat. Calibrated runs (the default): “BP stays at the session's first cuff reading”. Otherwise: “everyone has the average BP”. A model that doesn't beat it has learned nothing useful, however small its MAE looks.</dd>
+  <dt>Bias ± SD</dt><dd>Average signed error (does it read high or low?) and how much the errors scatter. The AAMI standard for BP devices asks for bias within ±5 and SD ≤ 8 mmHg, on 85+ people.</dd>
+  <dt>r change</dt><dd>Does the predicted change from the calibration go up and down with the measured one? 1 = follows perfectly, 0 = no relation. This is the number to watch for cold-pressor / exercise sessions.</dd>
+  <dt>Folds</dt><dd>Each prediction comes from a model trained without that subject (or that session, while there is only one subject). That is what makes the scores honest: a model always looks great on the data it was fitted to.</dd>
+  <dt>Holdout</dt><dd>Subjects locked away from all training and tuning (<code>holdout_subjects</code> in the settings), scored once at the end. Worth setting once there are ~10 subjects.</dd>
+  <dt>Sweep</dt><dd>Tries many model settings and feature sets and keeps the best. The best of many always looks a bit lucky, so a sweep also reports a <b>nested</b> score: the whole search repeated without each subject, its winner scored on them. Trust the nested number.</dd>
+</dl>
+</details>
 
-<h2>Runs</h2>
-<div class="card scroll"><table>
-<thead><tr><th>Run</th><th>Trained (UTC)</th><th>Site</th><th>Model</th><th>Validation</th><th class="num">Readings</th>
-  <th>Systolic MAE <small>(baseline)</small></th><th>Diastolic MAE <small>(baseline)</small></th></tr></thead>
-<tbody>
-{% for r in rows %}{% set m = r.m %}
-<tr>
-  <td><a href="/models/{{ m.name }}/{{ m.run_id }}">{{ m.name }}</a> <span class="note">{{ m.run_id }}</span></td>
-  <td>{{ m.trained_at[:16] | replace('T', ' ') }}</td><td>{{ m.role }}</td>
-  <td>{{ m.model }}{% if m.sweep %} <span class="pill">sweep</span>{% endif %}</td>
-  <td>{{ m.n_folds }} {{ m.cv_unit }}s</td><td class="num">{{ m.n_dev }}</td>
-  {% for t in r.x.targets %}
-  <td class="mae"><span class="pill {{ t.verdict }}">{{ '%.1f' % t.mae }}</span> <small>({{ '%.1f' % t.base_mae }})</small></td>
-  {% endfor %}
-</tr>
-{% else %}
-<tr><td colspan="8" class="note">No runs yet: build the dataset, then Train or Sweep (or <code>sglab model train</code>).</td></tr>
-{% endfor %}
-</tbody></table></div>
-
-{% if history %}
 <script>
-const H = {{ history | tojson }};
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-const x = H.map((h, i) => i + 1);
-const label = H.map(h => `${h.name}<br>${h.run_id}`);
-const traces = [];
-[['sys_mmhg', 'systolic', '--s1'], ['dia_mmhg', 'diastolic', '--s2']].forEach(([t, name, col]) => {
-  traces.push({x, y: H.map(h => h[`${t}_model`]), text: label, name: `${name} model`, mode: 'lines+markers',
-               line: {color: css(col), width: 2}, hovertemplate: '%{text}<br>%{y:.1f} mmHg<extra>%{fullData.name}</extra>'});
-  traces.push({x, y: H.map(h => h[`${t}_baseline`]), text: label, name: `${name} baseline`, mode: 'lines',
-               line: {color: css(col), width: 1.5, dash: 'dot'}, hovertemplate: '%{text}<br>%{y:.1f} mmHg<extra>%{fullData.name}</extra>'});
-  if (H.some(h => h[`${t}_nested`] != null))
-    traces.push({x, y: H.map(h => h[`${t}_nested`] ?? null), text: label, name: `${name} nested`, mode: 'markers',
-                 marker: {color: css(col), symbol: 'diamond', size: 10}, hovertemplate: '%{text}<br>%{y:.1f} mmHg<extra>%{fullData.name}</extra>'});
-});
-Plotly.newPlot('hist', traces, {
+const layout = extra => Object.assign({
   paper_bgcolor: css('--surface'), plot_bgcolor: css('--surface'),
   font: {color: css('--text-2'), size: 12, family: 'system-ui, sans-serif'},
-  margin: {l: 50, r: 16, t: 10, b: 40}, legend: {orientation: 'h', y: 1.12, x: 1, xanchor: 'right'},
-  xaxis: {title: 'run', dtick: 1, gridcolor: css('--grid'), zeroline: false, linecolor: css('--border')},
-  yaxis: {title: 'MAE (mmHg)', rangemode: 'tozero', gridcolor: css('--grid'), zeroline: false, linecolor: css('--border')},
-}, {responsive: true, displaylogo: false});
-</script>
+  margin: {l: 52, r: 12, t: 8, b: 42}, legend: {orientation: 'h', y: 1.1, x: 1, xanchor: 'right'},
+}, extra);
+const ax = (title, extra) => Object.assign({title, gridcolor: css('--grid'), zeroline: false, linecolor: css('--border')}, extra || {});
+const CFG = {responsive: true, displaylogo: false, modeBarButtonsToRemove: ['lasso2d', 'select2d']};
+const TC = {sys_mmhg: ['systolic', '--bad'], dia_mmhg: ['diastolic', '--s1'], map_mmhg: ['mean arterial', '--s5']};
+
+document.querySelectorAll('.scatter').forEach(async el => {
+  const [name, run] = el.dataset.run.split('/');
+  const d = await (await fetch(`/api/models/${encodeURIComponent(name)}/${encodeURIComponent(run)}/predictions`)).json();
+  const rows = d.rows.filter(r => r.split === 'cv' && r.y != null && r.pred != null);
+  if (!rows.length) { el.innerHTML = '<div class="note" style="padding:20px">No predictions saved.</div>'; return; }
+  const all = rows.flatMap(r => [r.y, r.pred]), lo = Math.min(...all) - 4, hi = Math.max(...all) + 4;
+  const traces = [{x: [lo, hi], y: [lo, hi], mode: 'lines', line: {color: css('--muted'), dash: 'dot', width: 1}, hoverinfo: 'skip', showlegend: false}];
+  for (const [t, [label, col]] of Object.entries(TC)) {
+    const r = rows.filter(x => x.target === t); if (!r.length) continue;
+    traces.push({x: r.map(x => x.y), y: r.map(x => x.pred), mode: 'markers', name: label, text: r.map(x => `${x.subject} · ${x.session_id}`),
+                 marker: {size: 8, color: css(col), opacity: 0.8, line: {color: css('--surface'), width: 1}},
+                 hovertemplate: 'cuff %{x:.0f} · model %{y:.0f}<br>%{text}<extra>' + label + '</extra>'});
+  }
+  Plotly.newPlot(el, traces, layout({xaxis: ax('cuff (mmHg)', {range: [lo, hi]}), yaxis: ax('model (mmHg)', {range: [lo, hi], scaleanchor: 'x'})}), CFG);
+});
+
+{% if history %}
+const H = {{ history | tojson }};
+function drawHist() {
+  const name = document.getElementById('hist-name').value;
+  const R = H.filter(h => h.name === name);
+  const x = R.map(h => h.t.slice(0, 16).replace('T', ' '));
+  const traces = [];
+  for (const [t, [label, col]] of Object.entries(TC)) {
+    if (!R.some(h => h[`${t}_model`] != null)) continue;
+    traces.push({x, y: R.map(h => h[`${t}_model`]), name: `${label} model`, mode: 'lines+markers', line: {color: css(col), width: 2.2},
+                 hovertemplate: '%{y:.1f} mmHg<extra>%{fullData.name}</extra>'});
+    traces.push({x, y: R.map(h => h[`${t}_baseline`]), name: `${label} baseline`, mode: 'lines', line: {color: css(col), width: 1.4, dash: 'dot'},
+                 hovertemplate: '%{y:.1f} mmHg<extra>%{fullData.name}</extra>'});
+    if (R.some(h => h[`${t}_nested`] != null))
+      traces.push({x, y: R.map(h => h[`${t}_nested`] ?? null), name: `${label} nested`, mode: 'markers',
+                   marker: {color: css(col), symbol: 'diamond', size: 10}, hovertemplate: '%{y:.1f} mmHg<extra>%{fullData.name}</extra>'});
+  }
+  Plotly.react('hist', traces, layout({xaxis: ax('trained (UTC)', {type: 'category'}), yaxis: ax('MAE (mmHg)', {rangemode: 'tozero'})}), CFG);
+}
+document.getElementById('hist-name').onchange = drawHist;
+drawHist();
 {% endif %}
+</script>
 {% endblock %}

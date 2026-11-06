@@ -60,6 +60,7 @@ class Trial:
         self.state = "starting"
         self.warnings: list[str] = []
         self.started_wall = time.time()
+        self.analysis = None  # liveppg.LiveAnalysis while recording
 
     def brief(self) -> dict:
         return {"id": self.id, "owner": self.owner, "state": self.state, "device_keys": self.device_keys,
@@ -140,6 +141,9 @@ class TrialManager:
             with trial.lock:
                 trial.warnings = rec.start({**pre, "recorded_by": owner})
                 trial.rec, trial.state = rec, "recording"
+            from .liveppg import LiveAnalysis
+            trial.analysis = LiveAnalysis(trial, self.settings)
+            trial.analysis.start()
         except Exception as e:
             self._release(trial, drop=True)
             if isinstance(e, TrialError):
@@ -169,6 +173,8 @@ class TrialManager:
                 raise TrialError("not recording")
             t.rec.stop()
             t.state = "stopped"
+            if t.analysis is not None:
+                t.analysis.stop_flag.set()
         self._release(t)  # devices are free for the next trial while this one is being saved
 
     def finalize(self, tid: str, post: dict, user: str | None = None) -> str:
@@ -216,6 +222,39 @@ class TrialManager:
             if t.rec is not None:
                 out.update(folder=t.rec.folder.name, streams=t.rec.live_status(), events=t.rec.all_events())
             return out
+
+    def _video_writer(self, tid: str, stream: str):
+        t = self.get(tid)
+        with t.lock:
+            workers = list(t.rec.workers) if t.rec else []
+        for w in workers:
+            for vw in list(w.video.values()):
+                if vw.name == stream:
+                    return vw
+        raise TrialError(f"no camera stream {stream!r} in trial {tid}")
+
+    def eye(self, tid: str, stream: str, after: int = -1) -> dict | None:
+        return self._video_writer(tid, stream).eye(after)
+
+    def eye_overlay(self, tid: str, stream: str, count: int) -> dict | None:
+        return self._video_writer(tid, stream).overlay(count)
+
+    def eye_recalibrate(self, tid: str, stream: str) -> bool:
+        return self._video_writer(tid, stream).recalibrate_eye()
+
+    def insights(self, tid: str) -> dict:
+        """Live features: per PPG stream (HR, HRV, quality, beats, template) + the BP estimate."""
+        t = self.get(tid)
+        a = t.analysis
+        if a is None:
+            return {"ppg": [], "bp": {"state": "waiting"}}
+        return {"ppg": [lp.state() for lp in list(a.ppg.values())], "bp": a.bp_state()}
+
+    def set_bp_model(self, tid: str, key: str | None, role: str | None = None) -> None:
+        t = self.get(tid)
+        if t.analysis is None:
+            raise TrialError("not recording")
+        t.analysis.set_model(key, role)
 
     def video_preview(self, tid: str, stream: str, after: int = -1,
                       wait_s: float = 0.0) -> tuple[int, bytes, str] | None:

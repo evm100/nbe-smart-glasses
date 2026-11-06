@@ -370,7 +370,10 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
             images[r["stream"]] = imgs
         return ctx.render(request, "session.html", {
             "s": s, "doc": doc, "images": images, "processing": ctx.processing_state(s["session_id"]),
-            "streams": [st["stream"] for st in s["streams"]]})
+            "streams": [st["stream"] for st in s["streams"]],
+            "roles": sorted({st.get("role") for st in s["streams"] if st.get("role")}),
+            "videos": [v["stream"] for v in (doc.get("video") or []) if v.get("fmt", "gray8") == "gray8"],
+            "has_bp": any(e.get("kind") == "bp" for e in s["events"])})
 
     @app.post("/sessions/{sid}/process")
     def process(request: Request, sid: str, force: bool = False, user=Depends(sec.require("operator"))):
@@ -481,6 +484,59 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
                     item["epoch_t"], item["epoch_hr"] = _clean(t0 + k * e["t_center"]), _clean(e["hr_mean_bpm"])
             out.append(item)
         return out
+
+    @app.get("/api/sessions/{sid}/bp-predict")
+    def api_bp_predict(sid: str, model: str = "auto", role: str = "glasses", window: float = 45.0, user=viewer):
+        """A trained model run over this session (sglab.bpmodel.session_prediction): BP trace every
+        5 s and every cuff reading predicted vs measured. model = 'name/run_id' or auto."""
+        from ..bpmodel import json_safe, resolve, session_prediction
+
+        s = get_session(sid)
+        run = resolve(settings, model, role)
+        if run is None:
+            raise HTTPException(404, "no trained model with a saved model file" + ("" if model == "auto" else f": {model}"))
+        c = ctx.cat()
+        try:
+            return json_safe(session_prediction(settings, c, s["session_id"], run,
+                                                window_s=min(max(window, 10.0), 180.0)))
+        except (ValueError, KeyError) as e:
+            raise HTTPException(409, str(e)) from None
+        finally:
+            c.close()
+
+    @app.get("/api/sessions/{sid}/eye")
+    def api_session_eye(sid: str, stream: str, user=viewer):
+        """Eye tracking over a recorded camera stream (sglab.eyetrack, as live), cached as
+        processed/<sid>/<stream>/eye.json: blink/closure/gaze trace (decimated) + summary."""
+        from ..eyetrack import track_frames
+        from ..video import gray_array
+
+        s = get_session(sid)
+        folder = settings.data_root / s["path"]
+        doc = session_doc(s)
+        vids = list(doc.get("video") or []) + [v for st in doc.get("streams", []) for v in (st.get("video") or [])]
+        v = next((x for x in vids if x.get("stream") == stream or x.get("file") == f"{stream}.frames"), None)
+        f = folder / (v.get("file") if v and v.get("file") else f"{stream}.frames")
+        if not f.exists() or "/" in stream or ".." in stream:
+            raise HTTPException(404, f"no camera stream {stream} in {sid}")
+        out = settings.data_root / "processed" / s["session_id"] / stream / "eye.json"
+        if out.exists() and out.stat().st_mtime >= f.stat().st_mtime:
+            return json.loads(out.read_text())
+        try:
+            frames, idx = gray_array(f)
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from None
+        if not len(frames):
+            raise HTTPException(409, "no frames")
+        rows, summary = track_frames(frames, idx["t_s"].astype(float))
+        step = max(1, len(rows) // 6000)
+        keep = ("t", "state", "closure", "motion", "event", "dur", "gx", "gy")
+        res = {"stream": stream, "summary": summary, "n_frames": len(rows),
+               "points": [{k: r.get(k) for k in keep} for r in rows[::step]],
+               "events": [{k: r.get(k) for k in ("t", "event", "dur")} for r in rows if r.get("event")]}
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(res))
+        return res
 
     @app.get("/api/sessions/{sid}/epochs")
     def api_epochs(sid: str, stream: str, user=viewer):

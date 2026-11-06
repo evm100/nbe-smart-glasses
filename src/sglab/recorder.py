@@ -120,7 +120,7 @@ class StreamWorker(threading.Thread):
                 return
             if self.header is None:
                 self.header = msg
-                self.live = deque(maxlen=int(max(msg.fs, 1) * 12))
+                self.live = deque(maxlen=int(max(msg.fs, 1) * 20))  # live plot 8 s, live analysis 16 s
                 self._open_csv(msg)
                 self.header_event.set()
             elif msg.channels != self.header.channels:

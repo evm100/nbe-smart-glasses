@@ -47,6 +47,37 @@
   </div>
 </div>
 
+<h2 id="bp-sec">Blood pressure · model prediction</h2>
+<div class="card">
+  <div class="controls">
+    <label>Site <select id="bp-role">{% for r in roles %}<option {% if r == 'glasses' %}selected{% endif %}>{{ r }}</option>{% endfor %}</select></label>
+    <label>Model <select id="bp-model"><option value="auto">Auto: best run for this site</option></select></label>
+    <span class="note">What a trained model would have read from this session's PPG, next to the cuff. Calibrated models use the session's first good cuff reading (◆), exactly as in validation.</span>
+  </div>
+  <div id="bp-verdict" class="bp-verdict"></div>
+  <div id="bp" class="plot" style="height:340px"></div>
+  <div class="scroll"><table id="bp-table" style="margin-top:8px"></table></div>
+</div>
+<style>
+.bp-verdict { display: flex; gap: 12px; flex-wrap: wrap; margin: 4px 0 8px; }
+.bp-verdict .k { background: var(--grid); border-radius: 8px; padding: 6px 12px; }
+.bp-verdict .k b { font-size: 20px; font-variant-numeric: tabular-nums; display: block; }
+.bp-verdict .k span { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-2); }
+</style>
+
+{% if videos %}
+<h2>Eye camera · tracking</h2>
+<div class="card">
+  <div class="controls">
+    <label>Camera <select id="eye-stream">{% for v in videos %}<option>{{ v }}</option>{% endfor %}</select></label>
+    <button id="eye-run" class="primary">Run eye tracking</button>
+    <span class="note" id="eye-note">Runs the same tracker as the live view over every recorded frame (≈ 3 ms per frame; the result is cached).</span>
+  </div>
+  <div id="eye-verdict" class="bp-verdict"></div>
+  <div id="eye" class="plot" style="height:300px"></div>
+</div>
+{% endif %}
+
 <h2>Signal</h2>
 <div class="card">
   <div class="controls">
@@ -214,5 +245,80 @@ document.getElementById('sig-source').onchange = drawSignal;
 document.getElementById('feat-stream').onchange = loadEpochs;
 document.getElementById('feat-name').onchange = drawFeature;
 drawSignal(); drawHR(); loadEpochs();
+
+// ---------------------------------------------------------------- BP prediction
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+const LBL = {sys_mmhg: 'Systolic', dia_mmhg: 'Diastolic', map_mmhg: 'Mean arterial'};
+const TCOL = t => ({sys_mmhg: css('--bad'), dia_mmhg: css('--s1'), map_mmhg: css('--s5')}[t] || css('--s3'));
+async function loadModels() {
+  try {
+    const m = await (await fetch('/api/bp-models')).json();
+    document.getElementById('bp-model').innerHTML = '<option value="auto">Auto: best run for this site</option>' +
+      m.runs.map(r => `<option value="${esc(r.key)}">${esc(r.role)} · ${esc(r.name)} · ${esc(r.run_id)}</option>`).join('');
+  } catch (e) {}
+}
+async function drawBP() {
+  const role = document.getElementById('bp-role').value, model = document.getElementById('bp-model').value;
+  const v = document.getElementById('bp-verdict'), tb = document.getElementById('bp-table');
+  v.innerHTML = ''; tb.innerHTML = '';
+  const r = await fetch(`/api/sessions/${SID}/bp-predict?role=${encodeURIComponent(role)}&model=${encodeURIComponent(model)}`);
+  if (!r.ok) {
+    let msg = 'Could not run the model.';
+    try { msg = (await r.json()).detail || msg; } catch (e) {}
+    message('bp', esc(msg)); return;
+  }
+  const d = await r.json();
+  clearMessage('bp');
+  const traces = [];
+  for (const t of d.targets) {
+    traces.push({x: d.trace.t, y: d.trace[t], type: 'scatter', mode: 'lines', name: `${LBL[t] || t} · model`, connectgaps: false,
+                 line: {color: TCOL(t), width: 2.2}, hovertemplate: '%{y:.0f} mmHg<extra>model</extra>'});
+    const rd = d.readings;
+    traces.push({x: rd.map(x => x.t), y: rd.map(x => x['cuff_' + t]), type: 'scatter', mode: 'markers', name: `${LBL[t] || t} · cuff`,
+                 marker: {size: rd.map(x => x.is_cal ? 13 : 10), symbol: rd.map(x => x.is_cal ? 'diamond' : 'circle'), color: css('--surface'),
+                          line: {color: TCOL(t), width: 2.5}},
+                 text: rd.map(x => x.is_cal ? 'calibration' : (x['err_' + t] != null ? `error ${x['err_' + t] > 0 ? '+' : ''}${x['err_' + t]}` : (x.valid ? '' : 'too few good beats'))),
+                 hovertemplate: '%{y} mmHg %{text}<extra>cuff</extra>'});
+  }
+  Plotly.react('bp', traces, baseLayout({shapes: eventShapes(), yaxis: {title: 'mmHg', gridcolor: css('--grid'), zeroline: false}}), CFG);
+  const tiles = d.targets.map(t => `<div class="k"><span>${LBL[t] || t} error vs cuff</span><b>${d.mae[t] == null ? '–' : d.mae[t] + ' mmHg'}</b></div>`);
+  const nScored = d.readings.filter(x => !x.is_cal && x['err_' + d.targets[0]] != null).length;
+  tiles.push(`<div class="k"><span>Readings scored</span><b>${nScored}</b></div>`);
+  tiles.push(`<div class="k"><span>Model</span><b style="font-size:13px">${esc(d.model)}</b></div>`);
+  v.innerHTML = tiles.join('') + (d.notes || []).map(n => `<div class="warn" style="flex-basis:100%">${esc(n)}</div>`).join('') +
+    (nScored === 0 && d.calibrated ? '<div class="note" style="flex-basis:100%">Only the calibration reading so far: log a second cuff reading (ideally after BP changed) to score the model on this session.</div>' : '');
+  if (d.readings.length) {
+    tb.innerHTML = '<thead><tr><th class="num">t (s)</th><th>Role</th>' + d.targets.map(t => `<th class="num">${LBL[t]} cuff</th><th class="num">model</th><th class="num">error</th>`).join('') + '<th class="num">good beats</th></tr></thead><tbody>' +
+      d.readings.map(x => `<tr><td class="num">${x.t}</td><td>${x.is_cal ? 'calibration' : x.valid ? 'test' : 'too few beats'}</td>` +
+        d.targets.map(t => `<td class="num">${x['cuff_' + t] ?? ''}</td><td class="num">${x['pred_' + t] ?? ''}</td><td class="num">${x['err_' + t] == null ? '' : (x['err_' + t] > 0 ? '+' : '') + x['err_' + t]}</td>`).join('') +
+        `<td class="num">${x.n_good}</td></tr>`).join('') + '</tbody>';
+  }
+}
+document.getElementById('bp-role').onchange = drawBP;
+document.getElementById('bp-model').onchange = drawBP;
+loadModels().then(drawBP);
+
+// ---------------------------------------------------------------- eye tracking
+const eyeRun = document.getElementById('eye-run');
+if (eyeRun) {
+  eyeRun.onclick = async () => {
+    const stream = document.getElementById('eye-stream').value;
+    eyeRun.disabled = true; document.getElementById('eye-note').textContent = 'tracking every frame…';
+    const r = await fetch(`/api/sessions/${SID}/eye?stream=${encodeURIComponent(stream)}`);
+    eyeRun.disabled = false;
+    if (!r.ok) { document.getElementById('eye-note').textContent = 'failed: ' + r.status; return; }
+    const d = await r.json(), s = d.summary;
+    document.getElementById('eye-note').textContent = `${d.n_frames} frames tracked`;
+    const k = (l, v) => `<div class="k"><span>${l}</span><b>${v ?? '–'}</b></div>`;
+    document.getElementById('eye-verdict').innerHTML = k('Blinks', s.blinks_total) + k('Blinks / min', s.blink_rate_min) +
+      k('Median blink', s.blink_dur_ms != null ? s.blink_dur_ms + ' ms' : null) + k('Motion blinks', s.motion_blinks_total) + k('Gaze shifts', s.gaze_shifts_total);
+    const P = d.points, closes = d.events.filter(e => e.event === 'close');
+    Plotly.react('eye', [
+      {x: P.map(p => p.t), y: P.map(p => p.closure), type: 'scattergl', mode: 'lines', name: 'eye closure %', line: {color: '#22c55e', width: 1.2}},
+      {x: closes.map(e => e.t), y: closes.map(() => 100), type: 'scatter', mode: 'markers', name: 'blink', marker: {symbol: 'triangle-down', size: 8, color: '#22d3ee'}},
+    ], baseLayout({shapes: eventShapes().concat([{type: 'line', x0: 0, x1: 1, xref: 'paper', y0: 30, y1: 30, line: {color: '#f97316', dash: 'dash', width: 1}}]),
+                   yaxis: {title: 'closure %', range: [-20, 110], gridcolor: css('--grid'), zeroline: false}}), CFG);
+  };
+}
 </script>
 {% endblock %}
