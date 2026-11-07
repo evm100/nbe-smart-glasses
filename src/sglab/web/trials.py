@@ -86,6 +86,24 @@ def api_devices(request: Request, user=viewer):
     return {"devices": _devices(ctx), "mqtt": ctx.mqtt_state(), "trials": ctx.manager.active()}
 
 
+@router.post("/api/nodes/{node_id}/gateways/{gw_id}/exit")
+def api_gateway_exit(request: Request, node_id: str, gw_id: str, user=operator):
+    """Shut down a USB gateway someone left running for this node (on another computer): every
+    gateway connects as the node, so a second one keeps the first off the broker."""
+    ctx = C(request)
+    if ctx.hub is None:
+        raise HTTPException(400, "MQTT is not configured")
+    node_id = node_id.strip().upper()
+    gw = next((g for g in ctx.hub.node_gateways(node_id) if g["gw_id"] == gw_id.strip().lower()), None)
+    if gw is None:
+        raise HTTPException(404, f"no gateway {gw_id} running for {node_id} (it may have stopped already)")
+    if gw.get("streaming") and ctx.manager.busy().get(f"mqtt://{node_id}"):
+        raise HTTPException(409, f"that gateway is streaming {node_id} into a running trial - stop the trial first")
+    ctx.hub.shut_down_gateway(node_id, gw["gw_id"])
+    ctx.audit(request, "node.gateway_exit", node_id, {"gw_id": gw["gw_id"], "host": gw.get("host")})
+    return {"ok": True, "gw_id": gw["gw_id"]}
+
+
 # ------------------------------------------------------------------ trial pages
 def _new_form(request, ctx, user, error=None, form=None, chosen=None):
     c = ctx.cat()

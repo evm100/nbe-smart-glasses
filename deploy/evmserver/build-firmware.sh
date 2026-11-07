@@ -21,7 +21,7 @@
 #       #   e.g. a LAN resolver that maps the server's name to its LAN address (no NAT loopback)
 #
 # Output: ~/nbe-firmware/out/<ID>.bin (contains the node key AND your Wi-Fi password - treat
-# like a password) + flash.sh. Per-node build trees: ~/nbe-firmware/work/<ID>/.
+# like a password) + flash.sh (+ flash.bat/flash.ps1 for Windows). Per-node build trees: ~/nbe-firmware/work/<ID>/.
 # Camera builds (--camera) contain neither: their certificate lives in the gateway download, so
 # out/<ID>.bin can be sent to whoever flashes the board. Wi-Fi env file not needed for them.
 # Each node's app image is also uploaded to the server, so it can be installed over Wi-Fi
@@ -117,13 +117,14 @@ for id in "${NODES[@]}"; do
   exec {lock}>&-
 done
 install -m 700 "$(dirname "$0")/flash.sh" "$BASE/out/flash.sh"
+install -m 600 "$(dirname "$0")/flash.ps1" "$(dirname "$0")/flash.bat" "$BASE/out/"   # Windows twins
 if (( CAMERA )); then
   cat <<MSG
 
-Camera build(s) done - these images hold no secrets, so they can go to whoever flashes the board (Mac or Linux):
-  send them $BASE/out/flash.sh and $BASE/out/<ID>.bin (only those: the other .bin files hold your
-  Wi-Fi password), then on their computer, in the folder with both files:
-  ./flash.sh ${NODES[0]^^}
+Camera build(s) done - these images hold no secrets, so they can go to whoever flashes the board:
+  send them $BASE/out/<ID>.bin plus flash.sh (Mac/Linux) and/or flash.bat + flash.ps1 (Windows)
+  (only those: the other .bin files hold your Wi-Fi password), then on their computer, in that folder:
+  ./flash.sh ${NODES[0]^^}          Windows: double-click flash.bat (or: flash.bat ${NODES[0]^^})
 Then on https://nbe.evm100.org/admin/nodes: register the node (if not yet), Download gateway for
 their system, unzip it there and run it with the glasses plugged in.
 MSG

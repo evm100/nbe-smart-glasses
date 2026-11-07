@@ -1,0 +1,33 @@
+# NBE Pi gateway settings. Copy to gateway.conf (git-ignored, holds passwords) and fill in.
+# Anything left empty that setup.sh needs is asked for when it runs.
+
+# --- Uplink: the campus Wi-Fi the Pi joins (the Pi 5 does 2.4 AND 5 GHz) -----------------
+# UCSD-DEVICE (recommended): register the Pi's Wi-Fi MAC (`cat /sys/class/net/wlan0/address`)
+#   like you did for the ESP32s; you get a per-device password. Not tied to anyone's login.
+# UCSD-PROTECTED / eduroam: UPLINK_AUTH=peap with your AD username + password.
+# (UCSD-GUEST needs a browser click-through, so it won't work on a headless Pi.)
+UPLINK_SSID="UCSD-DEVICE"
+UPLINK_AUTH="psk"            # psk | peap | open
+UPLINK_PASSWORD=""           # psk: the per-device password; peap: the account password
+UPLINK_USER=""               # peap only
+UPLINK_PEAP_VALIDATE="yes"   # peap: check the RADIUS certificate against the system CAs
+UPLINK_PEAP_DOMAIN=""        # peap: expected certificate domain suffix (e.g. ucsd.edu), empty = any
+UPLINK_BAND=""               # "" = either, "a" = 5 GHz only, "bg" = 2.4 GHz only
+
+# --- Optional fallback uplink (phone hotspot, or your home Wi-Fi for a dry run) -------------
+# Used only when the main one isn't available. WPA2-Personal or open only.
+UPLINK2_SSID=""
+UPLINK2_PASSWORD=""
+
+# --- LAN side: Pi Ethernet -> the lab router ------------------------------------------------
+LAN_ADDR="192.168.77.1/24"   # the Pi's address; it hands out the rest of this subnet by DHCP
+                             # (must not overlap the campus subnet; setup.sh checks)
+
+# --- Misc ------------------------------------------------------------------------------------
+WIFI_COUNTRY="US"
+CHECK_HOST="nbe.evm100.org"  # what the watchdog/status page test (the nodes' MQTT broker)
+CHECK_PORT="8884"
+ALLOW_SSH_FROM_UPLINK="no"   # yes = SSH reachable from the campus side too (no use on UCSD's
+                             # client-isolated Wi-Fi; SSH from the lab router's side always works)
+STATUS_PORT="80"             # status page at http://192.168.77.1 from the lab network, 0 = off
+REBOOT_AFTER_MIN="30"        # watchdog reboots the Pi after this long offline, 0 = never

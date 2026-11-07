@@ -23,7 +23,13 @@
 </div>
 <p class="note">A node shows <i>online</i> while it publishes its status (every ~15 s). <i>stale</i> = it said it was online
   but hasn't been heard for 45 s (Wi-Fi or power lost, the broker will mark it offline shortly).</p>
+<p class="note">Camera glasses stream through a <i>USB gateway</i> on the operator's computer, listed under their node.
+  Only one gateway can run per node: one left running on another computer keeps knocking the new one off and shows
+  the node offline. {% if is_operator %}<b>Shut down</b> the one you don't need (it quits on that computer;
+  gateways older than 0.2.0 can't be shut down remotely - close them there, or download a new one).{% endif %}</p>
+<div id="gw-msg"></div>
 <script>
+const canOperate = {{ 'true' if is_operator else 'false' }};
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
 function ago(s) { if (s == null) return ''; if (s < 90) return Math.round(s) + ' s'; if (s < 5400) return Math.round(s / 60) + ' min'; return Math.round(s / 3600) + ' h'; }
 async function poll() {
@@ -36,8 +42,30 @@ async function poll() {
       <td>${esc(x.kind)}</td><td>${esc(x.role)}</td>
       <td><span class="pill ${cls}">${x.busy ? 'in use' : esc(x.state)}${x.streaming && !x.busy ? ' · streaming!' : ''}</span></td>
       <td>${x.busy ? esc(x.busy.owner) : ''}</td><td class="num">${esc(x.details.rssi)}</td>
-      <td class="num">${ago(x.details.last_seen_s)}</td><td>${esc(x.details.fw)}</td><td class="note">${esc(extra)}</td></tr>`;
+      <td class="num">${ago(x.details.last_seen_s)}</td><td>${esc(x.details.fw)}</td><td class="note">${esc(extra)}</td></tr>`
+      + gatewayRows(x);
   }).join('') || '<tr><td colspan="9" class="note">No devices.</td></tr>';
+}
+function gatewayRows(x) {
+  const gws = x.gateways || [];
+  if (!gws.length) return '';
+  const clash = gws.length > 1;
+  return gws.map(g => {
+    const board = g.usb === 'connected' ? 'board connected' + (g.fw ? ' (fw ' + esc(g.fw) + ')' : '') : 'no board plugged in';
+    const since = g.started ? 'running since ' + new Date(g.started * 1000).toLocaleString() : '';
+    const btn = canOperate ? ` <button class="link" data-node="${esc(x.node_id)}" data-gw="${esc(g.gw_id)}" data-host="${esc(g.host || '?')}" onclick="gwExit(this.dataset)">shut down</button>` : '';
+    return `<tr class="note"><td></td><td colspan="8">↳ ${clash ? '<span class="pill busy">' + gws.length + ' gateways for one node</span> ' : ''}
+      USB gateway on <b>${esc(g.host || '?')}</b> · ${board}${g.streaming ? ' · streaming' : ''} · ${since}
+      · heard ${ago(g.age_s)} ago · v${esc(g.version)}${btn}</td></tr>`;
+  }).join('');
+}
+async function gwExit({node, gw, host}) {
+  if (!confirm(`Shut down the USB gateway on ${host} for ${node}? It quits on that computer; whoever uses it there must start it again.`)) return;
+  const r = await fetch(`/api/nodes/${encodeURIComponent(node)}/gateways/${encodeURIComponent(gw)}/exit`, {method: 'POST'});
+  const m = document.getElementById('gw-msg');
+  if (r.ok) m.innerHTML = `<div class="note">Told the gateway on ${esc(host)} to quit. The node shows online again within ~15 s.</div>`;
+  else { let t = r.statusText; try { t = (await r.json()).detail || t; } catch (e) {} m.innerHTML = `<div class="error">${esc(t)}</div>`; }
+  poll();
 }
 poll(); setInterval(poll, 3000);
 </script>

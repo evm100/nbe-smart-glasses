@@ -5,12 +5,9 @@ __pycache__/
 .pytest_cache/
 
 # Data: never commit recordings or derived outputs (back them up separately)
-data/raw/*
-data/processed/*
-data/datasets/*
-data/*.sqlite*
-!data/**/.gitkeep
+data/*
 !data/README.md
+!data/**/.gitkeep
 
 # misc
 layer1_out/
@@ -44,3 +41,6 @@ dev-server/
 # tuning: downloaded sessions and studies
 tune-data/
 runs/
+
+# Pi gateway config (Wi-Fi passwords)
+deploy/pi-gateway/gateway.conf

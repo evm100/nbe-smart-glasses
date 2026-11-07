@@ -1,0 +1,18 @@
+[Unit]
+Description=NBE gateway status page
+After=NetworkManager.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/nbe-gw/nbe_gw.py serve
+DynamicUser=yes
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

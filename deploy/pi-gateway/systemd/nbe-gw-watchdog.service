@@ -1,0 +1,10 @@
+[Unit]
+Description=NBE gateway watchdog (reconnects the campus uplink, keeps LAN sharing up)
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/nbe-gw/nbe_gw.py watchdog
+TimeoutStartSec=240
+# exit 1 = offline this pass; that's not a unit failure worth alarming about
+SuccessExitStatus=1

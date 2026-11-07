@@ -211,7 +211,7 @@ menu "PPG stream (MAX30102)"
         config PPG_LED_RED_MA_X10
             int "Red LED current (units of 0.1 mA, 0-510)"
             range 0 510
-            default 500
+            default 200
             help
                 64 = 6.4 mA. The sensor's step is 0.2 mA, so the value is rounded to
                 an even number. Raise it for weak signals (glasses), lower it if the raw

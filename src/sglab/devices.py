@@ -59,7 +59,7 @@ class DeviceDirectory:
             out.append({"key": f"mqtt://{n['node_id']}", "label": n["name"] or n["node_id"], "node_id": n["node_id"],
                         "kind": "node", "role": n["site"] or "node", "port": f"mqtt://{n['node_id']}",
                         "online": bool(st.get("online")), "state": state, "streaming": bool(st.get("streaming")),
-                        "details": details})
+                        "details": details, "gateways": st.get("gateways") or []})
         return out
 
     def list(self, busy: dict[str, dict] | None = None) -> list[dict]:

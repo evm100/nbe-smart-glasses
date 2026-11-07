@@ -511,3 +511,66 @@ def test_gateway_download_admin_only(server, tmp_path, monkeypatch):
     assert r.status_code == 502 and "offline in tests" in r.text
     assert admin.get("/admin/gateway.zip", params={"node": "NOPE1", "platform": "linux-any"}).status_code == 404
     assert login(app, "olga").get("/admin/gateway.zip", params={"node": "GLS03", "platform": "linux-any"}).status_code == 403
+
+
+def test_forgotten_usb_gateway_can_be_shut_down(tmp_path):
+    """Two gateways for one node (one left running elsewhere): an operator shuts the idle one down,
+    it quits, and its reconnects are answered with GW-EXIT again and don't count as the node's state."""
+    from nbe_gateway.store import RecordLog
+    from nbe_gateway.uplink import Uplink
+
+    shutil.copytree(REPO / "config", tmp_path / "config")
+    (tmp_path / "config" / "server.toml").write_text(f'[auth]\nenabled = true\n[pki]\ndir = "{tmp_path / "pki"}"\n')
+    s = load_settings(tmp_path)
+    s.data_root.mkdir(parents=True, exist_ok=True)
+    PKI(s.pki_dir).init_ca()
+    a = AuthStore(s.db_path)
+    a.add_user("ada", PW, "admin")
+    a.add_user("olga", PW, "operator")
+    a.add_user("vic", PW, "viewer")
+    fake = FakeClient()
+    hub = MqttHub({"topic_prefix": "nbe"}, client=fake)
+    from sglab.web.app import create_app
+    c = TestClient(create_app(s, hub=hub))
+    tok = {u: {"Authorization": "Bearer " + c.post("/api/auth/token", json={"username": u, "password": PW}).json()["token"]}
+           for u in ("ada", "olga", "vic")}
+    c.post("/api/nodes", json={"node_id": "GLS03", "site": "glasses"}, headers=tok["ada"])
+
+    class GwClient:
+        def publish(self, topic, payload, qos=0, retain=False):
+            hub.handle(topic, payload.encode() if isinstance(payload, str) else payload, retain=False)
+
+    def gateway(name, usb):
+        exited = []
+        up = Uplink({"node_id": "GLS03"}, RecordLog(tmp_path / name), lambda cmd: None,
+                    lambda: {"usb": usb, "streaming": False}, client=GwClient(), version="0.2.0",
+                    on_exit=lambda: exited.append(1))
+        return up, exited
+
+    old, old_exit = gateway("old", "disconnected")  # forgotten, no board
+    new, new_exit = gateway("new", "connected")
+    new.publish_status()
+    old.publish_status()  # ...and it just took the node over: offline
+    assert not hub.node_state("GLS03")["online"]
+    gws = c.get("/api/devices", headers=tok["vic"]).json()["devices"]
+    gws = next(d for d in gws if d.get("node_id") == "GLS03")["gateways"]
+    assert {g["gw_id"] for g in gws} == {old.gw_id, new.gw_id}
+
+    url = f"/api/nodes/GLS03/gateways/{old.gw_id}/exit"
+    assert c.post(url, headers=tok["vic"]).status_code == 403
+    assert c.post("/api/nodes/GLS03/gateways/ffffffff/exit", headers=tok["olga"]).status_code == 404
+    assert c.post(url, headers=tok["olga"]).status_code == 200
+    topic, cmd = fake.published[-1]
+    assert topic == "nbe/dev/GLS03/cmd" and cmd == f"GW-EXIT {old.gw_id}".upper()
+    new.handle(topic, cmd.encode())
+    old.handle(topic, cmd.encode())
+    assert old_exit == [1] and new_exit == [] and old.exit_requested
+
+    # it reconnects before quitting: told again, and its "offline" doesn't stick
+    n = len(fake.published)
+    old.publish_status()
+    assert fake.published[n:] == [("nbe/dev/GLS03/cmd", f"GW-EXIT {old.gw_id}".upper())]
+    new.publish_status()
+    old.publish_status()
+    st = hub.node_state("GLS03")
+    assert st["online"] and [g["gw_id"] for g in st["gateways"]] == [new.gw_id]

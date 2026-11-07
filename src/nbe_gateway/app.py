@@ -6,6 +6,8 @@
     python -m nbe_gateway --list-ports
     python -m nbe_gateway --verbose          MQTT / TLS details when it can't connect
 
+Exit status 3: shut down from the server (GW-EXIT; another gateway for the node needed it).
+
 gateway.json (written by the server's "USB gateway" download):
     {"node_id": "GLS03", "broker_host": "mqtt.example.org", "broker_port": 8884, "topic_prefix": "nbe",
      "cert_file": "certs/client.crt", "key_file": "certs/client.key", "ca_file": null,
@@ -28,6 +30,9 @@ from . import __version__
 from .store import RecordLog
 from .uplink import Uplink
 from .usb import Board, find_ports
+
+
+EXIT_SHUT_DOWN = 3  # nbe-gateway.service: RestartPreventExitStatus=3
 
 
 def load_config(path: Path) -> dict:
@@ -56,12 +61,13 @@ def _fmt_bytes(n: float) -> str:
 class Gateway:
     def __init__(self, cfg: dict, board_open=None, mqtt_client=None):
         self.cfg = cfg
+        self.done = threading.Event()  # set to quit (Ctrl+C, or the server's GW-EXIT)
         self.node = cfg["node_id"]
         self.log = RecordLog(Path(cfg["data_dir"]) / self.node, float(cfg.get("keep_gb", 20)))
         self.board = Board(self.log, self.node, cfg.get("serial_port", "auto"), on_change=self._changed,
                            open_serial=board_open)
         self.uplink = Uplink(cfg, self.log, self._command, self.board.describe, client=mqtt_client,
-                             version=__version__)
+                             version=__version__, on_exit=self.done.set)
 
     def _changed(self) -> None:
         self.uplink.notify()
@@ -134,7 +140,7 @@ def main(argv=None) -> int:
     print(f"Keeping a copy of everything in {Path(cfg['data_dir']) / cfg['node_id']}")
     print("Leave this window open while recording. Ctrl+C (or close the window) to quit.\n")
     gw.start()
-    done = threading.Event()
+    done = gw.done
     signal.signal(signal.SIGINT, lambda *_: done.set())
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, lambda *_: done.set())
@@ -154,6 +160,9 @@ def main(argv=None) -> int:
                 print("  board " + ln, flush=True)
             logged = b.board_log_n
     finally:
+        if gw.uplink.exit_requested:
+            print("\nShut down from the NBE server: another gateway for this node needed it "
+                  "(only one can run per node). Start it again when you record next.", flush=True)
         print("stopping...")
         gw.stop()
-    return 0
+    return EXIT_SHUT_DOWN if gw.uplink.exit_requested else 0

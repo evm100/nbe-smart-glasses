@@ -159,7 +159,9 @@ def _launchers(kind: str, node: str, runtime: bool) -> dict[str, tuple[str, bool
             "#   (fix User= and the paths), then: sudo systemctl enable --now nbe-gateway\n"
             "[Unit]\nDescription=NBE USB gateway\nAfter=network-online.target\nWants=network-online.target\n\n"
             "[Service]\nUser=pi\nWorkingDirectory=/home/pi/NBE-Gateway\n"
-            "ExecStart=/home/pi/NBE-Gateway/start-gateway.sh --every 60\nRestart=always\nRestartSec=5\n\n"
+            "ExecStart=/home/pi/NBE-Gateway/start-gateway.sh --every 60\nRestart=always\nRestartSec=5\n"
+            "# 3 = shut down from the NBE website (another gateway needed the node): stay stopped\n"
+            "RestartPreventExitStatus=3\n\n"
             "[Install]\nWantedBy=multi-user.target\n", False)
     return out
 
@@ -189,6 +191,9 @@ IF SOMETHING IS WRONG
     outgoing port {port}. Start it with --verbose to see the connection details.
   - "no board": unplug and replug the board; close other programs that use the serial port
     (Arduino IDE serial monitor, another gateway window).
+  - "Shut down from the NBE server": only one gateway can run per node, and someone shut this
+    one down from the website's Devices page because another computer needed {node}. Start it
+    again when it's your turn to record. Please close the gateway when you finish recording.
   - Several boards on one computer: run one gateway per board with --port, e.g.
     {start_port}
 

@@ -3,7 +3,8 @@ ACL, registry, recorder and web pages treat it exactly like a Wi-Fi board.
 
     <prefix>/dev/<ID>/data    NB frames from the record log (QoS 0, acknowledged end to end)
     <prefix>/dev/<ID>/status  retained JSON like the firmware's, + "link": "usb-gateway"; last will offline
-    <prefix>/dev/<ID>/cmd     ACK / RESEND -> the log; INFO / START / STOP / CAM ... -> the board
+    <prefix>/dev/<ID>/cmd     ACK / RESEND -> the log; GW-EXIT <gw_id> -> quit this gateway (the server
+                              shuts down one left running elsewhere); INFO / START / STOP / CAM ... -> the board
     <prefix>/core/status      server offline -> STOP the board (as Wi-Fi nodes do)
 
 Sending: frames of whole records from the first unsent byte, at most `window` bytes ahead of the
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import socket
 import ssl
 import threading
@@ -44,8 +46,15 @@ def tls_context(cfg: dict) -> ssl.SSLContext:
 
 class Uplink:
     def __init__(self, cfg: dict, rlog: RecordLog, on_command: Callable[[str], None],
-                 describe: Callable[[], dict], client=None, version: str = ""):
+                 describe: Callable[[], dict], client=None, version: str = "",
+                 on_exit: Optional[Callable[[], None]] = None):
         self.cfg, self.log, self.on_command, self.describe, self.version = cfg, rlog, on_command, describe, version
+        self.on_exit = on_exit
+        # this run of the gateway: every gateway of a node connects AS the node, so the server
+        # tells them apart (and shuts down a forgotten one) by this
+        self.gw_id = secrets.token_hex(4)
+        self.started = int(time.time())
+        self.exit_requested = False
         self.node = cfg["node_id"]
         prefix = cfg.get("topic_prefix", "nbe").rstrip("/")
         self.t_data = f"{prefix}/dev/{self.node}/data"
@@ -93,13 +102,14 @@ class Uplink:
     def stop(self) -> None:
         self.stop_flag.set()
         self.wake.set()
+        if not self.exit_requested:  # shut down by the server: the node's other gateway is the one that counts
+            try:
+                st = {**self._status(), "online": False}
+                self.client.publish(self.t_status, json.dumps(st), qos=1, retain=True).wait_for_publish(2)
+            except Exception:
+                pass
         try:
-            st = {**self._status(), "online": False}
-            self.client.publish(self.t_status, json.dumps(st), qos=1, retain=True).wait_for_publish(2)
-        except Exception:
-            pass
-        try:
-            self.client.disconnect()
+            self.client.disconnect()  # a clean disconnect: no last will either
             self.client.loop_stop()
         except Exception:
             pass
@@ -135,6 +145,12 @@ class Uplink:
             parts = text.split()
             if len(parts) == 3 and parts[0] in ("ACK", "RESEND"):
                 self._on_ack(parts[0] == "RESEND", parts[1], parts[2])
+            elif parts and parts[0].upper() == "GW-EXIT":  # never forwarded to the board
+                if len(parts) == 2 and parts[1].lower() == self.gw_id and not self.exit_requested:
+                    self.exit_requested = True
+                    log.warning("the NBE server shut this gateway down (another gateway for %s is in use)", self.node)
+                    if self.on_exit:
+                        self.on_exit()
             elif text:
                 self.on_command(text)
         elif topic == self.t_core:
@@ -214,7 +230,7 @@ class Uplink:
     def _status(self) -> dict:
         d = self.describe()
         st = {"online": d.get("usb") == "connected", "link": "usb-gateway", "gateway": self.version,
-              "host": socket.gethostname(), "usb": d.get("usb"), "fw": d.get("fw"), "sensor": d.get("sensor"),
+              "gw_id": self.gw_id, "gw_started": self.started, "host": socket.gethostname(), "usb": d.get("usb"), "fw": d.get("fw"), "sensor": d.get("sensor"),
               "sensor_ok": bool(d.get("sensor_ok")), "camera_ok": d.get("camera_ok"), "streaming": d.get("streaming"),
               "fs": d.get("fs"), "ts": int(time.time()), "buf": self.log.unacked(), "unacked": self.sent - self.log.acked,
               "rtx": self.stats["resends"], "disk_mb": round(self.log.disk_bytes() / 1e6, 1),

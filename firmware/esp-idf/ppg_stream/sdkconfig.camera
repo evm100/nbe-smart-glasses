@@ -13,12 +13,14 @@ CONFIG_PPG_CAM_SIZE_240=y
 # would give 12.5 fps. Run time: "CAM FPS=n".
 CONFIG_PPG_CAM_FPS=0
 # Sensor zoom: the sensor runs in SVGA mode (2x finer than the stock CIF framing) and only the middle
-# 252x252 SVGA pixels are scaled to the 240x240 frame. On paper that is the stock framing's 100x100
-# middle at 2.4x the resolution, but on GLS03 it showed MORE than that, so the frame is cropped below.
+# 376x376 SVGA pixels are scaled to the 240x240 frame (was 252; 376 = 1.5x the field of view, tested on
+# GLS03 with "CAM WIN=378", which the driver rounds down to a multiple of 4). 252 was on paper the
+# stock framing's 100x100 middle at 2.4x the resolution, but on GLS03 it showed MORE than that, so
+# the frame is cropped below.
 # "CAM WIN=n" at run time: smaller = finer pixels + smaller view (min 240), larger = the opposite.
 # SVGA has twice the lines of CIF, so clkdiv 1 (twice the driver's CIF sensor clock) keeps the sensor at
 # ~25 fps; clkdiv 3 halves it to ~12.5 (which worked, with some driver overruns). "CAM CLK=n".
-CONFIG_PPG_CAM_WINDOW=252
+CONFIG_PPG_CAM_WINDOW=376
 CONFIG_PPG_CAM_WIN_CLKDIV=1
 # only the 160x160 middle of the zoomed frame is sent: narrower view, same pixel detail, 25.6 kB/frame
 # = ~640 kB/s at 25 fps. USB Serial/JTAG measured ~0.85 MB/s (57.6 kB frames took 67 ms), so 25 fps

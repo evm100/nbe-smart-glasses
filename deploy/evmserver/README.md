@@ -61,7 +61,10 @@ deploy/evmserver/build-firmware.sh --camera GLS03   # no Wi-Fi file needed -> ~/
 
 The camera image holds no Wi-Fi password and no node key, so `GLS03.bin` + `flash.sh` can be sent
 to whoever flashes the board, on a Mac or Linux: `./flash.sh GLS03` in the folder with both files
-(first run installs esptool; macOS may ask to install the command-line tools for `python3`). Don't
+(first run installs esptool; macOS may ask to install the command-line tools for `python3`).
+On Windows 10/11 send `GLS03.bin` + `flash.bat` + `flash.ps1` instead: double-click `flash.bat`
+(it flashes the only `.bin` in the folder and finds the COM port; needs Python 3 from python.org
+or `winget install Python.Python.3.12`). Don't
 send the rest of `out/`: the Wi-Fi images contain your UCSD password. Then register GLS03 on the
 Nodes page and send the operator **Download gateway** for their system (that zip does hold the node key).
 The gateway connects to `mqtts://nbe.evm100.org:443` (`[gateway] broker_uri`). An existing setup gets

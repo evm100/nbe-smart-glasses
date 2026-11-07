@@ -7,7 +7,8 @@ Topics (prefix default "nbe"; one set per node ID):
                           < 0.6: QoS 1 batches of protocol v1 lines). Protocol v2 camera frames reach the
                           recorder as VideoFrame objects (attach(..., on_frame=)). A USB gateway
                           (nbe_gateway) publishes here for its board, exactly like a Wi-Fi node.
-    nbe/dev/<ID>/cmd      server -> node, QoS 1: INFO | START | STOP | OTA <token> (see sglab.firmware)
+    nbe/dev/<ID>/cmd      server -> node, QoS 1: INFO | START | STOP | OTA <token> (see sglab.firmware);
+                          GW-EXIT <gw_id> to a USB gateway (shut_down_gateway)
     nbe/core/status       server -> nodes, retained {"online": true} + last-will {"online": false};
                           nodes stop streaming when the server disappears
 
@@ -31,6 +32,13 @@ log = logging.getLogger("sglab.mqtt")
 
 STALE_AFTER_S = 45.0  # nodes publish status every ~15 s
 ORPHAN_GRACE_S = 10.0  # after startup, a node streaming into no trial is told to STOP
+# USB gateways all connect AS their node (same client ID / certificate), so two of them for one node
+# (one forgotten on another computer) keep kicking each other off the broker and the idle one reports
+# the node offline. Each run has its own gw_id in its status; the hub lists them per node and can
+# shut one down. Paho's reconnect backoff tops out at 30 s, so a fighting gateway shows up at least
+# that often.
+GATEWAY_SEEN_S = 90.0
+GATEWAY_EVICT_S = 1800.0  # keep answering a shut-down gateway's reconnects with GW-EXIT this long
 
 
 class MqttHub:
@@ -52,6 +60,8 @@ class MqttHub:
         self.stats = {"data_msgs": 0, "data_bytes": 0, "unrouted": 0, "ignored": 0, "orphan_stops": 0}
         self.t_start = time.time()
         self._orphan_stop: dict[str, float] = {}
+        self.gateways: dict[str, dict[str, dict]] = {}  # node -> gw_id -> what its last status said
+        self.evicted: dict[str, tuple[str, float]] = {}  # gw_id -> (node, until)
         self.client = client or self._make_client()
 
     # ---- connection ---------------------------------------------------------------
@@ -116,6 +126,8 @@ class MqttHub:
                 st = json.loads(payload.decode() or "{}")
             except (ValueError, UnicodeDecodeError):
                 return
+            if st.get("gw_id") and self._gateway_status(node_id, st, retain):
+                return  # a gateway that was shut down: not this node's state any more
             with self.lock:
                 prev = self.status.get(node_id, {})
                 st["_received"] = time.time()
@@ -157,6 +169,41 @@ class MqttHub:
                 self.stats["unrouted"] += 1
                 if b"$D," in payload:  # samples, not just a boot banner / INFO answer
                     self._maybe_stop_orphan(node_id)
+
+    def _gateway_status(self, node_id: str, st: dict, retain: bool) -> bool:
+        """Note a USB gateway's status; True if it is one that was shut down (it got GW-EXIT again)."""
+        gw, now = str(st["gw_id"]).lower(), time.time()
+        with self.lock:
+            ev = self.evicted.get(gw)
+            if ev and ev[1] < now:
+                self.evicted.pop(gw, None)
+                ev = None
+            if not ev:
+                seen = now if not retain else float(st.get("ts", 0) or 0)
+                self.gateways.setdefault(node_id, {})[gw] = {
+                    "gw_id": gw, "host": st.get("host"), "version": st.get("gateway"), "started": st.get("gw_started"),
+                    "usb": st.get("usb"), "streaming": st.get("streaming"), "fw": st.get("fw"), "seen": seen}
+        if ev and not retain:  # it reconnected (or never heard the first one): say it again
+            self.publish_cmd(node_id, f"GW-EXIT {gw}")
+        return bool(ev)
+
+    def node_gateways(self, node_id: str) -> list[dict]:
+        """USB gateways heard for this node within GATEWAY_SEEN_S, newest first."""
+        now = time.time()
+        with self.lock:
+            gws = self.gateways.get(node_id, {})
+            for k in [k for k, g in gws.items() if now - g["seen"] > GATEWAY_SEEN_S]:
+                del gws[k]
+            out = [{**g, "age_s": round(now - g["seen"], 1)} for g in gws.values()]
+        return sorted(out, key=lambda g: -(g["started"] or 0))
+
+    def shut_down_gateway(self, node_id: str, gw_id: str) -> None:
+        """Tell one USB gateway run to quit, and keep telling it if it reconnects."""
+        gw = gw_id.strip().lower()
+        with self.lock:
+            self.evicted[gw] = (node_id, time.time() + GATEWAY_EVICT_S)
+            self.gateways.get(node_id, {}).pop(gw, None)
+        self.publish_cmd(node_id, f"GW-EXIT {gw}")
 
     def _deliver_mixed(self, node_id: str, items: list) -> None:
         with self.lock:
@@ -207,6 +254,7 @@ class MqttHub:
         rx = self.receivers.get(node_id)
         if rx:
             st["rx"] = dict(rx.stats)
+        st["gateways"] = self.node_gateways(node_id)
         st.update(node_id=node_id, online=online, claimed_online=claimed,
                   age_s=round(now - heard, 1) if heard else None, in_use=node_id in self.sinks,
                   state="online" if online else ("stale" if claimed else "offline"))
