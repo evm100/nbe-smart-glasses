@@ -242,6 +242,14 @@ class TrialManager:
     def eye_recalibrate(self, tid: str, stream: str) -> bool:
         return self._video_writer(tid, stream).recalibrate_eye()
 
+    def aux_live(self, tid: str, after: dict[str, int] | None = None) -> list[dict]:
+        """Live state of every auxiliary stream (auxstream.AuxWriter.live_state); `after` = stream -> cursor."""
+        t = self.get(tid)
+        with t.lock:
+            workers = list(t.rec.workers) if t.rec else []
+        after = after or {}
+        return [{**aw.live_state(after.get(aw.name, -1)), "role": w.role} for w in workers for aw in list(w.aux.values())]
+
     def insights(self, tid: str) -> dict:
         """Live features: per PPG stream (HR, HRV, quality, beats, template) + the BP estimate."""
         t = self.get(tid)

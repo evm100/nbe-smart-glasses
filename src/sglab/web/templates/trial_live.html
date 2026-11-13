@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Recording · NBE PPG lab{% endblock %}
+{% block title %}Recording · NBE lab{% endblock %}
 {% block head %}<style>
 main { max-width: 1440px; }
 .top { display: flex; gap: 16px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
@@ -60,6 +60,13 @@ canvas.chart { display: block; width: 100%; }
 .legend i.dot { width: 8px; height: 8px; border-radius: 50%; }
 .feat { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; font-size: 13px; font-variant-numeric: tabular-nums; }
 .feat dt { color: var(--text-2); } .feat dd { margin: 0; text-align: right; }
+.permin { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.permin .pm { background: var(--grid); border-radius: 8px; padding: 6px 8px 4px; min-width: 0; }
+.permin .pm span { font-size: 11px; color: var(--text-2); text-transform: uppercase; letter-spacing: .03em; display: block; }
+.permin .pm b { font-size: 18px; font-variant-numeric: tabular-nums; } .permin .pm b small { font-size: 11px; font-weight: 500; color: var(--muted); margin-left: 3px; }
+.permin canvas { display: block; width: 100%; height: 44px; margin-top: 2px; }
+.aux-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.aux-grid .tile { min-height: 110px; }
 details.health > summary { cursor: pointer; font-weight: 600; margin: 28px 0 10px; font-size: 16px; }
 </style>{% endblock %}
 {% block content %}
@@ -124,6 +131,12 @@ details.health > summary { cursor: pointer; font-weight: 600; margin: 28px 0 10p
 <div id="cam-section" hidden>
   <h2>Eye camera <span class="note">tracker from the lab's MATLAB V7 code, running on every frame</span></h2>
   <div id="cams" style="display:grid; gap:16px"></div>
+</div>
+
+<!-- ===== further sensors (protocol v2.1 auxiliary streams) ===== -->
+<div id="aux-section" hidden>
+  <h2>Other sensors <span class="note">recognised automatically from what the device reports</span></h2>
+  <div class="aux-grid" id="aux-grid"></div>
 </div>
 
 <!-- ===== PPG ===== -->
@@ -456,9 +469,17 @@ function showCameras(list) {
             <div class="eye-stats">
               <div><span>Blinks</span><b class="e-blinks">–</b></div>
               <div><span>Blinks / min</span><b class="e-rate">–</b></div>
-              <div><span>Blink length</span><b class="e-dur">–</b></div>
+              <div><span>Avg blink length</span><b class="e-dur">–</b></div>
               <div><span>Gaze shifts / min</span><b class="e-gaze">–</b></div>
+              <div><span>Gaze-shift speed</span><b class="e-speed">–</b></div>
             </div>
+            <div><div class="note">Minute by minute (one bar per minute of the recording; the last bar is the minute still running)</div>
+              <div class="permin">
+                <div class="pm"><span>Blinks / min</span><b class="m-blinks">–</b><canvas class="mc-blinks"></canvas></div>
+                <div class="pm"><span>Avg blink duration</span><b class="m-dur">–</b><canvas class="mc-dur"></canvas></div>
+                <div class="pm"><span>Gaze shifts / min</span><b class="m-shifts">–</b><canvas class="mc-shifts"></canvas></div>
+                <div class="pm"><span>Avg gaze-shift speed</span><b class="m-speed">–</b><canvas class="mc-speed"></canvas></div>
+              </div></div>
             <div><div class="note">Eye closure — how much the pupil/iris has faded vs. the open eye (last 20 s)</div>
               <canvas class="chart e-closure" style="height:120px"></canvas></div>
             <div style="display:grid; grid-template-columns: minmax(0,1fr) 130px; gap:12px; align-items:end">
@@ -565,7 +586,7 @@ async function pollEye(name, c) {
         if (r.ok) {
           const d = await r.json();
           for (const p of d.points) c.pts.push(p);
-          c.next = d.next; c.summary = d.summary;
+          c.next = d.next; c.summary = d.summary; c.minutes = d.minutes || [];
           const tmax = c.pts.length ? c.pts[c.pts.length - 1].t : 0;
           let cut = 0; while (cut < c.pts.length && c.pts[cut].t < tmax - 32) cut++;
           if (cut) c.pts.splice(0, cut);
@@ -576,6 +597,66 @@ async function pollEye(name, c) {
     await new Promise(r => setTimeout(r, document.hidden ? 2000 : 250));
   }
 }
+// per-minute bars: completed minutes solid, the running minute (or one with the eye mostly untracked) faded
+function minuteBars(cv, M, key, color) {
+  const [g, W, H] = ctx2d(cv);
+  const show = M.slice(-30), vals = show.map(m => m[key]).filter(v => v != null);
+  if (!vals.length) return;
+  const hi = Math.max(...vals) * 1.1 || 1, bw = Math.min(18, (W - 2) / show.length);
+  show.forEach((m, i) => { const v = m[key]; if (v == null) return;
+    const h = Math.max(1.5, v / hi * (H - 3)), x = W - (show.length - i) * bw;
+    g.globalAlpha = m.partial || m.tracked_s < 30 ? 0.4 : 0.95; g.fillStyle = color; g.fillRect(x + 1, H - h, Math.max(bw - 2, 1), h); });
+  g.globalAlpha = 1;
+}
+function renderMinutes(c) {
+  const M = c.minutes || [], q = sel => c.card.querySelector(sel);
+  const done = M.filter(m => !m.partial), last = done[done.length - 1];
+  const set = (sel, v, unit) => { q(sel).innerHTML = v == null ? '–' : `${v}<small>${unit}</small>`; };
+  set('.m-blinks', last?.blinks_per_min, '/min last minute'); set('.m-dur', last?.blink_dur_ms, 'ms'); set('.m-shifts', last?.gaze_shifts_per_min, '/min'); set('.m-speed', last?.gaze_speed == null ? null : Math.round(last.gaze_speed), 'px/s');
+  minuteBars(q('.mc-blinks'), M, 'blinks_per_min', colors.s1); minuteBars(q('.mc-dur'), M, 'blink_dur_ms', colors.s3);
+  minuteBars(q('.mc-shifts'), M, 'gaze_shifts_per_min', colors.s2); minuteBars(q('.mc-speed'), M, 'gaze_speed', colors.s5);
+}
+
+// ===================================================================== other sensors
+const aux = {};  // stream -> {t: [], y: [[]...], next}
+async function pollAux() {
+  try {
+    if (!document.hidden) {
+      const after = Object.entries(aux).map(([k, a]) => `${k}:${a.next}`).join(',');
+      const r = await fetch(API + '/aux' + (after ? '?after=' + encodeURIComponent(after) : ''));
+      if (r.ok) renderAux((await r.json()).streams);
+    }
+  } catch (e) {}
+  setTimeout(pollAux, document.hidden ? 4000 : 1000);
+}
+function renderAux(streams) {
+  if (!streams.length) return;
+  $('aux-section').hidden = false;
+  const pal = [colors.s3, colors.s4, colors.s5, colors.s1, colors.s2], grid = $('aux-grid');
+  for (const st of streams) {
+    const a = aux[st.stream] || (aux[st.stream] = {t: [], y: st.channels.map(() => []), next: -1});
+    st.t.forEach((t, k) => { a.t.push(t); st.channels.forEach((_, i) => a.y[i].push(st.y[i][k])); });
+    while (a.t.length > 3000) { a.t.shift(); a.y.forEach(y => y.shift()); }
+    a.next = st.next;
+    st.labels.forEach((lab, i) => {
+      const id = `aux-${st.stream}-${i}`.replace(/[^A-Za-z0-9_-]/g, '_');
+      let el = document.getElementById(id);
+      if (!el) {
+        el = document.createElement('div'); el.className = 'tile'; el.id = id;
+        el.innerHTML = `<div class="lbl">${esc(lab.name)} <span class="tag">${st.kind === 'features' ? 'computed on device' : esc(st.sensor || st.name)}</span></div>
+          <div class="val dim">--<small>${esc(lab.unit)}</small></div><canvas class="spark"></canvas><div class="sub"></div>`;
+        grid.append(el);
+      }
+      const v = st.last[i], val = el.querySelector('.val');
+      if (v != null) { val.innerHTML = `${Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2)}<small>${esc(lab.unit)}</small>`; val.classList.remove('dim'); }
+      const age = lastStatus && st.t_last != null ? lastStatus.elapsed_s - st.t_last : null;
+      el.querySelector('.sub').innerHTML = `${esc(st.role)} · ${st.samples} readings` + (age != null && st.fs && age > Math.max(5, 3 / st.fs) ? ` · <span style="color:var(--warn)">none for ${Math.round(age)} s</span>` : '');
+      const xs = [], ys = []; a.t.forEach((t, k) => { if (a.y[i][k] != null) { xs.push(t); ys.push(a.y[i][k]); } });
+      if (xs.length > 1) spark(el.querySelector('canvas'), [{x: xs, y: ys, color: pal[i % pal.length]}], {minSpan: 1e-6});
+    });
+  }
+}
+
 const eyeHist = {blink: [], perclos: []};
 function renderEyeStats(c) {
   const s = c.summary || {}, q = sel => c.card.querySelector(sel);
@@ -583,9 +664,11 @@ function renderEyeStats(c) {
   q('.e-rate').textContent = s.blink_rate_min ?? '–';
   q('.e-dur').textContent = s.blink_dur_ms != null ? `${s.blink_dur_ms} ms` : '–';
   q('.e-gaze').textContent = s.gaze_shifts_min ?? '–';
+  q('.e-speed').innerHTML = s.gaze_speed != null ? `${Math.round(s.gaze_speed)}<small style="font-size:11px;color:var(--muted)"> px/s</small>` : '–';
+  renderMinutes(c);
   if (s.blink_rate_min != null) { $('v-blink').innerHTML = `${s.blink_rate_min}<small>/min</small>`; $('v-blink').classList.remove('dim'); }
   if (s.perclos_pct != null) { $('v-perclos').innerHTML = `${s.perclos_pct}<small>%</small>`; $('v-perclos').classList.remove('dim'); }
-  $('s-blink').textContent = `${s.blinks_total ?? 0} total · ${s.motion_blinks_total ?? 0} by motion`;
+  $('s-blink').textContent = `last 60 s · ${s.blinks_total ?? 0} blinks so far`;
   const tnow = c.pts.length ? c.pts[c.pts.length - 1].t : 0;
   if (!eyeHist.last || tnow - eyeHist.last > 2) {
     eyeHist.last = tnow;
@@ -831,7 +914,7 @@ function frame() {
   for (const c of Object.values(cams)) if (c.pts.length) drawEyeCharts(c, Math.min(head, c.pts[c.pts.length - 1].t + 0.5));
 }
 
-loadModels(); poll(); pollInsights(); fetchLive(); requestAnimationFrame(frame);
+loadModels(); poll(); pollInsights(); pollAux(); fetchLive(); requestAnimationFrame(frame);
 setInterval(poll, 1000);
 </script>
 {% endblock %}

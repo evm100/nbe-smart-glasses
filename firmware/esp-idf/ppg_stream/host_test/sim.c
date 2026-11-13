@@ -113,6 +113,19 @@ static void advance(TickType_t ms)
         link_mqtt_test_tick();
     }
 #endif
+#ifdef TEST_AUX
+    {
+        extern void xs_test_tick(void);  // stands in for the aux task (it polls every 10 ms)
+        static int64_t last_aux;
+        static int in_aux;
+        if (!in_aux && g_now_us - last_aux >= 10000) {
+            in_aux = 1;
+            last_aux = g_now_us;
+            xs_test_tick();
+            in_aux = 0;
+        }
+    }
+#endif
     if (g_now_us >= g_end_us) longjmp(g_jmp, 1);
 }
 void vTaskDelay(TickType_t t) { advance(t ? t : 1); }

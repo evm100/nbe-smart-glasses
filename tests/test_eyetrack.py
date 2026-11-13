@@ -109,6 +109,19 @@ def test_sim_camera_trial_tracks_the_eye(tmp_path):
     c.post(api + "/stop")
     r = c.post(f"/trials/{tid}/finish", data={"quality": "good", "notes": "", "keep": "on"}, follow_redirects=False)
     sid = r.headers["location"].rsplit("/", 1)[1]
-    off = c.get(f"/api/sessions/{sid}/eye", params={"stream": v["stream"]}).json()
+    for _ in range(120):  # tracked in the background after the trial is saved
+        off = c.get(f"/api/sessions/{sid}/eye", params={"stream": v["stream"]}).json()
+        if off["state"] in ("done", "error"):
+            break
+        time.sleep(0.25)
+    assert off["state"] == "done", off
     assert off["n_frames"] >= v["frames"] and off["summary"]["blinks_total"] >= 1
+    m = off["minutes"]
+    assert m and {"blinks_per_min", "blink_dur_ms", "gaze_shifts_per_min", "gaze_speed"} <= set(m[0])
+    assert off["shifts"] and all(x["speed"] > 0 and x["dur"] > 0 for x in off["shifts"])
+    tr = c.get(f"/api/sessions/{sid}/eye/trace", params={"stream": v["stream"], "t0": 2, "t1": 6}).json()
+    assert tr["n_in_range"] > 50 and len(tr["closure"]["t"]) == len(tr["closure"]["y"])
+    fr = c.get(f"/api/sessions/{sid}/video/{v['stream']}/frame", params={"t": 4.0})
+    assert fr.status_code == 200 and fr.headers["content-type"] == "image/png" and "X-Eye" in fr.headers
+    assert abs(float(fr.headers["X-Frame-T"]) - 4.0) < 0.2
     assert c.get(f"/sessions/{sid}").status_code == 200

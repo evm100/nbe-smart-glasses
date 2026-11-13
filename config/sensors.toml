@@ -1,0 +1,152 @@
+# What the platform measures, and what it turns the measurements into.
+# The Platform page of the website is drawn from this file, and the live / session pages use it
+# for display names and units. Edit freely - no code change is needed to add an entry.
+#
+# status   = "live"     in routine use
+#          = "pilot"    works end to end, still being validated - treat numbers with care
+#          = "ready"    the platform can already record and show it (try it with the simulator);
+#                       the sensor hardware / firmware driver is not on a board yet
+#          = "planned"  on the roadmap
+# family   = "biophysical" | "biochemical"
+# channels = names a board uses for this quantity in its stream header (ch=...). A stream whose
+#            channel is listed here is recognised automatically, on any board.
+
+# ------------------------------------------------------------------ sensors
+[[sensor]]
+id = "ppg"
+name = "Pulse (PPG)"
+family = "biophysical"
+status = "live"
+hardware = "MAX30102, temple (glasses) and finger reference"
+measures = "Blood volume pulse: red / infrared light reflected by the skin, 100-400 samples per second"
+gives = ["Heart rate", "Heart-rate variability", "Perfusion", "Pulse shape (rise time, notch, widths...)"]
+stream = "primary"
+
+[[sensor]]
+id = "eye_camera"
+name = "Eye camera"
+family = "biophysical"
+status = "live"
+hardware = "OV2640 on the XIAO ESP32-S3 Sense, facing the eye"
+measures = "Grayscale video of one eye, 10-25 frames per second"
+gives = ["Blinks per minute", "Blink duration", "Eye closure (PERCLOS)", "Gaze shifts per minute", "Gaze-shift speed"]
+stream = "video"
+
+[[sensor]]
+id = "skin_temp"
+name = "Skin temperature"
+family = "biophysical"
+status = "ready"
+hardware = "e.g. MLX90614 infrared thermometer (datasheet in datasheets/)"
+measures = "Skin temperature at the temple"
+gives = ["Temperature trend"]
+channels = ["skin_temp", "temp_skin", "obj_temp"]
+unit = "degC"
+range = [25, 40]
+
+[[sensor]]
+id = "glucose"
+name = "Glucose"
+family = "biochemical"
+status = "ready"
+hardware = "Electrochemical sweat / interstitial sensor (lab-made)"
+measures = "Glucose concentration"
+gives = ["Glucose trend"]
+channels = ["glucose"]
+unit = "uM"
+
+[[sensor]]
+id = "lactate"
+name = "Lactate"
+family = "biochemical"
+status = "ready"
+hardware = "Electrochemical sweat sensor (lab-made)"
+measures = "Lactate concentration"
+gives = ["Lactate trend"]
+channels = ["lactate"]
+unit = "mM"
+
+[[sensor]]
+id = "cortisol"
+name = "Cortisol"
+family = "biochemical"
+status = "ready"
+hardware = "Electrochemical / aptamer sweat sensor (lab-made)"
+measures = "Cortisol concentration (slow: one reading every few seconds to minutes)"
+gives = ["Stress-hormone trend"]
+channels = ["cortisol"]
+unit = "ng/mL"
+
+[[sensor]]
+id = "uric_acid"
+name = "Uric acid"
+family = "biochemical"
+status = "ready"
+hardware = "Electrochemical sweat sensor (lab-made)"
+measures = "Uric acid concentration"
+gives = ["Uric acid trend"]
+channels = ["uric_acid", "urate"]
+unit = "uM"
+
+# ------------------------------------------------------------------ what the data is turned into
+# uses = sensor ids. where = "server" (computed after the data arrives) | "edge" (on the board) | "both"
+[[insight]]
+id = "heart"
+name = "Heart rate and variability"
+status = "live"
+uses = ["ppg"]
+where = "server"
+note = "Live during a recording and per 30-s epoch afterwards."
+
+[[insight]]
+id = "eye_state"
+name = "Eye behaviour"
+status = "pilot"
+uses = ["eye_camera"]
+where = "server"
+note = "Port of the lab's MATLAB V7 tracker. Per-minute blink and gaze-shift measures; gaze is in pixels, not degrees, until a per-wearer calibration exists."
+
+[[insight]]
+id = "bp"
+name = "Blood pressure"
+status = "pilot"
+uses = ["ppg"]
+where = "server"
+note = "Model calibrated on one cuff reading per session. Finger PPG beats the no-change baseline; the glasses model is being re-tuned on data from the current sensor settings."
+
+[[insight]]
+id = "edge_vision"
+name = "Eye features computed on the glasses"
+status = "ready"
+uses = ["eye_camera"]
+where = "edge"
+note = "First step: the board sends per-frame brightness, contrast and motion next to (later: instead of) the video, to cut radio power. The server stores them next to its own computation so the two can be compared."
+
+[[insight]]
+id = "stress"
+name = "Stress / arousal"
+status = "planned"
+uses = ["ppg", "eye_camera", "cortisol", "skin_temp"]
+where = "server"
+
+[[insight]]
+id = "fatigue"
+name = "Fatigue / alertness"
+status = "planned"
+uses = ["eye_camera", "ppg"]
+where = "server"
+
+[[insight]]
+id = "metabolic"
+name = "Metabolic state"
+status = "planned"
+uses = ["glucose", "lactate", "uric_acid", "ppg"]
+where = "server"
+
+[[insight]]
+id = "wellbeing"
+name = "Overall wellbeing state"
+status = "planned"
+uses = ["ppg", "eye_camera", "skin_temp", "glucose", "lactate", "cortisol", "uric_acid"]
+where = "server"
+note = "The goal: one continuous picture of how the wearer is doing, from all sensors together."

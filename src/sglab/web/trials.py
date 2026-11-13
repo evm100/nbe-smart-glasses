@@ -183,6 +183,13 @@ async def trial_finish(request: Request, tid: str, user=operator):
     ctx.audit(request, "trial.save", sid, {"trial": tid, "keep": post.get("keep", True)})
     if form.get("process") and post.get("keep", True) is not False:
         ctx.start_processing(sid)
+    if post.get("keep", True) is not False:  # eye tracking of the camera streams, in the background
+        try:
+            import json as _json
+            folder = ctx.settings.raw_dir / sid
+            ctx.eye_jobs.start_session(sid, folder, _json.loads((folder / "session.json").read_text()))
+        except Exception:
+            pass  # the session page starts it on first view
     return RedirectResponse(f"/sessions/{sid}", status_code=303)
 
 

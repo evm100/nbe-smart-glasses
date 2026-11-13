@@ -1,7 +1,9 @@
 # Sources and embedded certificates depend on the link chosen in menuconfig.
 # (Requirements are listed unconditionally: Kconfig values aren't known during the
 #  build system's first pass, and unused components cost only build time.)
-set(srcs "app_main.c" "max30102.c" "proto.c" "diag.c")
+# xstream.c / xstream_demo.c (auxiliary streams, any link) are empty unless CONFIG_PPG_AUX / _AUX_DEMO.
+# A new sensor driver (copy of xstream_template.c) goes here too.
+set(srcs "app_main.c" "max30102.c" "proto.c" "diag.c" "xstream.c" "xstream_demo.c")
 set(embed "")
 if(CONFIG_PPG_LINK_MQTT OR CONFIG_PPG_LINK_HYBRID)
     # camera.c is empty unless CONFIG_PPG_CAMERA

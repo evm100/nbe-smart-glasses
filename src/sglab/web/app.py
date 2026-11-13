@@ -47,25 +47,6 @@ from . import security as sec
 HERE = Path(__file__).parent
 
 
-def minmax_decimate(t: np.ndarray, y: np.ndarray, max_points: int) -> tuple[np.ndarray, np.ndarray]:
-    """Keep each bucket's min and max so peaks survive downsampling for the browser."""
-    n = t.size
-    if n <= max_points:
-        return t, y
-    nb = max_points // 2
-    edges = np.linspace(0, n, nb + 1).astype(int)
-    ti, yi = [], []
-    for a, b in zip(edges[:-1], edges[1:]):
-        seg = y[a:b]
-        if not np.isfinite(seg).any():
-            ti += [t[a]]; yi += [np.nan]
-            continue
-        i0, i1 = a + int(np.nanargmin(seg)), a + int(np.nanargmax(seg))
-        for i in sorted((i0, i1)):
-            ti.append(t[i]); yi.append(y[i])
-    return np.array(ti), np.array(yi)
-
-
 def _clean(v):
     """JSON-safe lists (NaN -> None)."""
     a = np.asarray(v, dtype=float)
@@ -88,6 +69,7 @@ class Ctx:
     jobs: JobQueue | None = None                    # remote mode: queue for `sglab worker`
     workers_seen: dict = field(default_factory=dict)  # worker name -> time.time() of its last poll
     model_tasks: list = field(default_factory=list)   # Models page: dataset builds, trainings, local sweeps
+    eye_jobs: object | None = None                    # eyejob.EyeJobs: eye tracking of recorded camera streams
 
     def cat(self) -> Catalog:
         return Catalog(self.settings.db_path, self.settings.data_root)
@@ -216,6 +198,9 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
         ctx.manager.shutdown()
         if own_hub:
             hub.stop()
+
+    from ..eyejob import EyeJobs
+    ctx.eye_jobs = EyeJobs(settings)
 
     app = FastAPI(title="NBE smart-glasses lab", version="0.4.0", lifespan=lifespan,
                   docs_url="/docs", redoc_url=None)
@@ -413,52 +398,6 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
         s["processing"] = ctx.processing_state(s["session_id"])
         return s
 
-    @app.get("/api/sessions/{sid}/signal")
-    def api_signal(sid: str, stream: str, source: str = Query("filtered", pattern="^(raw|filtered)$"),
-                   channel: str | None = None, max_points: int = 12000, user=viewer):
-        s = get_session(sid)
-        doc = session_doc(s)
-        st = next((x for x in doc["streams"] if x["stream"] == stream), None)
-        if st is None:
-            raise HTTPException(404, f"stream {stream} not in session")
-        ch = channel or (st.get("channels") or ["ir"])[0]
-        if ch not in (st.get("channels") or [ch]):
-            raise HTTPException(404, f"no channel {ch}")
-        bad = []
-        if source == "filtered":
-            r = run_for(s, stream)
-            if r is None:
-                raise HTTPException(409, "not processed yet")
-            out = settings.data_root / r["out_dir"]
-            stem = r["summary"]["stem"]
-            sig = pd.read_csv(out / f"{stem}_signals.csv", usecols=["t", f"{ch}_ac_norm"])
-            t0, k = clock_for(s, r)
-            t = t0 + k * sig["t"].to_numpy()
-            y = sig[f"{ch}_ac_norm"].to_numpy() * 100
-            qp = out / f"{stem}_quality.csv"
-            if qp.exists():
-                q = pd.read_csv(qp)
-                if "good" in q:
-                    b = q[~q["good"].astype(bool)]
-                    for a, e in zip(t0 + k * b["t_start"], t0 + k * b["t_end"]):  # merge overlapping windows
-                        if bad and a <= bad[-1][1]:
-                            bad[-1][1] = max(bad[-1][1], float(e))
-                        else:
-                            bad.append([float(a), float(e)])
-            unit = "AC/DC (%)"
-        else:
-            df = pd.read_csv(settings.data_root / s["path"] / st["file"])
-            fit = device_clock(st, session_t0_unix(doc, read_events(settings.data_root / s["path"])))
-            if fit and "t_dev_us" in df:
-                t = fit[0] + fit[1] * df["t_dev_us"].to_numpy() / 1e6
-            else:
-                t = df["t_s"].to_numpy() if "t_s" in df else np.arange(len(df)) / float(st.get("fs") or 100)
-            y = df[ch].to_numpy(dtype=float)
-            unit = "ADC counts"
-        td, yd = minmax_decimate(t, y, max(100, min(max_points, 50000)))
-        return {"stream": stream, "channel": ch, "source": source, "unit": unit,
-                "t": _clean(td), "y": _clean(yd), "bad_windows": bad, "n_original": int(t.size)}
-
     @app.get("/api/sessions/{sid}/hr")
     def api_hr(sid: str, user=viewer):
         s = get_session(sid)
@@ -504,40 +443,6 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
         finally:
             c.close()
 
-    @app.get("/api/sessions/{sid}/eye")
-    def api_session_eye(sid: str, stream: str, user=viewer):
-        """Eye tracking over a recorded camera stream (sglab.eyetrack, as live), cached as
-        processed/<sid>/<stream>/eye.json: blink/closure/gaze trace (decimated) + summary."""
-        from ..eyetrack import track_frames
-        from ..video import gray_array
-
-        s = get_session(sid)
-        folder = settings.data_root / s["path"]
-        doc = session_doc(s)
-        vids = list(doc.get("video") or []) + [v for st in doc.get("streams", []) for v in (st.get("video") or [])]
-        v = next((x for x in vids if x.get("stream") == stream or x.get("file") == f"{stream}.frames"), None)
-        f = folder / (v.get("file") if v and v.get("file") else f"{stream}.frames")
-        if not f.exists() or "/" in stream or ".." in stream:
-            raise HTTPException(404, f"no camera stream {stream} in {sid}")
-        out = settings.data_root / "processed" / s["session_id"] / stream / "eye.json"
-        if out.exists() and out.stat().st_mtime >= f.stat().st_mtime:
-            return json.loads(out.read_text())
-        try:
-            frames, idx = gray_array(f)
-        except ValueError as e:
-            raise HTTPException(409, str(e)) from None
-        if not len(frames):
-            raise HTTPException(409, "no frames")
-        rows, summary = track_frames(frames, idx["t_s"].astype(float))
-        step = max(1, len(rows) // 6000)
-        keep = ("t", "state", "closure", "motion", "event", "dur", "gx", "gy")
-        res = {"stream": stream, "summary": summary, "n_frames": len(rows),
-               "points": [{k: r.get(k) for k in keep} for r in rows[::step]],
-               "events": [{k: r.get(k) for k in ("t", "event", "dur")} for r in rows if r.get("event")]}
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(res))
-        return res
-
     @app.get("/api/sessions/{sid}/epochs")
     def api_epochs(sid: str, stream: str, user=viewer):
         s = get_session(sid)
@@ -558,10 +463,16 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
 
     from .admin import router as admin_router
     from .models import router as models_router
+    from .review import router as review_router
     from .trials import router as trials_router
     from .worker import router as worker_router
     app.include_router(trials_router)
+    app.include_router(review_router)
+    from .platform import router as platform_router
+    app.include_router(platform_router)
     app.include_router(admin_router)
     app.include_router(worker_router)
     app.include_router(models_router)
+    from .board import router as board_router  # lab board (/board, /api/board...)
+    app.include_router(board_router)
     return app

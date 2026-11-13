@@ -164,6 +164,7 @@ shared 3.3 V rail (`CONFIG_PPG_WIFI_TX_POWER_DBM` lowers the current spikes).
 | Camera | OV2640 on/off (USB binary link only), frame size 96×96…640×480, centre crop (gray8), sensor zoom window + clock divider, raw grayscale or JPEG (+ quality), fps cap, auto / fixed exposure + gain, flip / mirror | off; 240×240 gray8, no crop (sdkconfig.camera: crop 160, zoom window 376 / clkdiv 1, driver on core 1), 15 fps (sdkconfig.camera: 0 = no cap), exposure 300, gain 2 |
 | Link → Wi-Fi | SSID, password / WPA2-Enterprise (PEAP), fallback networks 2 + 3 (password/open, tried in order when the one before isn't found or keeps refusing), modem sleep, max transmit power, 20 MHz only, SNTP server | UCSD-DEVICE, PSK, off, 20 dBm, off, pool.ntp.org |
 | Link → MQTT | broker URI, topic prefix, broker CA (public bundle / private PEM), send period, largest frame, unacknowledged window, store-and-forward buffer, outbox limit (status only), status period, stop when the server goes offline | written by nbe_node.py; 250 ms, 8 kB, 64 kB, 2 MB with PSRAM, 64 kB, 15 s, on |
+| Auxiliary sensor streams | auxiliary streams on/off (`$M` lines, protocol v2.1), synthetic demo stream "sweat", camera frame statistics on the board (`cam_feat`) | off, off, off |
 | Behaviour | Autostart without `START`, status-line period, die-temperature reporting, quiet logs after boot | off, 1000 ms, on, on |
 
 **Give every board its own Device ID** (e.g. `GLS01` for the glasses, `FNG01` for the finger).
@@ -199,6 +200,42 @@ The sglab live page shows these under **Device report**, and the last report is 
 
 Commands from the PC: `INFO`, `START`, `STOP` (case-insensitive). If the sensor is missing,
 the firmware keeps retrying once per second and answers `START` with a `SENSOR_ERR` event.
+
+## Adding a sensor
+
+Further sensors (sweat glucose / lactate / cortisol / uric acid, temperature, anything ≤ ~20 Hz) and
+values computed on the board are **auxiliary streams** (protocol v2.1, `../../PROTOCOL.md`): each has
+its own `H` line and sends `$M,<sid>,<seq>,<t_us>,<values>` lines, on any link. The server reads the
+`H` line and records and shows the stream; it needs no change for a new sensor.
+
+1. Copy `main/xstream_template.c` (a commented I2C electrochemical front end with a checklist at the
+   top) to `main/xstream_<name>.c` and fill in the descriptor: stream id, name, channels, units, rate,
+   calibration constants for the `H` line, and `init()` / `read()` for your chip.
+2. Give it a stream id in `main/xstream.h` and one `xs_register(&..._stream);` line in
+   `register_streams()` in `main/xstream.c`.
+3. Add a `PPG_AUX_<NAME>` option to the menu "Auxiliary sensor streams" in `main/Kconfig.projbuild`
+   and the file to `srcs` in `main/CMakeLists.txt`.
+
+Try the path first without hardware: menuconfig → Auxiliary sensor streams → enable "Auxiliary
+streams" and "Demo stream 'sweat'" (`CONFIG_PPG_AUX=y`, `CONFIG_PPG_AUX_DEMO=y`). The board then sends a
+synthetic glucose | lactate stream at 1 Hz (`sensor=DEMO`; turn it off again for real trials):
+
+```
+$H,proto=2,dev=FNG01,fw=0.9.0-idf,sid=2,stream=sweat,kind=samples,sensor=DEMO,fs=1,ch=glucose|lactate,unit=uM|mM,site=finger,sensor_ok=1*4E
+$M,2,0,1012000,80.5,1.05*58
+$S,2002000,fs_meas=400.0,...,sweat_n=1,sweat_err=0,heap=300000*06
+```
+
+Healthy: `<stream>_n` grows by `fs` per second, `<stream>_err` stays 0.
+
+**Features computed on the board.** `CONFIG_PPG_CAMERA_EDGE_FEATURES` (camera boards, gray8) makes the
+camera task compute brightness, contrast and motion per frame and send them as the stream `cam_feat`
+(`kind=features,src=cam,algo=framestats@1`), next to the frames, so the server can compare them with
+its own. A task that computes values from its own data calls `xs_push()` / `xs_push_at()` instead of
+providing `read()`; see `frame_stats()` in `main/camera.c`.
+
+Not yet run on hardware: the auxiliary task, the demo and the frame statistics are verified by the
+host test only (below).
 
 ## First test on hardware
 
@@ -246,6 +283,11 @@ checks every batch holds whole lines), type-checks the Wi-Fi code (PSK, PEAP) ag
 - channel order
 - FIFO-overflow detection
 
+Three more builds turn on the auxiliary streams (`check_xstream.py`): the demo stream on the USB text
+link, and demo + camera frame statistics on the USB binary and the hybrid link. Checked: the `H` lines'
+fields, `M` checksums, `seq` from 0 after `START`, increasing `t_us`, the demo's values, and the frame
+statistics against a recomputation from the received pixels. `xstream_template.c` is compile-checked.
+
 It catches logic and C errors, not ESP-IDF API mismatches; only a real `idf.py build` does that.
 
 ## Files
@@ -268,7 +310,11 @@ main/link_mqtt.c        MQTT transport: batching, store-and-forward, status/LWT,
                         (PPG first); hybrid link: hands the stream to the USB gateway and back
 main/usbgw.c/.h         hybrid link, USB side: gateway heartbeat (PING), commands, envelope writes
 main/link_usb_bin.c     USB binary transport (protocol v2 envelopes: text + samples + camera frames)
-main/camera.c/.h        OV2640 stream (sid 1 "cam"): capture task, H line, CAM command, S-line stats
+main/camera.c/.h        OV2640 stream (sid 1 "cam"): capture task, H line, CAM command, S-line stats;
+                        frame statistics on the board (sid 3 "cam_feat")
+main/xstream.c/.h       auxiliary streams (protocol v2.1): descriptors, H lines, M lines, polling task
+main/xstream_demo.c     synthetic demo stream (sid 2 "sweat")
+main/xstream_template.c copy-me template for a new sensor (not built), see "Adding a sensor"
 main/frame.c/.h         binary records (MQTT frames, USB envelopes, frame records), CRC-32
 main/ota.c/.h           over-the-air update ("OTA <token>" command), rollback if the new build can't reach the broker
 main/net.c/.h           Wi-Fi station (PSK or PEAP, up to 3 saved networks), reconnect back-off, SNTP

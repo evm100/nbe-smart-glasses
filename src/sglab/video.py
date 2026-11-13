@@ -76,6 +76,26 @@ def gray_array(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return m["px"], m[["seq", "t_dev_us", "t_s", "exposure", "gain"]]
 
 
+def frame_times(t_s: np.ndarray, t_dev_us: np.ndarray, window_s: float = 60.0) -> np.ndarray:
+    """Capture time of every frame on the session clock. t_s is when a frame *arrived* (links
+    deliver in bursts, so its spacing is useless for speeds and durations); the device clock
+    has the real spacing. Each frame's device time is moved onto the session clock by the least
+    (arrival - device) delay seen within +-window_s around it, as the recorder does for samples."""
+    t_s, dev = np.asarray(t_s, float), np.asarray(t_dev_us, float) / 1e6
+    if not len(t_s):
+        return t_s
+    off = t_s - dev
+    order = np.argsort(dev, kind="stable")
+    d, o = dev[order], off[order]
+    lo, hi = np.searchsorted(d, d - window_s), np.searchsorted(d, d + window_s, side="right")
+    step = max(1, len(d) // 4000)   # the envelope moves slowly: evaluate it sparsely, interpolate
+    k = np.unique(np.r_[np.arange(0, len(d), step), len(d) - 1])
+    env = np.array([o[lo[i]:hi[i]].min() for i in k])
+    out = np.empty_like(dev)
+    out[order] = d + np.interp(np.arange(len(d)), k, env)
+    return out
+
+
 def preview_image(fr: VideoFrame) -> tuple[bytes, str]:
     """(image, media type) of one frame for the live page: grayscale frames as a lossless PNG
     (the operator sees exactly the pixels that are recorded), JPEG frames pass through as sent."""
@@ -122,6 +142,7 @@ class VideoWriter:
         if self.fmt == FMT_GRAY8 and self.w >= 32 and self.h >= 32:
             from .eyetrack import EyeTracker
             self.tracker = EyeTracker(self.w, self.h)
+        self._lag: deque = deque(maxlen=250)      # recent (arrival - device) delays, for the capture time
         self._overlays: deque = deque(maxlen=64)  # (frame count, tracker output) for the preview
         self.track_error: str | None = None
 
@@ -147,8 +168,9 @@ class VideoWriter:
         # track before publishing the frame, so a preview of frame n always has frame n's overlay
         ov = None
         if self.tracker is not None and self.track_error is None:
-            try:  # on the session clock, like the PPG samples and the events
-                ov = self.tracker.update(np.frombuffer(fr.data, np.uint8), t_s)
+            try:  # capture time on the session clock (device spacing + least link delay), see frame_times
+                self._lag.append(t_s - t_dev_us / 1e6)
+                ov = self.tracker.update(np.frombuffer(fr.data, np.uint8), t_dev_us / 1e6 + min(self._lag))
             except Exception as e:  # never let tracking break the recording
                 self.track_error = f"{type(e).__name__}: {e}"
         with self.lock:
@@ -207,7 +229,7 @@ class VideoWriter:
             return None
         pts = self.tracker.since(after)
         return {"stream": self.name, "w": self.w, "h": self.h, "error": self.track_error,
-                "summary": self.tracker.summary(),
+                "summary": self.tracker.summary(), "minutes": self.tracker.minutes(self.latest_t_s),
                 "points": [{k: p[k] for k in ("n", "t", "state", "closure", "motion", "thr", "event", "gx", "gy",
                                                "cx", "cy", "dur") if k in p} for p in pts],
                 "next": pts[-1]["n"] if pts else after}

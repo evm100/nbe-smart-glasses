@@ -20,7 +20,18 @@ Per frame (all in "working" pixels, see SCALE below):
                               3-frame median is < open_pct, or under closed_pct for 0.3 s
   7. motion blinks            peak detector with an adaptive floor; a "head move" (motion mostly
                               below the eye's row) suppresses detection for a few frames
-  8. gaze                     pupil position while open and steady; a jump >= 3 px is a gaze shift
+  8. gaze                     pupil position while open and steady. A gaze shift is one eye
+                              movement: the consecutive frames in which the pupil moves >= 3 px
+                              per frame, from where it started to where it settled. Each shift
+                              has an amplitude (px), a duration and a speed (amplitude / duration)
+
+Positions, amplitudes and speeds of gaze shifts are reported in working pixels (frame scaled to
+80 px), so sessions recorded at different camera resolutions compare. They are not degrees: that
+needs a per-wearer calibration (looking at known targets), which the rig doesn't have yet.
+
+Besides the last-60-s live stats the tracker keeps every blink and gaze shift of the recording
+and time totals per minute, so minutes() gives the per-minute table (blinks/min, mean blink
+duration, gaze shifts/min, mean gaze-shift speed, PERCLOS) live and offline alike.
 
 SCALE: the MATLAB tracker was tuned on an 80x80 crop. Larger frames (the 160x160 zoomed crop
 GLS03 sends now) are block-averaged down to ~80 px first, so every tuned constant keeps its
@@ -58,6 +69,12 @@ HEAD_UPPER_FRAC, HEAD_MIN_MOTION, HEAD_COOLDOWN_FRAMES = 0.50, 5.0, 8
 CENT_ALPHA = 0.8
 GAZE_SHIFT_PX = 3.0
 SIGMAS = (2.5, 3.5, 5.0, 7.0, 9.0, 11.0)
+
+GAZE_END_FRAMES = 1     # steady frames that end a gaze shift
+GAZE_MAX_DT_S = 0.25    # a longer gap between frames ends a shift (frames were lost: speed unknown)
+MIN_TRACKED_S = 15.0    # a minute needs this much tracked time for its per-minute rates
+
+VERSION = 2             # of the per-frame / per-minute outputs: cached results of older versions are redone
 
 TRACE_S = 30.0          # per-frame history kept for the live page
 STATS_S = 60.0          # window of the live stats (blinks/min, PERCLOS, ...)
@@ -111,6 +128,11 @@ class EyeTracker:
         self.gaze_shifts: deque = deque()    # t of gaze shifts
         self.open_time: deque = deque()      # (t, dt, closed) per tracked frame, for PERCLOS
         self.totals = {"closure_blinks": 0, "motion_blinks": 0, "gaze_shifts": 0, "durations": []}
+        # the whole recording (not pruned): events and per-minute time totals, see minutes()
+        self.all_blinks: list[dict] = []    # {"t", "dur"} closure blinks (dur None: implausible length)
+        self.all_shifts: list[dict] = []    # {"t", "dur", "amp", "speed", "peak"} gaze shifts
+        self.all_motion: list[float] = []   # t of motion blinks
+        self.min_time: dict[int, list[float]] = {}  # minute -> [tracked s, closed s, frames]
         self.last: dict | None = None
         self._reset_all()
 
@@ -148,6 +170,7 @@ class EyeTracker:
         self.last_cent_blink = -math.inf
         self.head_cooldown = 0
         self.prev_pupil: tuple[float, float] | None = None
+        self.shift: dict | None = None  # the gaze shift in progress
         self.split_row = self.wh // 2
 
     def recalibrate(self) -> None:
@@ -303,6 +326,7 @@ class EyeTracker:
             self.closed, self.closed_below_since = False, math.nan
             ok = 0.03 <= dur <= 30.0
             self.blinks.append((self.close_t, dur if ok else None))
+            self.all_blinks.append({"t": round(self.close_t, 3), "dur": round(dur, 3) if ok else None})
             if ok:
                 self.totals["durations"].append(dur)
             out["event"] = "open"
@@ -324,42 +348,88 @@ class EyeTracker:
         if completed and t - self.last_blink_t > MIN_BLINK_GAP_S and (not suppress or self.close_t >= self.peak_start - 0.15):
             self.last_blink_t = t
             self.motion_blinks.append(t)
+            self.all_motion.append(round(t, 3))
             self.totals["motion_blinks"] += 1
             if out["event"] is None:
                 out["event"] = "motion_blink"
 
         # 8. gaze (pupil while open, steady, found)
         if pup_ok and not self.closed and not suppress:
-            if self.prev_pupil is not None and math.hypot(gx - self.prev_pupil[0], gy - self.prev_pupil[1]) >= GAZE_SHIFT_PX:
-                self.gaze_shifts.append(t)
-                self.totals["gaze_shifts"] += 1
-            self.prev_pupil = (float(gx), float(gy))
+            g = (float(gx), float(gy))
+            pp, self.prev_pupil = self.prev_pupil, (g[0], g[1], t)
+            step = math.hypot(g[0] - pp[0], g[1] - pp[1]) if pp is not None else 0.0
+            gap = t - pp[2] if pp is not None else 0.0
+            sh = self.shift
+            if pp is not None and gap <= GAZE_MAX_DT_S and step >= GAZE_SHIFT_PX:
+                if sh is None:  # a shift starts at the previous (still steady) position
+                    sh = self.shift = {"t": pp[2], "x0": pp[0], "y0": pp[1], "peak": 0.0, "still": 0}
+                    self.gaze_shifts.append(pp[2])
+                    self.totals["gaze_shifts"] += 1
+                    out["event2"] = "gaze_shift"
+                sh.update(t1=t, x1=g[0], y1=g[1], still=0, peak=max(sh["peak"], step / max(gap, 1e-3)))
+            elif sh is not None:
+                sh["still"] += 1
+                if sh["still"] >= GAZE_END_FRAMES or gap > GAZE_MAX_DT_S:
+                    self._end_shift()
             out["gaze_ok"] = True
+        elif self.shift is not None:  # blink / head move / eye lost mid-movement
+            self._end_shift()
+            self.prev_pupil = None
+        else:
+            self.prev_pupil = None
 
         self.open_time.append((t, dt, self.closed))
+        m = self.min_time.setdefault(int(t // 60), [0.0, 0.0, 0])
+        m[0] += dt
+        m[1] += dt if self.closed else 0.0
+        m[2] += 1
         out.update(state="closed" if self.closed else "open", closed=self.closed, closure=round(closure, 1),
                    thr=round(eff, 4), cx=round((self.cx + 0.5) * f, 1), cy=round((self.cy + 0.5) * f, 1),
                    suppress=bool(suppress))
         return out
+
+    def _end_shift(self) -> None:
+        sh, self.shift = self.shift, None
+        if sh is None or "t1" not in sh:
+            return
+        dur = sh["t1"] - sh["t"]
+        amp = math.hypot(sh["x1"] - sh["x0"], sh["y1"] - sh["y0"])
+        if dur <= 0:
+            return
+        self.all_shifts.append({"t": round(sh["t"], 3), "dur": round(dur, 3), "amp": round(amp, 2),
+                                "speed": round(amp / dur, 1), "peak": round(sh["peak"], 1)})
+
+    # ---------------------------------------------------------------- per minute
+    def minutes(self, now: float | None = None) -> list[dict]:
+        """One row per minute of the recording: blink and gaze-shift counts and rates, mean blink
+        duration, mean gaze-shift speed, PERCLOS. Rates are per minute of *tracked* time (eye
+        found), and None when under MIN_TRACKED_S of the minute was tracked. `partial` marks the
+        minute still running at `now`."""
+        with self.lock:
+            return minute_table(self.min_time, self.all_blinks, self.all_shifts, now)
 
     # ---------------------------------------------------------------- live readout
     def summary(self, now: float | None = None) -> dict:
         with self.lock:
             last = self.last or {}
             now = last.get("t", 0.0) if now is None else now
-            span = min(STATS_S, max(now - (self.trace[0]["t"] if self.trace else now), 1e-6))
+            t_first = self.open_time[0][0] if self.open_time else now
+            span = min(STATS_S, max(now - t_first, 1e-6))
             tracked = sum(dt for _, dt, _ in self.open_time)
             closed = sum(dt for _, dt, c in self.open_time if c)
             durs = [d for _, d in self.blinks if d is not None]
+            speeds = [s["speed"] for s in self.all_shifts[-400:] if s["t"] >= now - STATS_S]
             return {
                 "state": last.get("state", "waiting"), "frames": self.n_frames, "w": self.w, "h": self.h,
                 "blinks_total": self.totals["closure_blinks"], "motion_blinks_total": self.totals["motion_blinks"],
                 "blink_rate_min": round(len(self.blinks) * 60.0 / span, 1) if span > 5 else None,
                 "motion_rate_min": round(len(self.motion_blinks) * 60.0 / span, 1) if span > 5 else None,
-                "blink_dur_ms": round(1000 * float(np.median(durs)), 0) if durs else None,
+                "blink_dur_ms": round(1000 * float(np.mean(durs)), 0) if durs else None,
+                "gaze_speed": round(float(np.mean(speeds)), 1) if speeds else None,
+                "gaze_shifts_total": self.totals["gaze_shifts"],
                 "perclos_pct": round(100 * closed / tracked, 1) if tracked > 5 else None,
                 "gaze_shifts_min": round(len(self.gaze_shifts) * 60.0 / max(tracked, 1e-6), 1) if tracked > 5 else None,
-                "tracked_frac": round(tracked / span, 2) if span > 5 else None,
+                "tracked_frac": round(min(tracked / span, 1.0), 2) if span > 5 else None,
                 "window_s": round(span, 1),
             }
 
@@ -369,20 +439,64 @@ class EyeTracker:
         return pts[-max_points:]
 
 
-def track_frames(frames: np.ndarray, times: np.ndarray) -> tuple[list[dict], dict]:
-    """Offline: run the tracker over a recorded (n, h, w) uint8 stack. (per-frame rows, summary)."""
+def minute_table(min_time: dict, blinks: list[dict], shifts: list[dict], now: float | None = None) -> list[dict]:
+    """The per-minute table from time totals per minute and the event lists (see EyeTracker.minutes)."""
+    if not min_time:
+        return []
+    out = []
+    for m in range(min(min_time), max(min_time) + 1):
+        tracked, closed, frames = min_time.get(m, (0.0, 0.0, 0))
+        bl = [b for b in blinks if int(b["t"] // 60) == m]
+        sh = [x for x in shifts if int(x["t"] // 60) == m]
+        durs = [b["dur"] for b in bl if b["dur"] is not None]
+        ok = tracked >= MIN_TRACKED_S
+        out.append({
+            "minute": m, "t0": m * 60.0, "tracked_s": round(tracked, 1), "frames": int(frames),
+            "partial": bool(now is not None and now < (m + 1) * 60.0),
+            "blinks": len(bl), "gaze_shifts": len(sh),
+            "blinks_per_min": round(len(bl) * 60.0 / tracked, 1) if ok else None,
+            "blink_dur_ms": round(1000 * float(np.mean(durs)), 0) if durs else None,
+            "gaze_shifts_per_min": round(len(sh) * 60.0 / tracked, 1) if ok else None,
+            "gaze_speed": round(float(np.mean([x["speed"] for x in sh])), 1) if sh else None,
+            "gaze_amp": round(float(np.mean([x["amp"] for x in sh])), 2) if sh else None,
+            "perclos_pct": round(100.0 * closed / tracked, 1) if ok else None,
+        })
+    return out
+
+
+FRAME_COLUMNS = ("t", "state", "closure", "motion", "x", "y", "r", "gx", "gy", "cx", "cy", "brightness", "contrast")
+
+
+def track_frames(frames: np.ndarray, times: np.ndarray, progress=None) -> tuple[list[dict], dict]:
+    """Offline: run the tracker over a recorded (n, h, w) uint8 stack. (per-frame rows, summary).
+
+    summary carries the whole-recording totals plus "minutes" (minute_table), "blinks", "shifts"
+    and "motion_blinks" (every event). progress(done, total) is called every few hundred frames."""
     n, h, w = frames.shape
     trk = EyeTracker(w, h)
     rows = []
     for i in range(n):
         rows.append(trk.update(frames[i], float(times[i])))
+        if progress is not None and i % 250 == 0:
+            progress(i, n)
+    trk._end_shift()
     s = trk.summary()
     durs = trk.totals["durations"]
     dur_total = float(times[-1] - times[0]) if n > 1 else 0.0
+    tracked = sum(v[0] for v in trk.min_time.values())
+    closed = sum(v[1] for v in trk.min_time.values())
+    per_min = (lambda k: round(k * 60.0 / tracked, 1) if tracked >= MIN_TRACKED_S else None)
     s.update(blinks_total=trk.totals["closure_blinks"], motion_blinks_total=trk.totals["motion_blinks"],
-             gaze_shifts_total=trk.totals["gaze_shifts"], duration_s=round(dur_total, 1),
-             blink_rate_min=round(trk.totals["closure_blinks"] * 60 / dur_total, 1) if dur_total > 10 else None,
-             blink_dur_ms=round(1000 * float(np.median(durs)), 0) if durs else None)
+             gaze_shifts_total=len(trk.all_shifts), duration_s=round(dur_total, 1), tracked_s=round(tracked, 1),
+             tracked_frac=round(min(tracked / dur_total, 1.0), 2) if dur_total > 0 else None,
+             blink_rate_min=per_min(trk.totals["closure_blinks"]),
+             blink_dur_ms=round(1000 * float(np.mean(durs)), 0) if durs else None,
+             gaze_shifts_min=per_min(len(trk.all_shifts)),
+             gaze_speed=round(float(np.mean([x["speed"] for x in trk.all_shifts])), 1) if trk.all_shifts else None,
+             perclos_pct=round(100.0 * closed / tracked, 1) if tracked >= MIN_TRACKED_S else None,
+             work_scale=trk.f, version=VERSION,
+             minutes=minute_table(trk.min_time, trk.all_blinks, trk.all_shifts),
+             blinks=trk.all_blinks, shifts=trk.all_shifts, motion_blinks=trk.all_motion)
     return rows, s
 
 

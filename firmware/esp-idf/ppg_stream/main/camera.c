@@ -27,6 +27,9 @@
 #include "frame.h"
 #include "link.h"
 #include "version.h"
+#if CONFIG_PPG_CAMERA_EDGE_FEATURES
+#include "xstream.h"
+#endif
 
 static const char *TAG = "camera";
 
@@ -190,6 +193,112 @@ static bool apply_window(void)
     return !err;
 }
 
+#if CONFIG_PPG_CAMERA_EDGE_FEATURES
+// Edge features (protocol v2.1 stream sid=3 "cam_feat", kind=features, src=cam, algo=framestats@1):
+// three numbers per frame, computed here instead of on the server. The first step of moving the
+// eye tracking onto the board; the server computes the same from the frames it receives and
+// compares (host_test/check_xstream.py does that for the simulated camera).
+//
+// On the frame as it is sent (after the centre crop), on a grid of every FS_STEP-th pixel in x
+// and y (N grid pixels, rows y = 0, STEP, .., columns x = 0, STEP, ..):
+//   brightness  mean gray level, 0..255                                    (2 decimals, truncated)
+//   contrast    p98 - p2 of the gray levels: lo = smallest level v with count(<= v) >= max(1, N/50),
+//               hi = smallest v with count(<= v) >= N - N/50 (integer divisions); hi - lo
+//   motion      mean |pixel - same pixel of the previous frame of the stream|  (3 decimals, truncated).
+//               This is the motion signal of the MATLAB blink counter. Empty for the first frame
+//               after START. "Previous" = the previous frame that got a seq (frames skipped by
+//               the fps cap don't count), whether or not the link could send it.
+// One M line per frame that got a seq, with the frame's seq and t_us, also when the frame itself
+// was dropped by the link: the features survive a link that is too slow for the pixels.
+//
+// Cost (estimate, not measured on hardware): one pass over N pixels with two byte loads, a
+// subtract, a histogram increment and a store, ~15-25 CPU cycles each. 160x160 sent frame: N = 6400,
+// ~0.5-0.7 ms at 240 MHz; 240x240: N = 14400, ~1.5 ms (the uncropped frame is read from PSRAM,
+// allow 2x). At 25 fps that is 1.5-4 % of core 0. RAM: N bytes for the previous grid + 1 kB.
+#if CONFIG_PPG_CAM_JPEG
+#error "PPG_CAMERA_EDGE_FEATURES needs gray8 frames"
+#endif
+#if OUT_W * OUT_H > 240 * 240  // larger frames: a coarser grid keeps the cost and the buffer the same
+#define FS_STEP 4
+#define FS_STEP_STR "4"
+#else
+#define FS_STEP 2
+#define FS_STEP_STR "2"
+#endif
+#define FS_W ((OUT_W + FS_STEP - 1) / FS_STEP)
+#define FS_H ((OUT_H + FS_STEP - 1) / FS_STEP)
+#define FS_N (FS_W * FS_H)
+static uint8_t s_fs_prev[FS_N];  // the grid of the previous frame
+static bool s_fs_have_prev;      // camera task only
+static uint32_t s_fs_hist[256];
+
+static void frame_stats(const uint8_t *px, size_t w, size_t h, size_t len, uint32_t seq, int64_t t_us)
+{
+    int32_t vals[3] = {0, 0, 0};
+    bool valid[3] = {false, false, false};
+    if (w == (size_t)OUT_W && h == (size_t)OUT_H && len >= w * h) {  // else: not the frame we sized the grid for - a line without values
+        uint32_t sum = 0, diff = 0;
+        memset(s_fs_hist, 0, sizeof s_fs_hist);
+        uint8_t *prev = s_fs_prev;
+        for (size_t y = 0; y < h; y += FS_STEP) {
+            const uint8_t *row = px + y * w;
+            for (size_t x = 0; x < w; x += FS_STEP) {
+                uint8_t v = row[x], o = *prev;
+                *prev++ = v;
+                sum += v;
+                diff += v > o ? (uint32_t)(v - o) : (uint32_t)(o - v);
+                s_fs_hist[v]++;
+            }
+        }
+        uint32_t tail = FS_N / 50, lo_at = tail ? tail : 1, hi_at = FS_N - tail, cum = 0;
+        int lo = -1, hi = 255;
+        for (int v = 0; v < 256; v++) {
+            cum += s_fs_hist[v];
+            if (lo < 0 && cum >= lo_at) lo = v;
+            if (cum >= hi_at) {
+                hi = v;
+                break;
+            }
+        }
+        vals[0] = (int32_t)((uint64_t)sum * 100 / FS_N);
+        vals[1] = hi - lo;
+        vals[2] = (int32_t)((uint64_t)diff * 1000 / FS_N);
+        valid[0] = valid[1] = true;
+        valid[2] = s_fs_have_prev;
+        s_fs_have_prev = true;
+    } else {
+        s_fs_have_prev = false;
+    }
+    xs_push_at(XS_SID_CAM_FEAT, seq, t_us, vals, valid);
+}
+
+static uint32_t feat_fs_mhz(void)
+{
+    uint32_t cap = s_fps_cap;
+    return (cap ? cap : 25) * 1000;  // no cap: the sensor's own ~25 frames/s (nominal; see cam_fps in the S line)
+}
+
+static bool feat_init(void)
+{
+    return s_ok;  // sensor_ok of the feature stream = the camera's
+}
+
+const xs_stream_t camera_feat_stream = {
+    .sid = XS_SID_CAM_FEAT,
+    .stream = "cam_feat",
+    .kind = XS_KIND_FEATURES,
+    .src = "cam",
+    .algo = "framestats@1",
+    .sensor = "OV2640",
+    .fs_now_mhz = feat_fs_mhz,
+    .nch = 3,
+    .ch = {"brightness", "contrast", "motion"},
+    .decimals = {2, 0, 3},
+    .extra = ",step=" FS_STEP_STR,  // the pixel grid the statistics were taken on
+    .init = feat_init,
+};
+#endif
+
 // One pass: wait for a frame, send it (or skip it for the rate cap).
 static void camera_step(void)
 {
@@ -198,7 +307,12 @@ static void camera_step(void)
         vTaskDelay(pdMS_TO_TICKS(20));
         return;
     }
-    if (atomic_exchange(&s_restart, false)) s_seq = 0;
+    if (atomic_exchange(&s_restart, false)) {
+        s_seq = 0;
+#if CONFIG_PPG_CAMERA_EDGE_FEATURES
+        s_fs_have_prev = false;  // the first frame of a recording has no motion value
+#endif
+    }
     int64_t w0 = esp_timer_get_time();
     camera_fb_t *fb = esp_camera_fb_get();  // blocks until the next frame (grab latest)
     uint32_t waited = (uint32_t)(esp_timer_get_time() - w0);
@@ -232,6 +346,9 @@ static void camera_step(void)
     len = CROP * CROP;
 #endif
     if (atomic_load(&s_run)) {
+#if CONFIG_PPG_CAMERA_EDGE_FEATURES
+        frame_stats(px, w, h, len, s_seq, t_us);  // before the frame: it is sent even if the frame is not
+#endif
         int64_t x0 = esp_timer_get_time();
         if (!link_write_frame(CAMERA_SID, s_seq, t_us, (uint16_t)w, (uint16_t)h, CAM_FMT,
                               (uint16_t)(s_aec ? 0xFFFF : s_exposure), (uint8_t)(s_aec ? 0xFF : s_gain), px, len)) {

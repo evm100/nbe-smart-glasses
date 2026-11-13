@@ -5,6 +5,7 @@
 //   sensor_task  (core 1): FIFO reads -> D lines, H/E/S lines, start/stop handling
 //   cmd_task     (core 0): reads INFO / START / STOP / CAM ... / OTA <token> from the PC or the MQTT cmd topic
 //   camera_task  (core 0, camera boards): frames -> link_write_frame() (camera.c)
+//   xs_task      (core 0, CONFIG_PPG_AUX): further sensors / on-board features -> M lines (xstream.c)
 //   (MQTT / hybrid link: Wi-Fi/MQTT tasks in link_mqtt.c / net.c batch and publish the lines;
 //    hybrid: usbgw.c reads the USB gateway's commands, link_mqtt.c switches between the two)
 #include <stdatomic.h>
@@ -30,6 +31,7 @@
 #include "max30102.h"
 #include "proto.h"
 #include "version.h"
+#include "xstream.h"
 
 static const char *TAG = "ppg";
 
@@ -109,6 +111,9 @@ static void send_header(void)
     camera_header(&l);
     send_line(&l);
 #endif
+#if CONFIG_PPG_AUX
+    xs_headers();  // protocol v2.1: every auxiliary stream declares itself (sid >= 2)
+#endif
 }
 
 static void send_event(const char *code, const char *text)
@@ -162,6 +167,9 @@ static void send_status(uint32_t window_ms)
     pl_u64(&l, s_loop_max_us);
 #if CONFIG_PPG_CAMERA
     camera_status(&l, window_ms);
+#endif
+#if CONFIG_PPG_AUX
+    xs_status(&l);
 #endif
 #if CONFIG_PPG_FORWARD_LOGS
     pl_str(&l, ",log_lost=");
@@ -283,6 +291,14 @@ static esp_err_t sensor_open(void)
     return max30102_init(&s_sensor, s_bus, CONFIG_PPG_I2C_FREQ_HZ, &s_cfg);
 }
 
+#if CONFIG_PPG_AUX
+// For auxiliary sensors on the MAX30102's I2C wires (xstream.h). NULL until sensor_task has made it.
+i2c_master_bus_handle_t app_i2c_bus(void)
+{
+    return s_bus;
+}
+#endif
+
 // Pairs the device clock (esp_timer, the t_us of every line) with UTC so recordings
 // from different nodes can be aligned on the server.
 static void send_sync(void)
@@ -318,6 +334,9 @@ static void start_streaming(void)
     send_event("START", "");
     send_sync();
     s_streaming = true;
+#if CONFIG_PPG_AUX
+    xs_start();  // before the camera: its frame statistics are an auxiliary stream
+#endif
 #if CONFIG_PPG_CAMERA
     camera_start();
 #endif
@@ -332,6 +351,9 @@ static void stop_streaming(void)
 {
 #if CONFIG_PPG_CAMERA
     camera_stop();
+#endif
+#if CONFIG_PPG_AUX
+    xs_stop();
 #endif
     if (s_streaming) {
         s_streaming = false;
@@ -437,6 +459,9 @@ static void sensor_task(void *arg)
             bool can_start = s_sensor_ok || camera_ok();  // either stream alone is still worth recording
 #else
             bool can_start = s_sensor_ok;
+#endif
+#if CONFIG_PPG_AUX
+            can_start = can_start || xs_any_ok();
 #endif
             if (can_start) {
                 start_streaming();
@@ -566,6 +591,9 @@ void app_main(void)
     send_event("BOOT", boot);  // the sensor is opened by sensor_task (sensor_first_open)
 #if CONFIG_PPG_CAMERA
     if (!camera_init()) send_event("SENSOR_ERR", "camera not found - check the ribbon / PSRAM setting");
+#endif
+#if CONFIG_PPG_AUX
+    xs_init();  // after the camera: its feature stream reports whether the camera is there
 #endif
 
 #if CONFIG_PPG_AUTOSTART

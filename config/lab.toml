@@ -36,6 +36,13 @@ port = "sim://SIMC01"
 role = "glasses"
 sim = { fs = 100, hr_bpm = 72, seed = 2, dc = 40000, perfusion = 0.004, noise_frac = 0.05, dia_amp = [0.25, 0.15], camera = true }
 
+# ...plus further sensors (protocol v2.1): a synthetic sweat-chemistry patch and skin thermometer, and the
+# frame statistics a camera board can compute itself. For trying the multi-sensor pages without hardware.
+[devices.sim_multi]
+port = "sim://SIMX01"
+role = "glasses"
+sim = { fs = 100, hr_bpm = 68, seed = 3, dc = 40000, perfusion = 0.004, noise_frac = 0.05, dia_amp = [0.25, 0.15], camera = true, aux = true, edge_features = true }
+
 # Reference instruments, saved into every session's metadata.
 [reference]
 bp_cuff = "TBD (model of arm cuff)"

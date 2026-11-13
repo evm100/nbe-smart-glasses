@@ -675,6 +675,39 @@ menu "PPG stream (MAX30102)"
     endmenu
 
     # ------------------------------------------------------------------
+    menu "Auxiliary sensor streams"
+        config PPG_AUX
+            bool "Auxiliary streams (protocol v2.1: further sensors, features computed on the board)"
+            default n
+            help
+                Further numeric streams next to the PPG and the camera: each declares itself with
+                its own H line (sid >= 2) and sends one $M text line per sample, on any link.
+                Meant for slow sensors (sweat chemistry, temperature; <= ~20 Hz per stream) and
+                for values the board computes itself. Off: the firmware sends exactly what it
+                sent before. Adding a sensor: main/xstream_template.c and the README.
+
+        config PPG_AUX_DEMO
+            bool "Demo stream 'sweat' (synthetic glucose | lactate at 1 Hz, no hardware)"
+            depends on PPG_AUX
+            default n
+            help
+                NOT a measurement: slow triangle waves (sensor=DEMO), to try the whole path from
+                the board to the live page and the recorded files without a sensor. Leave it off
+                on boards that record real trials.
+
+        config PPG_CAMERA_EDGE_FEATURES
+            bool "Camera frame statistics on the board (stream 'cam_feat': brightness | contrast | motion)"
+            depends on PPG_CAMERA && PPG_AUX && !PPG_CAM_JPEG
+            default n
+            help
+                Per frame: mean brightness, contrast (p98 - p2) and motion (mean absolute
+                difference to the previous frame, the blink counter's signal), on every 2nd pixel
+                of the frame as sent. One $M line per frame, also for frames the link had to drop.
+                Costs roughly 1-2 ms per frame on core 0 (estimate) and one quarter of a frame of
+                RAM. The frames are still sent; the server compares its own numbers with these.
+    endmenu
+
+    # ------------------------------------------------------------------
     menu "Behaviour"
         config PPG_AUTOSTART
             bool "Start streaming at boot (don't wait for START)"

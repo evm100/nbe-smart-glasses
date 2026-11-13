@@ -80,6 +80,15 @@
 #endif
 #define CONFIG_PPG_TX_BUFFER_BYTES 8192
 
+#ifdef TEST_AUX
+// protocol v2.1: auxiliary streams (demo "sweat"), and the camera's frame statistics on camera builds
+#define CONFIG_PPG_AUX 1
+#define CONFIG_PPG_AUX_DEMO 1
+#ifdef CONFIG_PPG_CAMERA
+#define CONFIG_PPG_CAMERA_EDGE_FEATURES 1
+#endif
+#endif
+
 #define CONFIG_PPG_WIFI_SSID "UCSD-DEVICE"
 #define CONFIG_PPG_WIFI_PASSWORD ""
 #define CONFIG_PPG_WIFI_SSID2 "lab-hotspot"

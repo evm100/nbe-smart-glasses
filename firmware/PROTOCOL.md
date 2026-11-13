@@ -1,7 +1,8 @@
 # PPG serial protocol v1 / v2 (ESP32 → PC)
 
 Implementations: `esp-idf/ppg_stream/` (main, ESP-IDF v6) and `arduino/ppg_stream/` (reference, v1).
-v2 (camera boards, USB gateway): see "Protocol v2" below.
+v2 (camera boards, USB gateway): see "Protocol v2" below. v2.1 (further sensors, features computed on the
+board): see "Protocol v2.1".
 
 This is what the firmware sends over USB serial so `sglab record` can capture it.
 It is plain ASCII, so you can still read it in the Arduino serial monitor while
@@ -197,7 +198,7 @@ $H,proto=2,dev=GLS03,fw=0.7.0-idf,sid=1,stream=cam,kind=video,sensor=OV2640,ch=f
 |---|---|
 | `sid` | stream id used in that stream's binary records |
 | `stream` | name; files are called `<role>_<dev>_<stream>.*` |
-| `kind` | `video` (camera frames). Later kinds (e.g. further sample streams) get their own record type |
+| `kind` | `video` (camera frames). `samples` / `features`: numeric streams, see "Protocol v2.1" |
 | `fs` | frame-rate cap (frames/s); the real rate is in `cam_fps` of the `S` line |
 | `w`, `h`, `fmt` | frame size and format: `gray8` (raw 8-bit grayscale, w·h bytes) or `jpeg` |
 | `aec`, `exposure`, `gain` | auto exposure on/off, else the fixed exposure / gain |
@@ -293,12 +294,106 @@ Camera streams are stored next to the PPG CSV in the session folder (`sglab/vide
 frame: `t_s, seq, t_dev_us, exposure, gain, offset, nbytes`). They are listed under `"video"` in
 `session.json`, not under `"streams"` (those are the PPG streams processing reads).
 
+## Protocol v2.1: auxiliary sample streams and edge features
+
+Firmware ≥ 0.9 (`CONFIG_PPG_AUX`, `main/xstream.c`) adds further **numeric** streams next to the PPG
+(sid 0) and the camera (sid 1): slow sensors (sweat glucose, lactate, cortisol, uric acid,
+temperature, ...) and values the board computes itself from another stream. Nothing above changes,
+and a board built without the option sends exactly what it sent before.
+
+### The stream's `H` line
+
+Sent wherever the other `H` lines are sent (boot, `INFO`, `START`), one per stream:
+
+```
+$H,proto=2,dev=GLS03,fw=0.9.0-idf,sid=2,stream=sweat,kind=samples,sensor=DEMO,fs=1,ch=glucose|lactate,unit=uM|mM,site=glasses,sensor_ok=1*36
+$H,proto=2,dev=GLS03,fw=0.9.0-idf,sid=3,stream=cam_feat,kind=features,src=cam,algo=framestats@1,sensor=OV2640,fs=15,ch=brightness|contrast|motion,unit=-|-|-,step=2,site=glasses,sensor_ok=1*42
+```
+
+| key | meaning |
+|---|---|
+| `sid` | stream id, 2..255 (0 = PPG and 1 = camera stay reserved). The list of ids in use is in `main/xstream.h` |
+| `stream` | short name, `[a-z0-9_]+`; used in file names and as the prefix of the stream's `S`-line fields |
+| `kind` | `samples` = measurements from a sensor. `features` = values the board computed from another stream |
+| `src` | `kind=features` only: name of the stream the values were computed from (`cam`, `ppg`) |
+| `algo` | `kind=features` only: `<name>@<version>`. The version goes up whenever the numbers would change |
+| `sensor` | part or method name (`DEMO` = synthetic values, not a measurement) |
+| `fs` | nominal rate in Hz, may be fractional (`0.200` = one sample per 5 s) |
+| `ch` | channel names, `|`-separated, in the order of the values in the `M` line |
+| `unit` | one unit per channel, `|`-separated; `-` = unitless |
+| `scale` | optional, one multiplier per channel, `|`-separated: sent value × scale = quantity in `unit`. Absent = 1 |
+| `site`, `sensor_ok` | as for the other streams |
+| anything else | settings and calibration constants of the sensor (`rtia_ohm=`, `bias_mv=`, `cal=`, `step=`): kept as metadata |
+
+### `M` – one sample of an auxiliary stream
+
+```
+$M,<sid>,<seq>,<t_us>,<v1>,<v2>,...*CS
+$M,2,7,8012000,84.0,1.40*56
+$M,2,8,9012000,84.5,*46
+$M,3,1,1117000,129.20,246,4.047*76
+```
+
+| field | meaning |
+|---|---|
+| `sid` | the stream (its `H` line came first) |
+| `seq` | that stream's sample counter, from 0 at `START`. A jump = lines lost on the link |
+| `t_us` | time of the sample on the `esp_timer` clock, the same clock as every other `t_us` |
+| `vN` | one field per channel, in `ch=` order: a decimal integer or a fixed-point decimal (`84.0`, `-0.125`; no exponent). An **empty field** = no value for that channel in this sample (second example: lactate) |
+
+An `M` line is an ordinary text line. It travels like `H` / `E` / `S` lines do: as a line on the USB
+text link and as a text record (0x01) in USB envelopes and MQTT data frames. There is **no new binary
+record type**, and the gateway forwards it without knowing it. That is the right trade for low rates
+(≤ ~20 Hz per stream, ~30–40 bytes per sample); a fast stream would use a samples record instead.
+
+`seq` and features: a feature stream that produces one line per item of its source stream uses the
+**source item's `seq`** (the `cam_feat` line of camera frame *k* has `seq` *k* and the frame's `t_us`),
+so features and source join on either. It still counts from 0 at `START` without gaps.
+
+### Status
+
+Streams add fields to the board's `S` line, prefixed with the stream name: `<stream>_n` (M lines since
+`START`) and, for polled sensors, `<stream>_err` (failed reads; such a sample is not sent and leaves a
+`t_us` gap but no `seq` gap). Example: `sweat_n=11,sweat_err=0,cam_feat_n=30`.
+
+### Older servers
+
+A server that doesn't know `M` counts these lines as malformed / unknown type and is otherwise
+unaffected: the PPG, the camera, events and status are untouched. The extra `H` lines look to it like
+those of the camera (`proto=2`, `sid`, `stream`, an unknown `kind`).
+
+### Raw or features: where a number is computed
+
+Any stream can be delivered **raw** (the server computes the features) or as **features computed on
+the board**, and both at once while the board's version is being validated. The rule that makes this
+painless: a feature stream uses **the same channel names the server-side algorithm produces**, and its
+`H` line says where the numbers came from (`src`, `algo`). Code downstream of the features reads
+channels by name and doesn't care where they were computed. The plan is to move work to the board one
+algorithm at a time: (1) the server computes it from the raw stream, (2) the board computes it too and
+the server compares the two on real recordings, (3) the raw stream can be thinned or switched off
+(camera frames at a lower rate, features at the full rate).
+
+The first one is `cam_feat` (`CONFIG_PPG_CAMERA_EDGE_FEATURES`, `algo=framestats@1`), computed in the
+camera task for every frame that gets a `seq`, **also when the link had to drop the frame itself**:
+
+| channel | definition (on the frame as sent, every `step`-th pixel in x and y starting at 0; N grid pixels) |
+|---|---|
+| `brightness` | mean gray level, 0–255, 2 decimals (truncated) |
+| `contrast` | p98 − p2 of the gray levels: lo = smallest level v with count(≤ v) ≥ max(1, ⌊N/50⌋), hi = smallest v with count(≤ v) ≥ N − ⌊N/50⌋; hi − lo |
+| `motion` | mean absolute difference to the same pixels of the previous frame of the stream, 3 decimals (truncated). Empty for the first frame after `START`. This is the motion signal of the MATLAB blink counter |
+
+"Previous frame" = the previous frame that got a `seq` (frames skipped by the fps cap don't count),
+whether or not it reached the server; so after a lost frame the server cannot recompute `motion` for
+the next one, but the board's value is still right. `host_test/check_xstream.py` recomputes all three
+from the pixels of the simulated camera's frames and requires equality.
+
 ## One ESP32, two sensors?
 
 Two MAX30102s share the I²C address 0x57, so they need two I²C buses (or a mux).
 If both run at the same `fs`, put all channels in one `D` line, e.g.
 `ch=gl_ir|gl_red|fi_ir|fi_red`. Otherwise use one ESP32 per sensor; the recorder
 captures several serial ports at once and aligns them by PC receive time.
+A different, slow sensor on the same board is an auxiliary stream ("Protocol v2.1").
 
 ## Checklist for the firmware
 
