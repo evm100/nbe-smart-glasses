@@ -252,7 +252,7 @@ static void camera_task(void *arg)
     for (;;) camera_step();
 }
 
-#ifdef TEST_USB_BIN
+#if defined(TEST_USB_BIN) || defined(TEST_HYBRID)
 void camera_test_tick(void)  // host_test/sim.c: no tasks there, it calls this per frame period
 {
     camera_step();

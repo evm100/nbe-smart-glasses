@@ -6,6 +6,10 @@
     python -m nbe_gateway --list-ports
     python -m nbe_gateway --verbose          MQTT / TLS details when it can't connect
 
+Hybrid boards (Wi-Fi nodes, firmware CONFIG_PPG_LINK_HYBRID) switch to USB while this gateway runs
+and back to Wi-Fi when it stops or the cable comes out; the gateway is on MQTT only while the board
+streams over USB, and closing it doesn't STOP a recording (the board carries on over Wi-Fi).
+
 Exit status 3: shut down from the server (GW-EXIT; another gateway for the node needed it).
 
 gateway.json (written by the server's "USB gateway" download):
@@ -66,10 +70,33 @@ class Gateway:
         self.log = RecordLog(Path(cfg["data_dir"]) / self.node, float(cfg.get("keep_gb", 20)))
         self.board = Board(self.log, self.node, cfg.get("serial_port", "auto"), on_change=self._changed,
                            open_serial=board_open)
+        # what this node's board was last time (hybrid or not), for before it has said so this run
+        self._board_file = Path(cfg.get("data_dir", "data")) / self.node / "board.json"
+        try:
+            self._known_hybrid = bool(json.loads(self._board_file.read_text()).get("hybrid"))
+        except (OSError, ValueError, AttributeError):
+            self._known_hybrid = False
         self.uplink = Uplink(cfg, self.log, self._command, self.board.describe, client=mqtt_client,
-                             version=__version__, on_exit=self.done.set)
+                             version=__version__, on_exit=self.done.set, want_online=self.want_mqtt)
+
+    def hybrid(self) -> bool:
+        return self.board.hybrid if self.board.hybrid is not None else self._known_hybrid
+
+    def want_mqtt(self) -> bool:
+        """USB-only boards: always (the gateway is their only way out). Hybrid boards: only while
+        they stream over USB, so the gateway and the board never fight over the node's client ID."""
+        if not self.hybrid():
+            return True
+        return self.board.connected and self.board.link == "usb"
 
     def _changed(self) -> None:
+        if self.board.hybrid is not None and self.board.hybrid != self._known_hybrid:
+            self._known_hybrid = self.board.hybrid
+            try:
+                self._board_file.parent.mkdir(parents=True, exist_ok=True)
+                self._board_file.write_text(json.dumps({"hybrid": self._known_hybrid}))
+            except OSError:
+                pass
         self.uplink.notify()
 
     def _command(self, cmd: str) -> None:
@@ -85,9 +112,11 @@ class Gateway:
         self.uplink.start()
 
     def stop(self) -> None:
-        self.board.write("STOP")
+        hybrid = self.hybrid()
+        if not hybrid:  # a hybrid board keeps recording over Wi-Fi once this gateway is gone
+            self.board.write("STOP")
         self.board.stop()
-        self.uplink.stop()
+        self.uplink.stop(publish_offline=not hybrid)
         self.log.close()
 
     def status_line(self) -> str:
@@ -104,6 +133,8 @@ class Gateway:
                     f" usb fail {st.get('cam_wfail')}, driver timeouts {st.get('cam_null')},"
                     f" wait max {st.get('cam_wait_ms')} ms, usb max {st.get('cam_tx_ms')} ms)")
         srv = "server: connected" if u.connected else f"server: {u.last_error or 'connecting...'}"
+        if self.hybrid() and not u.active:
+            srv = "server: the board sends over Wi-Fi itself" if b.connected else "server: idle (board not on USB)"
         return (f"[{time.strftime('%H:%M:%S')}] {self.node} | {usb} | {stream}{cam} | frames {b.stats['frames']}"
                 f" | up {_fmt_bytes(u.rate_bps)}/s | waiting to send {_fmt_bytes(self.log.unacked())}"
                 f" | stored {_fmt_bytes(self.log.disk_bytes())} | {srv}")

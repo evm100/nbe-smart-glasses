@@ -5,7 +5,8 @@
 //   sensor_task  (core 1): FIFO reads -> D lines, H/E/S lines, start/stop handling
 //   cmd_task     (core 0): reads INFO / START / STOP / CAM ... / OTA <token> from the PC or the MQTT cmd topic
 //   camera_task  (core 0, camera boards): frames -> link_write_frame() (camera.c)
-//   (MQTT link only: Wi-Fi/MQTT tasks in link_mqtt.c / net.c batch and publish the lines)
+//   (MQTT / hybrid link: Wi-Fi/MQTT tasks in link_mqtt.c / net.c batch and publish the lines;
+//    hybrid: usbgw.c reads the USB gateway's commands, link_mqtt.c switches between the two)
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -98,6 +99,9 @@ static void send_header(void)
     pl_str(&l, ",range_na=");
     pl_u64(&l, s_cfg.adc_range_na);
     pl_str(&l, ",site=" CONFIG_PPG_SITE ",board=" CONFIG_PPG_BOARD_NAME);
+#if CONFIG_PPG_LINK_HYBRID
+    pl_str(&l, ",link=hybrid");  // the USB gateway waits for $E,..,LINK,usb before it goes on MQTT
+#endif
     pl_str(&l, s_sensor_ok ? ",sensor_ok=1" : ",sensor_ok=0");
     send_line(&l);
 #if CONFIG_PPG_CAMERA

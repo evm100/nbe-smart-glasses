@@ -28,10 +28,10 @@ from pathlib import Path
 
 CONF_PATH = Path(os.environ.get("NBE_GW_CONF", "/etc/nbe-gw/runtime.conf"))
 STATE_PATH = Path(os.environ.get("NBE_GW_STATE", "/var/lib/nbe-gw/watchdog.json"))
-CON_UPLINK, CON_UPLINK2, CON_LAN = "nbe-uplink", "nbe-uplink2", "nbe-lan"
+CON_LAN = "nbe-lan"
 
 DEFAULTS = {
-    "UPLINK_IFACE": "wlan0", "LAN_IFACE": "eth0", "UPLINK_SSID": "", "UPLINK2_SSID": "",
+    "UPLINK_IFACE": "wlan0", "LAN_IFACE": "eth0",
     "CHECK_HOST": "nbe.evm100.org", "CHECK_PORT": "8884", "REBOOT_AFTER_MIN": "30",
     "STATUS_PORT": "80", "LAN_ADDR": "192.168.77.1/24",
 }
@@ -425,7 +425,7 @@ def cmd_watchdog(conf: dict) -> int:
             rc, out = run(["nmcli", "--wait", "20", "con", "up", CON_LAN], timeout=30)
             act(f"LAN sharing was down, starting {CON_LAN}: {'ok' if rc == 0 else out.strip()[:200]}")
 
-    # 2. uplink health: internet reachable? (broker down != our problem, so check both)
+    # 2. Wi-Fi uplink health: internet reachable? (broker down != our problem, so check both)
     internet = tcp_check("1.1.1.1", 443)["ok"] or tcp_check(conf["CHECK_HOST"], int(conf["CHECK_PORT"]))["ok"]
     st["last_check"] = time.strftime("%Y-%m-%d %H:%M:%S")
     st["online"] = internet
@@ -433,14 +433,6 @@ def cmd_watchdog(conf: dict) -> int:
         if st.get("fails"):
             act(f"uplink back after {st['fails']} failed checks")
         st["fails"], st["offline_since"] = 0, None
-        # back from the fallback to the main uplink when it's visible again (every 10 min)
-        up = dev_show(up_if)
-        if (up.get("connection") == CON_UPLINK2 and conf.get("UPLINK_SSID")
-                and now - st.get("last_prefer", 0) > 600):
-            st["last_prefer"] = now
-            if any(a["ssid"] == conf["UPLINK_SSID"] for a in wifi_list(up_if)):
-                rc, out = run(["nmcli", "--wait", "45", "con", "up", CON_UPLINK], timeout=60)
-                act(f"main uplink visible again, switched back: {'ok' if rc == 0 else out.strip()[:200]}")
         write_state(st)
         return 0
 
@@ -449,11 +441,9 @@ def cmd_watchdog(conf: dict) -> int:
     offline_min = (now - st["offline_since"]) / 60
     n = st["fails"]
     if n in (2, 4, 8) or (n > 8 and n % 5 == 0):
-        rc, out = run(["nmcli", "--wait", "45", "con", "up", CON_UPLINK], timeout=60)
-        act(f"offline {offline_min:.0f} min: reconnect {CON_UPLINK}: {'ok' if rc == 0 else out.strip()[:200]}")
-        if rc and conf.get("UPLINK2_SSID"):
-            rc, out = run(["nmcli", "--wait", "45", "con", "up", CON_UPLINK2], timeout=60)
-            act(f"  fallback {CON_UPLINK2}: {'ok' if rc == 0 else out.strip()[:200]}")
+        # whatever Wi-Fi the Pi was set up with: NetworkManager picks its saved connection itself
+        rc, out = run(["nmcli", "--wait", "45", "dev", "connect", up_if], timeout=60)
+        act(f"offline {offline_min:.0f} min: reconnect {up_if}: {'ok' if rc == 0 else out.strip()[:200]}")
     if n == 6:
         act("offline: restarting NetworkManager")
         run(["systemctl", "restart", "NetworkManager"], timeout=60)

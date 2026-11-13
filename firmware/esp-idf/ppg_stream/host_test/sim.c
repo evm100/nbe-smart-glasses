@@ -12,13 +12,14 @@
 
 static int64_t g_now_us = 1000000;  // "boot" at 1 s
 static int64_t g_end_us;
+static bool g_usb_host = true;  // a USB host (PC) on the cable
 static jmp_buf g_jmp;
 
 int64_t esp_timer_get_time(void) { return g_now_us; }
 uint32_t esp_get_free_heap_size(void) { return 300000; }
 esp_reset_reason_t esp_reset_reason(void) { return ESP_RST_POWERON; }
 
-#ifdef TEST_USB_BIN
+#if defined(TEST_USB_BIN) || defined(TEST_HYBRID)
 #include "esp_camera.h"
 // fake OV2640: 30 frames/s, pixel (x, y) of native frame k = (k + x + 3y) & 0xFF; the firmware's
 // 15 fps cap sends every other one. The host "stops reading" for a few USB writes mid-frame
@@ -45,6 +46,8 @@ camera_fb_t *esp_camera_fb_get(void)
     return &g_fb;
 }
 void esp_camera_fb_return(camera_fb_t *fb) { (void)fb; }
+#endif
+#ifdef TEST_USB_BIN
 static int g_writes;
 static int host_reading(void) { g_writes++; return g_writes < 100 || g_writes > 103; }
 #endif
@@ -61,6 +64,36 @@ static void advance(TickType_t ms)
         link_usb_bin_test_tick();
     }
     if (!g_in_cam && g_now_us >= g_next_frame_us) {  // camera_step may vTaskDelay -> back in here
+        g_in_cam = 1;
+        g_next_frame_us += 33333;
+        camera_test_tick();
+        g_in_cam = 0;
+    }
+#endif
+#ifdef TEST_HYBRID
+    // Hybrid link: Wi-Fi from boot; a PC is plugged in at 2.5 s and its gateway speaks (PING every
+    // second) from 3.0 s: the board hands over to USB. Unplugged at 6.0 s: back to Wi-Fi.
+    extern void link_hybrid_test_tick(void);
+    extern void camera_test_tick(void);
+    extern void usbgw_test_feed(const uint8_t *buf, int n);
+    extern void fake_mqtt_pump(void);
+    static int64_t last_tick, last_ping;
+    g_usb_host = g_now_us >= 2500000 && g_now_us < 6000000;
+    if (g_usb_host && g_now_us >= 3000000 && g_now_us - last_ping >= 1000000) {
+        last_ping = g_now_us;
+        usbgw_test_feed((const uint8_t *)"PING\n", 5);
+    }
+#ifdef TEST_OUTAGE
+    // broker unreachable 6.5-8.5 s (back on Wi-Fi): a small ring fills, camera frames must give way
+    extern void fake_mqtt_connected(bool up);
+    if (g_now_us >= 6500000) fake_mqtt_connected(g_now_us >= 8500000);
+#endif
+    fake_mqtt_pump();
+    if (g_now_us - last_tick >= 10000) {
+        last_tick = g_now_us;
+        link_hybrid_test_tick();
+    }
+    if (!g_in_cam && g_now_us >= g_next_frame_us) {
         g_in_cam = 1;
         g_next_frame_us += 33333;
         camera_test_tick();
@@ -110,7 +143,7 @@ int usb_serial_jtag_write_bytes(const void *src, size_t n, uint32_t t)
     fwrite(src, 1, n, stdout);
     return (int)n;
 }
-bool usb_serial_jtag_is_connected(void) { return true; }
+bool usb_serial_jtag_is_connected(void) { return g_usb_host; }
 esp_err_t uart_driver_install(uart_port_t n, int rx, int tx, int q, void *qq, int f) { (void)n; (void)rx; (void)tx; (void)q; (void)qq; (void)f; return 0; }
 esp_err_t uart_param_config(uart_port_t n, const uart_config_t *c) { (void)n; (void)c; return 0; }
 esp_err_t uart_set_pin(uart_port_t n, int tx, int rx, int a, int b) { (void)n; (void)tx; (void)rx; (void)a; (void)b; return 0; }
@@ -222,6 +255,31 @@ int main(int argc, char **argv)
     link_usb_bin_test_tick();
     fprintf(stderr, "usb bin: %lu frames not sent, %lu bytes dropped\n", (unsigned long)link_frames_dropped(),
             (unsigned long)link_dropped_bytes());
+#endif
+#ifdef TEST_HYBRID
+    {
+        // after STOP (on Wi-Fi again): keep sending until everything is acknowledged
+        extern void link_hybrid_test_tick(void);
+        extern void fake_mqtt_pump(void);
+        for (int i = 0; i < 4000; i++) {
+            g_now_us += 10000;
+            fake_mqtt_pump();
+            link_hybrid_test_tick();
+        }
+        extern int g_batches, g_stops, g_starts, g_net_pauses, g_net_resumes;
+        fprintf(stderr, "hybrid: %d mqtt frames, broker stops %d starts %d, radio off %d on %d, %lu camera frames "
+                        "not taken, %lu bytes lost\n",
+                g_batches, g_stops, g_starts, g_net_pauses, g_net_resumes, (unsigned long)link_frames_dropped(),
+                (unsigned long)link_dropped_bytes());
+#ifdef TEST_OUTAGE
+        bool cam_ok = link_frames_dropped() > 0;  // the outage must have cost frames (and only frames)
+#else
+        bool cam_ok = link_frames_dropped() == 0;
+#endif
+        if (g_stops != 1 || g_starts != 2 || g_net_pauses != 1 || g_net_resumes != 1 || link_dropped_bytes() ||
+            !cam_ok)
+            return 1;
+    }
 #endif
 #ifdef TEST_MQTT
     // after STOP: keep sending / acknowledging until everything is delivered (ACK timeout = 10 s)

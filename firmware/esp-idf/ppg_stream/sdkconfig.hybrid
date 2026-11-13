@@ -1,0 +1,26 @@
+# Hybrid camera glasses: Wi-Fi + MQTT like the other nodes, and the NBE USB gateway takes over
+# while it talks to the board over USB-C (CONFIG_PPG_LINK_HYBRID, see main/link_mqtt.c).
+# Applied on top of sdkconfig.defaults + sdkconfig.camera; needs the node's credentials, so build with
+#   python ../../tools/nbe_node.py configure GLS03 --camera     (writes sdkconfig.nbe with all three)
+#   deploy/evmserver/build-firmware.sh --camera --hybrid GLS03   (on the server)
+CONFIG_PPG_LINK_HYBRID=y
+# CONFIG_PPG_LINK_USB_BIN is not set
+# CONFIG_PPG_LINK_MQTT is not set
+
+# Frames travel in MQTT data frames: one frame record (160x160 crop = 25.6 kB) must fit one message.
+CONFIG_PPG_MQTT_BATCH_BUFFER_BYTES=65536
+# ~0.65 MB/s of frames. Throughput <= window / round trip, so the window has to cover a few frames
+# (256 kB / 40 ms = 6 MB/s ceiling); every ACK sends more at once (ACK-clocked).
+CONFIG_PPG_MQTT_WINDOW_KB=256
+# 4 MB of PSRAM: frames may fill half (~3 s of Wi-Fi trouble at 25 fps, then they are dropped),
+# the other half is kept for PPG samples (many minutes).
+CONFIG_PPG_MQTT_RING_KB=4096
+CONFIG_PPG_MQTT_CAM_SHARE_PCT=50
+# live view lag on Wi-Fi
+CONFIG_PPG_MQTT_BATCH_MS=100
+
+# TCP send buffer: a TLS stream moves at most SND_BUF per round trip. ESP-IDF's 5.7 kB (kept for the
+# PPG-only nodes, see sdkconfig.defaults) caps it at ~150-300 kB/s - below the camera's rate. 32 kB
+# allows ~1 MB/s at 30 ms; it lives in internal RAM next to Wi-Fi/TLS, so raise it only if cam_drop
+# says so and the heap allows.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768

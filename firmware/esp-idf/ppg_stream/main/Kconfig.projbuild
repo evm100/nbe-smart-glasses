@@ -252,7 +252,11 @@ menu "PPG stream (MAX30102)"
                 Wi-Fi + MQTT = node of the NBE server (needs credentials: run
                 firmware/tools/nbe_node.py configure <ID>, which also selects this).
                 USB binary = USB-C with binary records (protocol v2), for the NBE USB gateway on
-                the operator's PC (or sglab record). Required for the camera.
+                the operator's PC (or sglab record).
+                Hybrid = Wi-Fi + MQTT like a Wi-Fi node, but while an NBE USB gateway (or sglab
+                record) talks to the board over USB-C, the board switches Wi-Fi off and streams
+                over the cable instead; unplugged / gateway closed -> back to Wi-Fi within ~5 s.
+                Same credentials as Wi-Fi + MQTT (nbe_node.py configure <ID> --hybrid).
             config PPG_LINK_USB_SERIAL_JTAG
                 bool "USB Serial/JTAG (USB-C), text lines"
             config PPG_LINK_USB_BIN
@@ -261,10 +265,17 @@ menu "PPG stream (MAX30102)"
                 bool "UART"
             config PPG_LINK_MQTT
                 bool "Wi-Fi + MQTT (TLS) to the NBE server"
+            config PPG_LINK_HYBRID
+                bool "Hybrid: Wi-Fi + MQTT, USB-C gateway takes over while connected"
         endchoice
 
+        # the Wi-Fi + MQTT code is in the image (pure Wi-Fi and hybrid link)
+        config PPG_LINK_WIFI
+            bool
+            default y if PPG_LINK_MQTT || PPG_LINK_HYBRID
+
         menu "Wi-Fi"
-            depends on PPG_LINK_MQTT
+            depends on PPG_LINK_WIFI
 
             config PPG_WIFI_SSID
                 string "SSID"
@@ -388,7 +399,7 @@ menu "PPG stream (MAX30102)"
         endmenu
 
         menu "MQTT"
-            depends on PPG_LINK_MQTT
+            depends on PPG_LINK_WIFI
 
             config PPG_MQTT_BROKER_URI
                 string "Broker URI"
@@ -431,7 +442,8 @@ menu "PPG stream (MAX30102)"
                 range 4096 65536
                 default 8192
                 help
-                    Upper limit of one MQTT message. At 400 sps x 2 ch the binary records take
+                    Upper limit of one MQTT message. With the camera it must hold a whole frame
+                    record (frame bytes + 31; bigger frames are dropped, cam_drop). At 400 sps x 2 ch the binary records take
                     ~1-2 kB/s, so a backlog goes out as several frames.
 
             config PPG_MQTT_WINDOW_KB
@@ -451,6 +463,16 @@ menu "PPG stream (MAX30102)"
                     Everything the server hasn't acknowledged stays here (PSRAM): ~15-30 min of
                     400 sps data in 2 MB. The sensor never waits for the network; only an outage
                     longer than this loses data. Without PSRAM the node falls back to 64 kB.
+
+            config PPG_MQTT_CAM_SHARE_PCT
+                int "Camera frames may fill at most this % of the store-and-forward buffer"
+                range 10 90
+                default 50
+                depends on PPG_CAMERA
+                help
+                    PPG first: when Wi-Fi can't keep up, new camera frames are dropped (seq gap,
+                    cam_drop) once the unacknowledged data reaches this share of the buffer, so the
+                    rest always stays free for the PPG samples and events.
 
             config PPG_MQTT_OUTBOX_LIMIT_KB
                 int "esp-mqtt outbox limit (kB)"
@@ -514,7 +536,7 @@ menu "PPG stream (MAX30102)"
         config PPG_TX_BUFFER_BYTES
             int "Transmit buffer (bytes)"
             range 1024 65536
-            default 32768 if PPG_LINK_USB_BIN
+            default 32768 if PPG_LINK_USB_BIN || PPG_LINK_HYBRID
             default 8192
             help
                 Absorbs short PC/USB stalls. 8192 B is ~0.5 s of data at 400 sps. The USB binary
@@ -522,7 +544,7 @@ menu "PPG stream (MAX30102)"
 
         config PPG_FORWARD_LOGS
             bool "Send the board's log warnings to the PC as events"
-            depends on PPG_LINK_USB_BIN
+            depends on PPG_LINK_USB_BIN || PPG_LINK_HYBRID
             default y
             help
                 The console UART isn't wired on the glasses. With this, ESP_LOG warnings/errors
@@ -535,11 +557,11 @@ menu "PPG stream (MAX30102)"
     menu "Camera (XIAO ESP32-S3 Sense, OV2640)"
         config PPG_CAMERA
             bool "Stream the OV2640 camera (protocol v2 stream 'cam')"
-            depends on PPG_LINK_USB_BIN
+            depends on PPG_LINK_USB_BIN || PPG_LINK_WIFI
             default n
             help
                 Frames go out between START and STOP with their own seq and the capture time on
-                the PPG's clock. Needs PSRAM (Octal) and the USB binary link. SCCB must use I2C
+                the PPG's clock. Needs PSRAM (Octal) and the USB binary, hybrid or Wi-Fi link. SCCB must use I2C
                 port 1 (Component config -> Camera configuration -> SCCB port 1; sdkconfig.camera
                 sets it) because the MAX30102 uses port 0.
 

@@ -132,7 +132,10 @@ class MqttHub:
                 prev = self.status.get(node_id, {})
                 st["_received"] = time.time()
                 st["_retained"] = retain
-                self.status[node_id] = {**prev, **st}
+                # a hybrid board and its USB gateway take turns as the node: when the link changes, the
+                # other one's fields (gw_id, disk_mb, rssi...) are stale - start from this status alone
+                switched = st.get("link") and prev.get("link") and st["link"] != prev["link"]
+                self.status[node_id] = dict(st) if switched else {**prev, **st}
                 idle_cb = self.idle_cbs.get(node_id)
             if self.on_mac and st.get("mac") and st["mac"] != prev.get("mac"):
                 try:

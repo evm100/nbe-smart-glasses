@@ -67,7 +67,8 @@ $E,25600000,BTN,*30
 ```
 
 Codes: `START`, `STOP`, `BTN` (marker button), `FINGER_OFF`, `FINGER_ON`,
-`FIFO_OVF` (sensor FIFO overflowed → samples lost), `SENSOR_ERR`, `BOOT`, `SYNC`.
+`FIFO_OVF` (sensor FIFO overflowed → samples lost), `SENSOR_ERR`, `BOOT`, `SYNC`,
+`LINK` (hybrid boards: text `usb` / `wifi`, where the stream goes from here; see "Hybrid link").
 
 `SYNC` (Wi-Fi nodes with SNTP time, at START and every 10 s while streaming) pairs the
 device clock with UTC: the text is Unix time in milliseconds at `t_us`.
@@ -242,6 +243,30 @@ gaps. Commands to the board are the plain text lines of v1 (`INFO`, `START`, `ST
 | `CAM FPS=10 EXP=300 GAIN=2 AEC=0` | any subset: change the camera at run time; the board answers with fresh `H` lines |
 
 Readers: `nbe_gateway.wire.EnvelopeDecoder` (both `sglab record` on a local port and the gateway).
+
+### Hybrid link (`CONFIG_PPG_LINK_HYBRID`, firmware ≥ 0.8)
+
+A Wi-Fi node (MQTT as above) that streams over USB-C instead while a gateway talks to it. Its PPG `H`
+line carries `link=hybrid`, and its status message carries `"hybrid": true`.
+
+| from the PC | effect |
+|---|---|
+| `PING` | heartbeat, at least every second while the gateway / `sglab record` reads the port; other firmware ignores it |
+
+* The board treats the gateway as present while a line arrives over USB at least every 5 s and the USB
+  host is attached. Then it stops sending MQTT frames, waits ≤ 1 s for the outstanding ACKs, disconnects
+  cleanly (no last will), turns the radio off and sends `$E,<t_us>,LINK,usb`. After that it sends every
+  record the server hasn't acknowledged, and then the live stream, as USB envelopes. Records the
+  gateway took count as delivered.
+* When the gateway is gone, the board turns the radio on, reconnects with a **new `boot`** (a new stream
+  for `FrameReceiver`), sends `$E,<t_us>,LINK,wifi` and continues from its ring.
+* The gateway connects to the broker only after `LINK,usb`, and it disconnects cleanly (after ≤ 3 s of
+  sending what it still holds) once the board has left USB. It remembers in `data/<NODE>/board.json`
+  that the board is hybrid. It does not `STOP` a hybrid board when it quits. Two clients with the
+  node's ID are never on the broker at once (apart from a moment on a gateway's very first contact).
+* On USB the gateway sends `SYNC` from the PC clock. The board sends `SYNC` from SNTP only while on Wi-Fi.
+* Camera frames on Wi-Fi travel as frame records (0x03) in the MQTT data frames. When the link can't
+  keep up they are dropped before any PPG data (`cam_drop`, see `CONFIG_PPG_MQTT_CAM_SHARE_PCT`).
 
 ### USB gateway (`nbe_gateway`)
 

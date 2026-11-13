@@ -17,6 +17,13 @@ gcc $CF $MQ -o sim_mqtt sim.c ../main/max30102.c ../main/proto.c ../main/diag.c 
 # camera glasses: USB binary link + fake OV2640 (frames + samples in envelopes, checked below)
 gcc $CF -DTEST_USB_BIN -Istubs_cam -o sim_usbbin sim.c ../main/max30102.c ../main/proto.c ../main/diag.c \
     ../main/frame.c ../main/link_usb_bin.c ../main/camera.c
+# hybrid camera glasses: Wi-Fi + MQTT with USB gateway takeover (fake broker + fake USB gateway)
+gcc $CF -DTEST_HYBRID -Istubs_net -Istubs_cam -o sim_hybrid sim.c ../main/max30102.c ../main/proto.c ../main/diag.c \
+    ../main/frame.c ../main/link_mqtt.c ../main/usbgw.c ../main/camera.c mqtt_fake.c
+# ... and PPG first: a 2 s broker outage with a 128 kB ring costs camera frames, never samples
+gcc $CF -DTEST_HYBRID -DTEST_OUTAGE -DCONFIG_PPG_MQTT_RING_KB=128 -Istubs_net -Istubs_cam -o sim_hybrid_outage sim.c \
+    ../main/max30102.c ../main/proto.c ../main/diag.c ../main/frame.c ../main/link_mqtt.c ../main/usbgw.c \
+    ../main/camera.c mqtt_fake.c
 # compile-check the Wi-Fi code and the other Kconfig variants against stub headers
 gcc $CF $MQ -fsyntax-only ../main/net.c
 gcc $CF $MQ -DTEST_EAP -fsyntax-only ../main/net.c
@@ -46,6 +53,14 @@ PY
 ./sim_usbbin 3 > out_usbbin.bin 2>usbbin_log.txt || { cat usbbin_log.txt; exit 1; }
 grep "usb bin" usbbin_log.txt
 "${PYTHON:-python3}" check_usbbin.py out_usbbin.bin
+rm -f frames_mqtt.bin
+./sim_hybrid 8 > out_hybrid_usb.bin 2>hybrid_log.txt || { cat hybrid_log.txt; exit 1; }
+grep "hybrid:" hybrid_log.txt
+"${PYTHON:-python3}" check_hybrid.py out_hybrid_usb.bin
+rm -f frames_mqtt.bin
+./sim_hybrid_outage 8 > out_hybrid_usb.bin 2>hybrid_log.txt || { cat hybrid_log.txt; exit 1; }
+grep "hybrid:" hybrid_log.txt
+"${PYTHON:-python3}" check_hybrid.py out_hybrid_usb.bin --outage
 "${PYTHON:-python3}" check_output.py
 rm -f sim sim_int sim_uart sim_hr sim_slow sim_mqtt mqtt_log.txt frames_mqtt.bin out_mqtt_usb.txt \
-      sim_usbbin out_usbbin.bin usbbin_log.txt
+      sim_usbbin out_usbbin.bin usbbin_log.txt sim_hybrid sim_hybrid_outage out_hybrid_usb.bin hybrid_log.txt

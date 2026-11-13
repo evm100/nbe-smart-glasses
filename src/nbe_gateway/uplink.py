@@ -7,6 +7,12 @@ ACL, registry, recorder and web pages treat it exactly like a Wi-Fi board.
                               shuts down one left running elsewhere); INFO / START / STOP / CAM ... -> the board
     <prefix>/core/status      server offline -> STOP the board (as Wi-Fi nodes do)
 
+Hybrid boards (Wi-Fi nodes that stream over USB while a gateway talks to them) are the node on
+MQTT themselves while on Wi-Fi, with the same client ID: `want_online()` says when this gateway
+should be on the broker instead (gateway.app: once the board says "$E,..,LINK,usb"). When it should
+not, the gateway sends what it still has for up to RELEASE_GRACE_S and disconnects cleanly (no last
+will, no "offline" status: the board is about to publish its own).
+
 Sending: frames of whole records from the first unsent byte, at most `window` bytes ahead of the
 last ACK; go back to the last ACK after a reconnect, a RESEND, or ack_timeout_s without progress
 (the same go-back-N as firmware/esp-idf/ppg_stream/main/link_mqtt.c).
@@ -28,6 +34,7 @@ from .wire import nb_frame
 log = logging.getLogger("nbe_gateway")
 
 STATUS_EVERY_S = 15.0
+RELEASE_GRACE_S = 3.0  # hybrid board left USB: finish sending this long at most, then free the node ID
 ALPN = "mqtt"   # lets the server run MQTT on :443 next to its websites (nginx ssl_preread routes on it)
 
 
@@ -47,9 +54,12 @@ def tls_context(cfg: dict) -> ssl.SSLContext:
 class Uplink:
     def __init__(self, cfg: dict, rlog: RecordLog, on_command: Callable[[str], None],
                  describe: Callable[[], dict], client=None, version: str = "",
-                 on_exit: Optional[Callable[[], None]] = None):
+                 on_exit: Optional[Callable[[], None]] = None, want_online: Optional[Callable[[], bool]] = None):
         self.cfg, self.log, self.on_command, self.describe, self.version = cfg, rlog, on_command, describe, version
         self.on_exit = on_exit
+        self.want_online = want_online or (lambda: True)
+        self.active = False            # on the broker as the node (or trying to be)
+        self._release_at: Optional[float] = None
         # this run of the gateway: every gateway of a node connects AS the node, so the server
         # tells them apart (and shuts down a forgotten one) by this
         self.gw_id = secrets.token_hex(4)
@@ -95,14 +105,46 @@ class Uplink:
         return c
 
     def start(self) -> None:
-        self.client.connect_async(self.cfg["broker_host"], int(self.cfg.get("broker_port", 8883)), keepalive=20)
-        self.client.loop_start()
+        if self.want_online():
+            self._activate()
         threading.Thread(target=self._sender, name="uplink-tx", daemon=True).start()
 
-    def stop(self) -> None:
+    def _activate(self) -> None:
+        self.active, self._release_at = True, None
+        self.client.connect_async(self.cfg["broker_host"], int(self.cfg.get("broker_port", 8883)), keepalive=20)
+        self.client.loop_start()
+
+    def _deactivate(self) -> None:
+        self.active, self._release_at = False, None
+        try:
+            self.client.disconnect()  # clean: no last will - the board is the node again
+            self.client.loop_stop()
+        except Exception:
+            pass
+        self.connected, self.last_error = False, None
+        log.info("%s is on Wi-Fi: this gateway left the broker (%d bytes still to send later)",
+                 self.node, self.log.unacked())
+
+    def _manage_connection(self, now: float) -> None:
+        if self.want_online():
+            self._release_at = None
+            if not self.active:
+                log.info("%s streams over USB: this gateway is the node on the broker", self.node)
+                self._activate()
+        elif self.active:
+            if self._release_at is None:
+                self._release_at = now + RELEASE_GRACE_S
+            if not self.connected or self.log.unacked() == 0 or now >= self._release_at:
+                self._deactivate()
+
+    def stop(self, publish_offline: bool = True) -> None:
         self.stop_flag.set()
         self.wake.set()
-        if not self.exit_requested:  # shut down by the server: the node's other gateway is the one that counts
+        if not self.active:
+            return
+        # shut down by the server: the node's other gateway is the one that counts; hybrid board: it
+        # carries on over Wi-Fi and reports itself
+        if not self.exit_requested and publish_offline:
             try:
                 st = {**self._status(), "online": False}
                 self.client.publish(self.t_status, json.dumps(st), qos=1, retain=True).wait_for_publish(2)
@@ -193,6 +235,10 @@ class Uplink:
             self.wake.wait(0.05)
             self.wake.clear()
             now = time.monotonic()
+            try:
+                self._manage_connection(now)
+            except Exception as e:  # pragma: no cover - paho trouble: try again next pass
+                self.last_error = f"{type(e).__name__}: {e}"
             if self.connected:
                 self._send_frames(now)
                 if self.status_dirty or now - last_status >= STATUS_EVERY_S:
@@ -234,7 +280,7 @@ class Uplink:
               "sensor_ok": bool(d.get("sensor_ok")), "camera_ok": d.get("camera_ok"), "streaming": d.get("streaming"),
               "fs": d.get("fs"), "ts": int(time.time()), "buf": self.log.unacked(), "unacked": self.sent - self.log.acked,
               "rtx": self.stats["resends"], "disk_mb": round(self.log.disk_bytes() / 1e6, 1),
-              "up_kbps": round(self.rate_bps / 1e3, 1)}
+              "up_kbps": round(self.rate_bps / 1e3, 1), "hybrid": bool(d.get("hybrid"))}
         s = d.get("status") or {}
         for k in ("tx_drop", "cam_fps", "cam_drop", "fs_meas", "cam_grab", "cam_capped", "cam_null", "cam_wfail",
                   "cam_wait_ms", "cam_tx_ms", "log_lost"):

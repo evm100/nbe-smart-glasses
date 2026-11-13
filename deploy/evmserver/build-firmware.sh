@@ -7,6 +7,11 @@
 #   deploy/evmserver/build-firmware.sh --camera GLS03   camera glasses (XIAO ESP32-S3 Sense) that
 #                                                       stream over USB to the NBE USB gateway:
 #                                                       sdkconfig.camera, no Wi-Fi, no node key
+#   deploy/evmserver/build-firmware.sh --camera --hybrid GLS03   camera glasses that stream over Wi-Fi
+#                                                       AND over USB-C whenever the NBE USB gateway
+#                                                       talks to them (sdkconfig.camera + sdkconfig.hybrid;
+#                                                       holds Wi-Fi password + node key like the Wi-Fi nodes)
+#   deploy/evmserver/build-firmware.sh --hybrid FNG01   a PPG-only Wi-Fi node with the same USB takeover
 #
 # Once beforehand:
 #   python3 firmware/tools/nbe_node.py login https://nbe.evm100.org      (admin account)
@@ -22,8 +27,8 @@
 #
 # Output: ~/nbe-firmware/out/<ID>.bin (contains the node key AND your Wi-Fi password - treat
 # like a password) + flash.sh (+ flash.bat/flash.ps1 for Windows). Per-node build trees: ~/nbe-firmware/work/<ID>/.
-# Camera builds (--camera) contain neither: their certificate lives in the gateway download, so
-# out/<ID>.bin can be sent to whoever flashes the board. Wi-Fi env file not needed for them.
+# Camera builds (--camera, without --hybrid) contain neither: their certificate lives in the gateway
+# download, so out/<ID>.bin can be sent to whoever flashes the board. Wi-Fi env file not needed for them.
 # Each node's app image is also uploaded to the server, so it can be installed over Wi-Fi
 # (Update on the Nodes page, or nbe_node.py ota <ID>). NBE_NO_UPLOAD=1 skips that.
 set -euo pipefail
@@ -33,20 +38,25 @@ TOOL="$REPO/firmware/tools/nbe_node.py"
 BASE="${NBE_FW_DIR:-$HOME/nbe-firmware}"
 IMAGE="${IDF_IMAGE:-espressif/idf:v6.1}"
 WIFI_ENV="${NBE_WIFI_ENV:-$HOME/.config/nbe-node/wifi.env}"
-CAMERA=0; NODES=()
+CAMERA=0; HYBRID=0; NODES=()
 for a in "$@"; do
   case "$a" in
     --camera) CAMERA=1 ;;
+    --hybrid) HYBRID=1 ;;
     -*) echo "unknown option $a"; exit 1 ;;
     *) NODES+=("$a") ;;
   esac
 done
 if [[ ${#NODES[@]} -eq 0 ]]; then
-  (( CAMERA )) && { echo "usage: $0 --camera <NODE_ID>..."; exit 1; }
+  (( CAMERA || HYBRID )) && { echo "usage: $0 [--camera] [--hybrid] <NODE_ID>..."; exit 1; }
   NODES=(GLS01 HED01 FNG01)
 fi
 
-if (( ! CAMERA )); then
+# USB-only camera build: no Wi-Fi, no node key
+USB_ONLY=$(( CAMERA && ! HYBRID ))
+mode=(); (( HYBRID )) && mode+=(--hybrid); (( CAMERA )) && mode+=(--camera)
+
+if (( ! USB_ONLY )); then
   [[ -f "$WIFI_ENV" ]] || { echo "missing $WIFI_ENV (see the header of this script)"; exit 1; }
   [[ $(stat -c %a "$WIFI_ENV") == 600 ]] || { echo "chmod 600 $WIFI_ENV first"; exit 1; }
   # shellcheck disable=SC1090
@@ -92,12 +102,12 @@ for id in "${NODES[@]}"; do
         --exclude sdkconfig --exclude sdkconfig.old --exclude sdkconfig.nbe --exclude 'main/certs/' \
         "$PROJ/" "$w/"
   rm -f "$w/sdkconfig"   # regenerate from sdkconfig.defaults + sdkconfig.nbe
-  if (( CAMERA )); then
+  if (( USB_ONLY )); then
     # sdkconfig.nbe is applied on top of sdkconfig.defaults by CMakeLists.txt: the camera overlay + this ID
     { cat "$w/sdkconfig.camera"; echo "CONFIG_PPG_DEVICE_ID=\"$id\""; } > "$w/sdkconfig.nbe"
   else
     NBE_WIFI_PASSWORD="$WIFI_PASSWORD" NBE_WIFI2_PASSWORD="${WIFI2_PASSWORD:-}" NBE_WIFI3_PASSWORD="${WIFI3_PASSWORD:-}" \
-        python3 "$TOOL" configure "$id" --project "$w" --wifi-ssid "$WIFI_SSID" "${eap[@]}" \
+        python3 "$TOOL" configure "$id" --project "$w" "${mode[@]}" --wifi-ssid "$WIFI_SSID" "${eap[@]}" \
         --wifi2-ssid "${WIFI2_SSID:-}" --wifi3-ssid "${WIFI3_SSID:-}" \
         --wifi-dns "${WIFI_DNS:-}" --wifi2-dns "${WIFI2_DNS:-}" --wifi3-dns "${WIFI3_DNS:-}"
   fi
@@ -108,9 +118,9 @@ for id in "${NODES[@]}"; do
   progress $! "$BASE/work/$id/build.log" "building $id" \
       || { tail -n 40 "$BASE/work/$id/build.log"; echo "build of $id failed (full log: $BASE/work/$id/build.log)"; exit 1; }
   cp "$w/build/merged-binary.bin" "$BASE/out/$id.bin"
-  grep -E '^CONFIG_PPG_(DEVICE_ID|SITE|WIFI_SSID[23]?|WIFI_DNS[23]?|WIFI_AUTH_EAP|WIFI_EAP_USERNAME|MQTT_BROKER_URI|LINK_USB_BIN|CAMERA|CAM_FPS|CAM_CROP)=' "$w/sdkconfig" | sed 's/^/   /'
+  grep -E '^CONFIG_PPG_(DEVICE_ID|SITE|WIFI_SSID[23]?|WIFI_DNS[23]?|WIFI_AUTH_EAP|WIFI_EAP_USERNAME|MQTT_BROKER_URI|LINK_USB_BIN|LINK_HYBRID|CAMERA|CAM_FPS|CAM_CROP)=' "$w/sdkconfig" | sed 's/^/   /'
   echo "   -> $BASE/out/$id.bin ($(stat -c %s "$BASE/out/$id.bin") bytes, USB flash)"
-  if (( ! CAMERA )) && [[ -z "${NBE_NO_UPLOAD:-}" ]]; then  # camera boards: no OTA (flashed over USB)
+  if (( ! USB_ONLY )) && [[ -z "${NBE_NO_UPLOAD:-}" ]]; then  # USB-only camera boards: no OTA
     python3 "$TOOL" upload "$id" "$w/build/ppg_stream.bin" | sed 's/^/   /' \
       || echo "   (upload failed - the USB image above is fine; retry: python3 $TOOL upload $id $w/build/ppg_stream.bin)"
   fi
@@ -118,7 +128,7 @@ for id in "${NODES[@]}"; do
 done
 install -m 700 "$(dirname "$0")/flash.sh" "$BASE/out/flash.sh"
 install -m 600 "$(dirname "$0")/flash.ps1" "$(dirname "$0")/flash.bat" "$BASE/out/"   # Windows twins
-if (( CAMERA )); then
+if (( USB_ONLY )); then
   cat <<MSG
 
 Camera build(s) done - these images hold no secrets, so they can go to whoever flashes the board:

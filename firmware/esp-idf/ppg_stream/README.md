@@ -114,6 +114,45 @@ with `capped` still 0, and only then `usb fail`/`cam_drop`. Also watch `tx_drop`
 PPG records share the USB port) and the console's `waiting to send` (the uplink to the server,
 not USB, can't keep up; nothing is lost but the live view lags).
 
+### Hybrid: Wi-Fi with USB-C takeover (camera glasses, or any node)
+
+One image, two ways out (`CONFIG_PPG_LINK_HYBRID`, `main/link_mqtt.c` + `main/usbgw.c`):
+
+- **No gateway**: the board is an ordinary Wi-Fi node (MQTT/TLS, its own certificate, store-and-forward
+  ring, OTA). Camera frames go into the same ring as the PPG. **PPG comes first**: once the
+  unacknowledged data would fill `CONFIG_PPG_MQTT_CAM_SHARE_PCT` (50 %) of the ring, new frames are
+  dropped (`cam_drop`, seq gap), so the samples never are.
+- **NBE USB gateway running on the PC it's plugged into** (or `sglab record` on that port): the gateway
+  sends `PING` every second. The board waits ≤1 s for the server's ACKs, leaves the broker cleanly,
+  switches the radio **off**, and sends everything not yet acknowledged, then the live stream, over
+  USB-C (`$E,..,LINK,usb`). The gateway goes on the broker as the node only after that event.
+- **Gateway closed, or cable out**: no `PING` for 5 s (unplugged: at once), radio back on, new `boot`,
+  `$E,..,LINK,wifi`, carry on from the ring. A running trial keeps recording across the switch (the
+  recorder drops the few samples/frames sent twice at a handover by seq). Closing the gateway does
+  **not** STOP a hybrid board.
+- A charger or a PC without the gateway never takes the link (nothing sends `PING`).
+
+Build (holds the node key and Wi-Fi password, like any Wi-Fi node):
+
+```bash
+python ../../tools/nbe_node.py configure GLS03 --camera --wifi-ssid <lab router SSID>   # camera + hybrid
+idf.py build flash
+# PPG-only node with the same USB takeover:  nbe_node.py configure FNG01 --hybrid ...
+# on the server:  deploy/evmserver/build-firmware.sh --camera --hybrid GLS03
+```
+
+`--camera` writes `sdkconfig.camera` + `sdkconfig.hybrid` + the node's values into `sdkconfig.nbe`. The
+log console stays on UART0 (USB-C carries data); warnings reach the gateway / server as `$E,..,LOG`.
+
+`sdkconfig.hybrid` sizes the Wi-Fi path for the camera's ~0.65 MB/s (160×160 gray8 at ~25 fps):
+64 kB MQTT frames (one frame record must fit one), a 256 kB window with ACK-clocked sending, a 4 MB
+PSRAM ring (~3 s of frames, minutes of PPG) and a 32 kB TCP send buffer (ESP-IDF's 5.7 kB caps TLS
+at ~150-300 kB/s). **Not yet measured on hardware.** Check on the first run: `cam_fps` ≈ 25 and
+`cam_drop` flat in the S line, `heap` (internal RAM: Wi-Fi + TLS + TCP buffers + camera DMA), and the
+status message's `buf` / `rtx`. Too slow → `CAM FPS=12` (or a smaller crop); still dropping with a good
+RSSI → raise `CONFIG_LWIP_TCP_SND_BUF_DEFAULT` if `heap` allows. Watch the PPG for Wi-Fi TX noise on the
+shared 3.3 V rail (`CONFIG_PPG_WIFI_TX_POWER_DBM` lowers the current spikes).
+
 ## menuconfig → "PPG stream (MAX30102)"
 
 | Menu | Settings | Defaults |
@@ -217,6 +256,7 @@ sdkconfig.defaults      target esp32s3, 1 kHz tick, console on UART0, 8 MB flash
 partitions.csv          two ~4 MB app slots for over-the-air updates
 sdkconfig.nbe           (generated, not committed) per-node values from nbe_node.py
 sdkconfig.camera        overlay for camera glasses (USB binary link + OV2640), see "Camera glasses"
+sdkconfig.hybrid        overlay on top of it: Wi-Fi + USB takeover, sized for the camera, see "Hybrid"
 main/Kconfig.projbuild  the menuconfig menu
 main/idf_component.yml  managed components (espressif/mqtt, espressif/esp32-camera)
 main/app_main.c         tasks: sensor (FIFO → D lines, status, SYNC, start/stop) + commands
@@ -224,12 +264,15 @@ main/max30102.c/.h      register-level driver on i2c_master
 main/proto.c/.h         line builder with XOR checksum (no printf)
 main/link.h             transport interface used by app_main
 main/link.c             USB Serial/JTAG or UART transport
-main/link_mqtt.c        MQTT transport: batching, store-and-forward, status/LWT, commands
+main/link_mqtt.c        MQTT transport: batching, store-and-forward, status/LWT, commands, camera frames
+                        (PPG first); hybrid link: hands the stream to the USB gateway and back
+main/usbgw.c/.h         hybrid link, USB side: gateway heartbeat (PING), commands, envelope writes
 main/link_usb_bin.c     USB binary transport (protocol v2 envelopes: text + samples + camera frames)
 main/camera.c/.h        OV2640 stream (sid 1 "cam"): capture task, H line, CAM command, S-line stats
 main/frame.c/.h         binary records (MQTT frames, USB envelopes, frame records), CRC-32
 main/ota.c/.h           over-the-air update ("OTA <token>" command), rollback if the new build can't reach the broker
 main/net.c/.h           Wi-Fi station (PSK or PEAP, up to 3 saved networks), reconnect back-off, SNTP
 main/certs/             (generated, not committed) node certificate + key
-host_test/              PC build + simulator (USB, UART, MQTT batching, USB binary + fake camera) + output checkers
+host_test/              PC build + simulator (USB, UART, MQTT batching, USB binary + fake camera,
+                        hybrid Wi-Fi -> USB -> Wi-Fi + broker outage) + output checkers
 ```

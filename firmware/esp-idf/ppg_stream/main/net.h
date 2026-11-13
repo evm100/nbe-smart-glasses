@@ -10,7 +10,10 @@
 // on_ip is called (from the event task) every time an IP address is obtained.
 esp_err_t net_start(void (*on_ip)(void));
 bool net_has_ip(void);
-void net_watchdog(void);                // call every few 100 ms: restarts a stuck reconnect loop
+void net_watchdog(void);
+// Hybrid link: radio off while the board streams over USB (no retries, no watchdog), and back on.
+void net_pause(void);
+void net_resume(void);                // call every few 100 ms: restarts a stuck reconnect loop
 int net_rssi(void);                     // dBm, 0 if not connected
 int net_tx_power_dbm(void);             // Wi-Fi transmit power limit in effect
 void net_ip_str(char *out, int len);    // "" if none

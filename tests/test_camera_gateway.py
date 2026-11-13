@@ -389,3 +389,92 @@ def test_gateway_bundle_own_broker_uri(tmp_path):
     z = zipfile.ZipFile(io.BytesIO(data))
     cfg = json.loads(z.read("NBE-Gateway-GLS03-linux-any/gateway.json"))
     assert (cfg["broker_host"], cfg["broker_port"]) == ("mqtt.example.org", 443)
+
+
+# ---------------------------------------------------------------- hybrid boards (Wi-Fi + USB)
+class _PahoStub:
+    """Just enough paho for the gateway's connect / disconnect decisions."""
+
+    def __init__(self):
+        self.calls = []
+
+    def connect_async(self, host, port, keepalive=60):
+        self.calls.append("connect")
+
+    def loop_start(self):
+        pass
+
+    def loop_stop(self):
+        self.calls.append("loop_stop")
+
+    def disconnect(self):
+        self.calls.append("disconnect")
+
+    def publish(self, topic, payload, qos=0, retain=False):
+        self.calls.append(("publish", topic))
+        return GwClient.Info()
+
+
+def _hybrid_lines(*bodies: str) -> bytes:
+    return envelope(b"".join(text_record(encode(b)) for b in bodies))
+
+
+def test_gateway_and_hybrid_board_take_turns_as_the_node(tmp_path):
+    """The board says link=hybrid: the gateway goes on the broker only after $E,..,LINK,usb, leaves it
+    (cleanly, no "offline") when the board is back on Wi-Fi, remembers the board kind, and closing
+    it doesn't STOP the recording."""
+    from nbe_gateway.app import Gateway
+    from nbe_gateway.uplink import RELEASE_GRACE_S
+
+    paho = _PahoStub()
+    cfg = {"node_id": "GLS03", "broker_host": "x", "data_dir": str(tmp_path / "gw")}
+    gw = Gateway(cfg, mqtt_client=paho)
+    b, up = gw.board, gw.uplink
+    written = []
+    b.write = lambda c: written.append(c) or True
+    assert gw.want_mqtt()  # unknown board: as before (a USB-only board has no other way out)
+    b.connected = True
+    b.feed(_hybrid_lines("H,proto=1,dev=GLS03,fw=0.8.0-idf,sensor=MAX30102,fs=200,ch=ir|red,link=hybrid",
+                         "E,5000,START,"))
+    assert b.hybrid and b.describe()["hybrid"] and not gw.want_mqtt()  # still on Wi-Fi itself
+    up._manage_connection(0.0)
+    assert paho.calls == [] and not up.active
+    b.feed(_hybrid_lines("E,6000,LINK,usb"))
+    assert b.link == "usb" and gw.want_mqtt()
+    up._manage_connection(1.0)
+    assert up.active and paho.calls == ["connect"]
+    up.connected = True
+
+    # cable out: the board goes back to Wi-Fi; the gateway finishes sending (grace), then lets go
+    b._set_connected(False)
+    assert b.link is None and not gw.want_mqtt()
+    up._manage_connection(2.0)
+    if up.log.unacked():
+        assert up.active
+        up._manage_connection(2.0 + RELEASE_GRACE_S + 0.1)
+    assert not up.active and paho.calls[-2:] == ["disconnect", "loop_stop"]
+    assert json.loads((tmp_path / "gw" / "GLS03" / "board.json").read_text()) == {"hybrid": True}
+
+    # a new gateway run knows the board before it says anything: no grab of the node ID
+    gw2 = Gateway(cfg, mqtt_client=_PahoStub())
+    assert gw2.hybrid() and not gw2.want_mqtt()
+    gw2.board.write = lambda c: written.append(c) or True
+    n = len(paho.calls)
+    gw.stop()
+    assert "STOP" not in written
+    assert not any(c[0] == "publish" for c in paho.calls[n:] if isinstance(c, tuple))
+
+
+def test_hub_status_starts_over_when_the_link_changes():
+    from sglab.mqtt_hub import MqttHub
+
+    hub = MqttHub({"topic_prefix": "nbe"}, client=type("C", (), {"publish": lambda *a, **k: None})())
+    hub.handle("nbe/dev/GLS03/status", json.dumps({"online": True, "link": "usb-gateway", "gw_id": "ab12cd34",
+                                                    "disk_mb": 5.0, "streaming": True}).encode())
+    hub.handle("nbe/dev/GLS03/status", json.dumps({"online": True, "link": "mqtt", "hybrid": True, "rssi": -50,
+                                                    "streaming": True}).encode())
+    st = hub.node_state("GLS03")
+    assert st["link"] == "mqtt" and st["rssi"] == -50 and "disk_mb" not in st
+    hub.handle("nbe/dev/GLS03/status", json.dumps({"online": False}).encode())  # last will: merged as before
+    st = hub.node_state("GLS03")
+    assert not st["online"] and st["link"] == "mqtt"

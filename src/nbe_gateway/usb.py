@@ -4,6 +4,11 @@ Works with both firmware kinds:
   - USB binary link (protocol v2, camera boards): envelopes of records, stored as they are
   - USB text link (protocol v1): "$...*CS" lines, stored as text records
 so any board flashed for USB can sit behind a gateway.
+
+Hybrid boards (firmware CONFIG_PPG_LINK_HYBRID, "link=hybrid" in their H line) are Wi-Fi nodes that
+stream over USB instead while a gateway talks to them: the gateway sends PING every second, and the
+board answers by moving its stream to USB ("$E,..,LINK,usb"). No PING for ~5 s (gateway closed or
+unplugged) and the board goes back to Wi-Fi by itself.
 """
 from __future__ import annotations
 
@@ -16,6 +21,7 @@ from .wire import (REC_FRAME, REC_TEXT, EnvelopeDecoder, WireError, line, line_b
 
 ESPRESSIF_VID = 0x303A
 SYNC_EVERY_S = 10.0
+PING_EVERY_S = 1.0  # heartbeat: tells a hybrid board a gateway is here (other firmware ignores it)
 
 
 def find_ports() -> List[dict]:
@@ -54,6 +60,8 @@ class Board:
         # what the board said about itself (H / E / S lines)
         self.headers: Dict[str, dict] = {}   # stream name -> key/values of its H line
         self.streaming = False
+        self.hybrid: Optional[bool] = None   # None until the board's PPG H line says (link=hybrid)
+        self.link: Optional[str] = None      # hybrid boards: "usb" / "wifi" from their $E,..,LINK events
         self.last_status: dict = {}
         self.last_status_t_us: Optional[int] = None
         self.last_sync = 0.0
@@ -103,10 +111,17 @@ class Board:
             with self.wlock:
                 self.ser, self.port = ser, port
             self.decoder = EnvelopeDecoder()
+            self.link = None
             self._set_connected(True)
             self.write("INFO")  # headers now, so the server knows the streams before START
+            last_ping = time.monotonic()
             try:
                 while not self.stop_flag.is_set():
+                    # in the read loop on purpose: a gateway that stops reading also stops pinging,
+                    # so a hybrid board doesn't keep sending into a full USB buffer
+                    if time.monotonic() - last_ping >= PING_EVERY_S:
+                        last_ping = time.monotonic()
+                        self.write("PING")
                     data = ser.read(max(1, getattr(ser, "in_waiting", 0) or 0) or 1)
                     if data:
                         self.feed(data)
@@ -133,6 +148,7 @@ class Board:
             self.connected = up
             if not up:
                 self.streaming = False
+                self.link = None
             self.on_change()
 
     def _warn(self, msg: str) -> None:
@@ -193,6 +209,8 @@ class Board:
             kv = dict(p.split("=", 1) for p in parts[1:] if "=" in p)
             name = kv.get("stream", "ppg")
             self.headers[name] = kv
+            if name == "ppg":
+                self.hybrid = kv.get("link") == "hybrid"
             dev = kv.get("dev")
             if dev and dev != self.node_id:
                 self._warn(f"the board says it is {dev}, but this gateway is {self.node_id} - "
@@ -209,6 +227,11 @@ class Board:
                 self.on_change()
             elif code in ("STOP", "BOOT"):
                 self.streaming = False
+                if code == "BOOT":
+                    self.link = None
+                self.on_change()
+            elif code == "LINK" and len(parts) >= 4:  # hybrid board: where its stream goes from here
+                self.link = parts[3]
                 self.on_change()
         elif kind == "S" and len(parts) >= 2:
             try:
@@ -236,5 +259,6 @@ class Board:
                 "sensor_ok": ppg.get("sensor_ok") == "1" if ppg else None,
                 "camera_ok": cam.get("sensor_ok") == "1" if cam else None,
                 "fs": float(ppg["fs"]) if ppg.get("fs") else None,
-                "streaming": self.streaming, "status": self.last_status}
+                "streaming": self.streaming, "status": self.last_status,
+                "hybrid": self.hybrid, "board_link": self.link}
 

@@ -15,7 +15,11 @@ class SerialSource:
     within `timeout` s.
 
     Reads both USB links of the firmware: text lines (protocol v1) and binary record envelopes
-    (protocol v2, CONFIG_PPG_LINK_USB_BIN); nbe_gateway.wire.EnvelopeDecoder tells them apart."""
+    (protocol v2, CONFIG_PPG_LINK_USB_BIN); nbe_gateway.wire.EnvelopeDecoder tells them apart.
+    Sends PING every second like the USB gateway, so a hybrid board (Wi-Fi + USB) streams over this
+    cable while it is read; other firmware ignores it."""
+
+    PING_EVERY_S = 1.0
 
     def __init__(self, port: str, baud: int = 921600, timeout: float = 0.2):
         import serial  # pyserial
@@ -33,12 +37,20 @@ class SerialSource:
 
         self.decoder = EnvelopeDecoder()
         self.pending: deque = deque()
+        self._last_ping = 0.0
 
     def write(self, cmd: str) -> None:
         self.ser.write((cmd.strip() + "\n").encode())
         self.ser.flush()
 
     def readline(self):
+        now = time.monotonic()
+        if now - self._last_ping >= self.PING_EVERY_S:
+            self._last_ping = now
+            try:
+                self.write("PING")
+            except Exception:
+                pass
         if not self.pending:
             from .framing import FrameError, record_items
             from nbe_gateway.wire import WireError, split_records
