@@ -105,6 +105,31 @@ button.danger { background: var(--bad); color: #fff; border-color: var(--bad); }
 .flash { color: var(--good); min-height: 1.2em; } .flash.err { color: var(--bad); }
 @media (max-width: 640px) { .field { grid-template-columns: 1fr; } }
 @media (max-width: 640px) { main { padding: 16px; } header { padding: 10px 16px; gap: 12px; flex-wrap: wrap; } }
+/* "Feedback" in the menu: a face in one click, anonymous by default (sglab.web.board, /board/feedback) */
+.fb-btn { background: none; border: 1px solid var(--border); border-radius: 999px; padding: 3px 11px; color: var(--text-2); font-size: 13px; }
+.fb-btn:hover, .fb-btn[aria-expanded="true"] { color: var(--text); border-color: var(--accent); }
+.fb-pop { position: fixed; top: 54px; right: 24px; z-index: 60; width: 340px; max-width: calc(100vw - 32px);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.18); display: grid; gap: 10px; }
+.fb-pop[hidden] { display: none; }
+.fb-pop .q { font-weight: 600; }
+.fb-faces { display: flex; justify-content: space-between; }
+.fb-faces button { font-size: 26px; line-height: 1; padding: 6px; border: 1px solid transparent; border-radius: 10px; background: none;
+  display: grid; justify-items: center; gap: 3px; width: 58px; }
+.fb-faces button small { font-size: 11px; color: var(--text-2); }
+.fb-faces button:hover { background: var(--grid); }
+.fb-faces button.on { border-color: var(--accent); background: var(--grid); }
+.fb-pop textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; padding: 7px 9px; width: 100%; resize: vertical; }
+.fb-pop .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.fb-pop .row .grow { flex: 1; }
+.fb-part { font-size: 13px; color: var(--text-2); overflow-wrap: anywhere; }
+.fb-hl { position: fixed; z-index: 59; pointer-events: none; border: 2px solid var(--accent); border-radius: 6px;
+  background: rgba(42,120,214,.08); transition: all .05s; }
+.fb-tip { position: fixed; z-index: 61; left: 50%; top: 12px; transform: translateX(-50%); background: var(--text); color: var(--bg);
+  padding: 7px 14px; border-radius: 999px; font-size: 13px; box-shadow: 0 6px 18px rgba(0,0,0,.2); }
+body.fb-pointing, body.fb-pointing * { cursor: crosshair !important; }
+@media (max-width: 640px) { .fb-pop { right: 16px; top: 96px; } }
 </style>
 {% block head %}{% endblock %}
 </head>
@@ -119,6 +144,8 @@ button.danger { background: var(--bad); color: #fff; border-color: var(--bad); }
   </nav>
   <span class="spacer"></span>
   {% if mqtt %}<span class="note" title="{{ mqtt.error or 'The server is connected to the message broker: Wi-Fi devices can reach it.' }}">{% if mqtt.connected %}<span class="ok-dot">●</span> devices link up{% else %}<span style="color:var(--bad)">●</span> devices link down{% endif %}</span>{% endif %}
+  {% if user %}<button type="button" class="fb-btn" id="fb-btn" aria-expanded="false" aria-controls="fb-pop"
+    title="Tell us how this page feels – one click, anonymous">☺ Feedback</button>{% endif %}
   {% if user and auth_enabled %}
     <a class="note" href="/account">{{ user.display or user.username }} · {{ user.role }}</a>
     <form method="post" action="/logout" style="margin:0"><button class="link">Log out</button></form>
@@ -133,6 +160,139 @@ button.danger { background: var(--bad); color: #fff; border-color: var(--bad); }
 <main>
 {% block content %}{% endblock %}
 </main>
+{% if user %}
+<div class="fb-pop" id="fb-pop" role="dialog" aria-label="Feedback about this page" hidden>
+  <div class="q">How does this page feel?</div>
+  <div class="fb-faces">
+    <button type="button" data-mood="1" title="hate it">😠<small>hate it</small></button>
+    <button type="button" data-mood="2" title="confusing">😕<small>confusing</small></button>
+    <button type="button" data-mood="3" title="meh">😐<small>meh</small></button>
+    <button type="button" data-mood="4" title="good">🙂<small>good</small></button>
+    <button type="button" data-mood="5" title="love it">😍<small>love it</small></button>
+  </div>
+  <div class="fb-part" id="fb-part" hidden></div>
+  <textarea id="fb-text" rows="2" maxlength="4000" placeholder="What exactly? Say it straight – too much text, can't find X, love Y…"></textarea>
+  <div class="row">
+    <button type="button" class="link" id="fb-point" title="Click this, then click the part of the page you mean">📍 Point at the part</button>
+    <span class="grow"></span>
+    <button type="button" class="primary" id="fb-send">Send</button>
+  </div>
+  <div class="row note"><label><input type="checkbox" id="fb-signed"> add my name</label>
+    <span class="grow"></span><span id="fb-msg">Anonymous unless you tick that.</span></div>
+  <div class="note"><a href="/board/feedback">See what everyone said →</a></div>
+</div>
+{% endif %}
+{% if user %}
+<script>
+// ---- Feedback: a face is sent the moment it is clicked; words, a pointed-at part and a name can follow
+(() => {
+  const AUTH = {{ 'true' if auth_enabled else 'false' }};
+  const $ = id => document.getElementById(id);
+  const btn = $('fb-btn'), pop = $('fb-pop'); if (!btn || !pop) return;
+  const msg = $('fb-msg'), text = $('fb-text'), signed = $('fb-signed'), partBox = $('fb-part');
+  let fb = null, part = '', busy = false;   // fb = {id, token} of what this visit already sent
+  const name = () => { try { return localStorage.getItem('board-name') || ''; } catch (e) { return ''; } };
+  const who = () => signed.checked ? {signed: true, ...(AUTH ? {} : {author: name()})} : {signed: false};
+  const say = t => { msg.textContent = t; };
+  if (!AUTH && !name()) signed.closest('label').hidden = true;   // without accounts, a name comes from the board page
+
+  function open(on) {
+    pop.hidden = !on; btn.setAttribute('aria-expanded', on);
+    if (on) { const r = btn.getBoundingClientRect(); if (innerWidth > 640) pop.style.right = Math.max(16, innerWidth - r.right) + 'px'; }
+  }
+  btn.addEventListener('click', () => open(pop.hidden));
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !pop.hidden && !pointing) open(false); });
+  document.addEventListener('mousedown', e => { if (!pop.hidden && !pointing && !pop.contains(e.target) && e.target !== btn) open(false); });
+
+  async function send(fields) {
+    const base = {page: location.pathname + location.search, page_title: document.title.replace(/ · NBE lab$/, ''), part};
+    const r = await fetch(fb ? '/api/feedback/' + fb.id : '/api/feedback', {
+      method: fb ? 'PATCH' : 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(fb ? {token: fb.token, part, ...fields, ...who()} : {...base, ...fields, ...who()})});
+    let d = null; try { d = await r.json(); } catch (e) {}
+    if (!r.ok) throw new Error(d && d.error || 'Could not send (error ' + r.status + ').');
+    if (!fb) fb = {id: d.id, token: d.token};
+  }
+
+  for (const f of pop.querySelectorAll('[data-mood]')) f.addEventListener('click', async () => {
+    if (busy) return; busy = true;
+    for (const g of pop.querySelectorAll('[data-mood]')) g.classList.toggle('on', g === f);
+    try { await send({mood: +f.dataset.mood}); say('Sent ✓ Thank you. Add why, if you like.'); text.focus(); }
+    catch (e) { say(e.message); f.classList.remove('on'); }
+    busy = false;
+  });
+  $('fb-send').addEventListener('click', async () => {
+    if (busy) return;
+    if (!fb && !text.value.trim()) { say('Pick a face or write a few words.'); text.focus(); return; }
+    busy = true;
+    try {
+      await send({text: text.value});
+      say('Thanks – it is on the feedback page.');
+      setTimeout(() => {   // ready for a fresh one next time
+        fb = null; part = ''; text.value = ''; partBox.hidden = true;
+        for (const g of pop.querySelectorAll('[data-mood]')) g.classList.remove('on');
+        open(false); say('Anonymous unless you tick that.');
+      }, 1400);
+    } catch (e) { say(e.message); }
+    busy = false;
+  });
+  signed.addEventListener('change', () => { if (fb) send({}).catch(e => say(e.message)); });
+  text.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) $('fb-send').click(); });
+
+  // ---- "point at the part": highlight what is under the mouse, a click picks it
+  let pointing = false, hl = null, tip = null, target = null;
+  const PICK = 'button, a, input, select, textarea, label, th, td, li, img, svg, canvas, .card, .plot, section, fieldset, h1, h2, h3, p, [id]';
+  function pickable(el) {
+    if (!el || pop.contains(el) || el === btn) return null;
+    const svg = el.closest('svg'); if (svg) el = svg.closest('.plot, [id], .card') || svg;   // charts: the whole chart
+    return el.closest(PICK) || el;
+  }
+  function heading(el) {
+    for (let n = el; n && n !== document.body; n = n.parentElement) {
+      if (/^H[1-3]$/.test(n.tagName)) return n;
+      for (let s = n.previousElementSibling; s; s = s.previousElementSibling) {
+        if (/^H[1-3]$/.test(s.tagName)) return s;
+        const h = s.querySelectorAll && [...s.querySelectorAll('h1, h2, h3')].pop(); if (h) return h;
+      }
+    }
+    return document.querySelector('main h1');
+  }
+  const clip = (t, n) => { t = (t || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n - 1) + '…' : t; };
+  function describe(el) {
+    if (/^H[1-3]$/.test(el.tagName)) return `heading “${clip(el.innerText, 70)}”`;
+    const h = heading(el), what = clip(el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || el.value || '', 70);
+    const kind = el.closest('.plot, svg, canvas') ? 'chart' : ({BUTTON: 'button', A: 'link', TH: 'column', TD: 'table cell',
+      INPUT: 'field', SELECT: 'menu', TEXTAREA: 'field', IMG: 'picture'}[el.tagName] || 'part');
+    const ht = h ? clip(h.innerText, 50) : '';
+    return (ht && h !== el ? `under “${ht}”: ` : '') + kind + (what && what !== ht ? ` “${what}”` : '');
+  }
+  function move(e) {
+    target = pickable(document.elementFromPoint(e.clientX, e.clientY)); if (!target) return;
+    const r = target.getBoundingClientRect();
+    Object.assign(hl.style, {left: r.left - 3 + 'px', top: r.top - 3 + 'px', width: r.width + 6 + 'px', height: r.height + 6 + 'px'});
+  }
+  function stop() {
+    pointing = false; document.body.classList.remove('fb-pointing');
+    removeEventListener('mousemove', move, true); removeEventListener('click', click, true); removeEventListener('keydown', esc, true);
+    hl && hl.remove(); tip && tip.remove(); hl = tip = null; open(true);
+  }
+  function click(e) {
+    e.preventDefault(); e.stopPropagation();
+    target = pickable(document.elementFromPoint(e.clientX, e.clientY)) || target;   // touch screens have no hover
+    if (target) { part = describe(target); partBox.textContent = '📍 ' + part; partBox.hidden = false; if (fb) send({}).catch(x => say(x.message)); }
+    stop(); text.focus();
+  }
+  function esc(e) { if (e.key === 'Escape') { e.preventDefault(); stop(); } }
+  $('fb-point').addEventListener('click', () => {
+    pointing = true; open(false); document.body.classList.add('fb-pointing');
+    hl = document.body.appendChild(Object.assign(document.createElement('div'), {className: 'fb-hl'}));
+    tip = document.body.appendChild(Object.assign(document.createElement('div'), {className: 'fb-tip',
+      textContent: 'Click the part you mean · Esc to cancel'}));
+    addEventListener('mousemove', move, true); addEventListener('click', click, true); addEventListener('keydown', esc, true);
+  });
+})();
+</script>
+{% endif %}
 <script>
 // open questions / requests / problems on the lab board, as a badge in the menu
 fetch('/api/board/summary').then(r => r.ok ? r.json() : null).then(d => {

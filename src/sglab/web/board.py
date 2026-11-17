@@ -3,6 +3,8 @@
 Pages
     GET /board            the board: composer, filters (?kind= &state=open|done|all &q= &session= &device= &page=)
     GET /board/{id}       one post with its whole thread (also reachable as /board#post-{id})
+    GET /board/{id}/download   the post as a Markdown file
+    GET /board/feedback   what people said about the pages of this site (the menu's "Feedback" button)
 
 JSON API (errors are {"error": "..."} like the rest of the server)
     GET    /api/board                 list; filters kind, state (open|done), session, device, q, limit, offset
@@ -13,6 +15,12 @@ JSON API (errors are {"error": "..."} like the rest of the server)
     DELETE /api/board/{id}
     POST   /api/board/{id}/replies    {body, author?}  -> 201, the post (with the new reply)
     DELETE /api/board/replies/{rid}   -> the post
+    POST   /api/board/{id}/react      {reaction, on?, author?, guest?}  -> the post (on omitted = toggle)
+    POST   /api/board/preview         {body} -> {"html": ...}   (the composer's Preview)
+    POST   /api/feedback              {page, page_title?, part?, mood?, text?, signed?, author?} -> 201 {id, token, ...}
+    PATCH  /api/feedback/{id}         {token, mood?, text?, part?, signed?, author?}  (only the sender, with the token)
+    GET    /api/feedback              {"summary": [...per page area...], "items": [...newest first...]}
+    DELETE /api/feedback/{id}         admin
 
 Stable shapes (used by the session page, the home page and the nav badge):
 
@@ -26,7 +34,8 @@ POST =
     {"id": 7, "url": "/board/7",
      "kind": "question",            # announcement | note | question | request | issue | status
      "kind_label": "Question",
-     "title": "...", "body": "... plain text ...",
+     "title": "...", "body": "... Markdown (plain text is fine) ...",
+     "excerpt": "first ~240 characters as plain text", "minutes": 3,   # reading time
      "author": "olga",              # username (accounts) or the typed name (single-user mode)
      "author_name": "Olga",         # name to show
      "created_at": "2026-11-13T18:04:05.123+00:00", "updated_at": "...", "edited": false,
@@ -39,14 +48,16 @@ POST =
      "n_replies": 1,
      "replies": [{"id": 3, "post_id": 7, "created_at": "...", "author": "ada", "author_name": "Ada",
                   "body": "...", "can_delete": false}],
-     "can": {"edit": false, "delete": false, "pin": false, "state": true, "reply": true}}
+     "reactions": [{"key": "up", "emoji": "👍", "label": "agree / useful", "n": 2, "mine": true,
+                    "names": ["Ada", "Otto"]}, ...],   # every reaction, n = 0 if nobody
+     "can": {"edit": false, "delete": false, "pin": false, "state": true, "reply": true, "react": true}}
 
 GET /api/board/summary  ->
     {"counts": COUNTS, "recent": [POST without "replies", ...up to 5, newest activity first]}
 COUNTS = {"question": 2, "request": 0, "issue": 1, "open": 3}   # still open; "open" is their sum
 
 Who may do what
-    read                     viewer and above
+    read, react, feedback    viewer and above
     post, reply              POST_ROLE and above (operator: viewer accounts only browse, see sglab.auth)
     edit / delete own text   the author (while they may still post)
     mark done / reopen       operator and above
@@ -56,15 +67,16 @@ Single-user mode (no accounts): everybody is the local admin and types a name wi
 from __future__ import annotations
 
 import re
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from markupsafe import Markup, escape
 
 from ..auth import has_role
-from ..board import KINDS, STATEFUL, BoardError, BoardStore
+from ..board import KINDS, MOODS, REACTIONS, STATEFUL, BoardError, BoardStore
+from . import md
 from .security import require
 
 router = APIRouter()
@@ -89,14 +101,14 @@ KIND_INFO = {
     "status": ("Update", "Updates", "What you are working on right now, so nobody has to ask.",
                "Re-recording subject S012 this week", "Where things stand and what comes next…",
                ("in progress", "finished", "Mark finished")),
+    "doc": ("Write-up", "Write-ups", "Something longer worth keeping: findings, a conversation with Claude, a proposal. "
+            "Paste Markdown or drop a .md file here.",
+            "Defining and measuring stress and fatigue", "Markdown welcome: # headings, **bold**, lists, | tables |…", None),
     "announcement": ("Announcement", "Announcements", "Something everyone in the lab should read.",
                      "Lab closed Monday – no recordings", "The details everyone needs…", None),
 }
-KIND_ORDER = ("note", "question", "request", "issue", "status", "announcement")  # composer / chip order
+KIND_ORDER = ("note", "doc", "question", "request", "issue", "status", "announcement")  # composer / chip order
 assert set(KIND_INFO) == set(KINDS)
-
-_URL = re.compile(r"https?://[^\s<>\"']+")
-
 
 def C(request: Request):
     return request.app.state.ctx
@@ -111,16 +123,8 @@ def store(ctx) -> BoardStore:
 
 
 def rich(text: str) -> Markup:
-    """Plain text -> safe HTML: everything escaped, http(s) addresses turned into links.
-    Line breaks are kept by CSS (white-space: pre-wrap)."""
-    out, pos = [], 0
-    for m in _URL.finditer(text or ""):
-        url = m.group(0).rstrip(".,;:!?)]}")
-        out.append(escape(text[pos:m.start()]))
-        out.append(Markup('<a href="{0}" target="_blank" rel="noopener noreferrer">{0}</a>').format(url))
-        pos = m.start() + len(url)
-    out.append(escape((text or "")[pos:]))
-    return Markup("").join(out)
+    """Post / reply text (Markdown or plain) -> safe HTML (see sglab.web.md)."""
+    return md.render(text)
 
 
 def ago(iso: str | None) -> str:
@@ -154,20 +158,49 @@ def can_post(user: dict) -> bool:
 def _can(ctx, user: dict, p: dict) -> dict:
     admin, own = has_role(user, "admin"), _is_author(ctx, user, p["author"]) and can_post(user)
     return {"edit": admin or own, "delete": admin or own, "pin": admin,
-            "state": p["kind"] in STATEFUL and has_role(user, "operator"), "reply": can_post(user)}
+            "state": p["kind"] in STATEFUL and has_role(user, "operator"), "reply": can_post(user),
+            "react": user is not None}
 
 
-def decorate(ctx, user: dict, p: dict) -> dict:
+def decorate(ctx, user: dict, p: dict, me: set[str] | None = None) -> dict:
     """Add what pages / API clients need: url, labels and what this user may do."""
     info = KIND_INFO[p["kind"]] if p["kind"] in KIND_INFO else KIND_INFO["note"]
     p["url"] = f"/board/{p['id']}"
     p["kind_label"] = info[0]
     p["state_label"] = info[5][0 if p["state"] == "open" else 1] if info[5] else None
     p["can"] = _can(ctx, user, p)
+    p["excerpt"] = md.excerpt(p.get("body"))
+    p["minutes"] = md.reading_minutes(p.get("body"))
+    me = _me(ctx, user) if me is None else me
+    given = p.pop("reactions", None) or {}
+    p["reactions"] = [{"key": k, "emoji": e, "label": lab, "n": len(given.get(k, [])),
+                       "mine": any(g["who"] in me for g in given.get(k, [])),
+                       "names": [g["name"] for g in given.get(k, [])],
+                       # without accounts the page can't know who the browser is: it marks its own from these
+                       **({} if ctx.auth else {"who": [g["who"] for g in given.get(k, [])]})}
+                      for k, (e, lab) in REACTIONS.items()]
     admin = has_role(user, "admin")
     for r in p.get("replies", []):
         r["can_delete"] = admin or (_is_author(ctx, user, r["author"]) and can_post(user))
     return p
+
+
+def _me(ctx, user: dict, data: dict | None = None) -> set[str]:
+    """Who 'I' am for reactions: the account; without accounts whatever the browser said (name and/or guest id)."""
+    if ctx.auth:
+        return {user["username"]} if user else set()
+    return {str(v).strip() for v in ((data or {}).get("author"), (data or {}).get("guest")) if v and str(v).strip()}
+
+
+def _reactor(ctx, user: dict, data: dict) -> tuple[str, str]:
+    if ctx.auth:
+        return user["username"], user.get("display") or user["username"]
+    name, guest = str(data.get("author") or "").strip(), str(data.get("guest") or "").strip()
+    if name:
+        return name, name
+    if guest:
+        return "guest:" + guest[:40], "someone"
+    raise HTTPException(400, "Please type your name or initials first.")
 
 
 def _author(ctx, user: dict, data: dict) -> tuple[str, str]:
@@ -262,6 +295,33 @@ def board_page(request: Request, kind: str | None = None, state: str = "open", q
         "total": total, "page": page, "pages": max(1, -(-total // PAGE)), "chip": chip, "counts": b.counts(),
         "f_kind": kind or "", "f_state": st or "all", "f_q": q.strip(), "f_session": session or "",
         "f_device": device or "", "empty_board": not b.kind_counts()["all"]})
+
+
+# page groups (BoardStore.area) as people know them; anything else shows its latest page title
+AREA_NAMES = {"/": "Sessions list", "/home": "Home", "/sessions/…": "Session pages", "/trial/…": "New trial",
+              "/trials/…": "Live trial", "/devices": "Devices", "/subjects": "Subjects", "/models": "Models",
+              "/models/…": "Model results", "/platform": "Platform", "/help": "Help", "/board": "Lab board",
+              "/board/…": "Board posts & feedback", "/account": "Account", "/admin/…": "Admin pages"}
+
+
+@router.get("/board/feedback", response_class=HTMLResponse)
+def feedback_page(request: Request, area: str | None = None, user=viewer):
+    ctx, b = C(request), store(C(request))
+    summary = b.feedback_summary()
+    for x in summary:
+        x["name"] = AREA_NAMES.get(x["area"]) or x["title"] or x["area"]
+    return ctx.render(request, "board_feedback.html", {
+        "summary": summary, "items": b.feedback(area=area or None, limit=300), "f_area": area or "",
+        "moods": MOODS, "ago": ago, "can_delete": has_role(user, "admin")})
+
+
+@router.get("/board/{pid}/download")
+def board_download(request: Request, pid: int, user=viewer):
+    p = _post_or_404(C(request), pid)
+    slug = re.sub(r"[^\w\-]+", "_", p["title"]).strip("_")[:80] or f"post_{pid}"
+    text = p["body"] if md.first_heading(p["body"])[0] else f"# {p['title']}\n\n{p['body']}"
+    return Response(text.rstrip() + "\n", media_type="text/markdown; charset=utf-8", headers={
+        "Content-Disposition": f"attachment; filename=\"{slug}.md\"; filename*=UTF-8''{quote(slug)}.md"})
 
 
 @router.get("/board/{pid}", response_class=HTMLResponse)
@@ -386,3 +446,81 @@ def api_delete_reply(request: Request, rid: int, user=viewer):
     b.delete_reply(rid)
     ctx.audit(request, "board.reply_delete", str(r["post_id"]), {"reply": rid, "author": r["author"]})
     return decorate(ctx, user, _post_or_404(ctx, r["post_id"]))
+
+
+@router.post("/api/board/{pid}/react")
+async def api_react(request: Request, pid: int, user=viewer):
+    """One click: give or take back a reaction. Viewers may react too – reactions are the cheapest feedback."""
+    ctx, data = C(request), await _json(request)
+    who, name = _reactor(ctx, user, data)
+    on = data.get("on")
+    try:
+        store(ctx).react(pid, who, str(data.get("reaction") or ""), on=None if on is None else bool(on), who_name=name)
+    except BoardError as e:
+        raise HTTPException(400, str(e)) from None
+    except KeyError:
+        raise HTTPException(404, "This post does not exist (it may have been deleted).") from None
+    me = {who}
+    return decorate(ctx, user, _post_or_404(ctx, pid), me=me | _me(ctx, user, data))
+
+
+@router.post("/api/board/preview")
+async def api_preview(request: Request, user=viewer):
+    data = await _json(request)
+    return {"html": str(md.render(str(data.get("body") or "")[:200_000]))}
+
+
+# ------------------------------------------------------------------ site feedback
+def _signer(ctx, user: dict, data: dict) -> tuple[str | None, str | None]:
+    """Nobody, unless the sender ticked "add my name"."""
+    if not data.get("signed"):
+        return None, None
+    if ctx.auth:
+        return user["username"], user.get("display") or user["username"]
+    name = str(data.get("author") or "").strip()
+    return (name, name) if name else (None, None)
+
+
+@router.post("/api/feedback")
+async def api_feedback(request: Request, user=viewer):
+    """Deliberately not in the audit log: feedback is anonymous unless signed."""
+    ctx, data = C(request), await _json(request)
+    who, name = _signer(ctx, user, data)
+    try:
+        f = store(ctx).add_feedback(str(data.get("page") or "/"), data.get("mood"), str(data.get("text") or ""),
+                                    page_title=str(data.get("page_title") or ""), part=str(data.get("part") or ""),
+                                    who=who, who_name=name)
+    except BoardError as e:
+        raise HTTPException(400, str(e)) from None
+    return JSONResponse(f, status_code=201)
+
+
+@router.patch("/api/feedback/{fid}")
+async def api_feedback_edit(request: Request, fid: int, user=viewer):
+    ctx, data = C(request), await _json(request)
+    changes = {k: data[k] for k in ("mood", "text", "part") if k in data}
+    if "signed" in data:
+        changes["who"], changes["who_name"] = _signer(ctx, user, data)
+    try:
+        return store(ctx).update_feedback(fid, str(data.get("token") or ""), **changes)
+    except BoardError as e:
+        raise HTTPException(400, str(e)) from None
+    except PermissionError:
+        raise HTTPException(403, "Only the person who sent this can change it.") from None
+    except KeyError:
+        raise HTTPException(404, "This feedback does not exist (it may have been deleted).") from None
+
+
+@router.get("/api/feedback")
+def api_feedback_list(request: Request, area: str | None = None, user=viewer):
+    b = store(C(request))
+    return {"summary": b.feedback_summary(), "items": b.feedback(area=area or None)}
+
+
+@router.delete("/api/feedback/{fid}")
+def api_feedback_delete(request: Request, fid: int, user=Depends(require("admin"))):
+    ctx = C(request)
+    if not store(ctx).delete_feedback(fid):
+        raise HTTPException(404, "This feedback does not exist (it may have been deleted).")
+    ctx.audit(request, "board.feedback_delete", str(fid))
+    return {"ok": True}

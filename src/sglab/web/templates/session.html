@@ -752,7 +752,7 @@ async function loadNotes() {
     if (!r.ok) throw 0;
     const d = await r.json(), posts = d.posts || [];
     box.className = '';
-    box.innerHTML = posts.length ? posts.map(p => `<div class="post"><span class="pill">${esc(p.kind)}</span> ${p.title ? `<b>${esc(p.title)}</b> ` : ''}${esc(p.body || '')}
+    box.innerHTML = posts.length ? posts.map(p => `<div class="post"><span class="pill">${esc(p.kind)}</span> ${p.title ? `<b>${esc(p.title)}</b> ` : ''}${esc(p.excerpt || p.body || '')}
       <div class="meta">${esc(p.author_name || p.author || '')} · ${esc((p.created_at || '').slice(0, 16).replace('T', ' '))}${p.n_replies ? ` · ${p.n_replies} repl${p.n_replies === 1 ? 'y' : 'ies'}` : ''} · <a href="/board/${p.id}">open on the board</a></div></div>`).join('')
       : '<span class="note">No notes about this recording yet.</span>';
   } catch (e) { $('sec-notes').hidden = true; box.closest('.card').hidden = true; toc(); }

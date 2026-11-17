@@ -6,14 +6,21 @@ users and the session catalog, so one backup covers everything.
 A post has a kind:
   announcement  something everyone should read
   note          an observation or a lab-notebook entry
+  doc           a longer write-up (Markdown): findings, a conversation summary, a proposal
   question      needs an answer            (open -> done = answered)
   request       somebody please do this    (open -> done = done)
   issue         something is broken/worrying (open -> done = fixed)
   status        work in progress           (open -> done = finished)
-Announcements and notes have no open/done meaning; their state stays 'open'.
+Announcements, notes and write-ups have no open/done meaning; their state stays 'open'.
+Bodies and replies are Markdown (plain text is valid Markdown); rendering is the web layer's job.
 
 A post can point at a recording (session_id) and/or a device (node id / device name)
-and carry free tags. Replies form one flat thread under the post.
+and carry free tags. Replies form one flat thread under the post. Anybody who can read
+can react to a post with one click (a fixed set of REACTIONS, one of each per person).
+
+Site feedback (table board_feedback) is separate from posts: a mood (1 hate .. 5 love) and/or a
+few words about one page of the web UI, sent from the "Feedback" button in the menu. It is
+anonymous unless the sender ticks "add my name" (then `who` is filled in).
 
 Ordering everywhere: pinned first, then newest activity first, where
 activity = the later of "post written / edited" and "last reply".
@@ -29,11 +36,16 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-KINDS = ("announcement", "note", "question", "request", "issue", "status")
+KINDS = ("announcement", "note", "doc", "question", "request", "issue", "status")
 STATEFUL = ("question", "request", "issue", "status")  # kinds where open/done means something
 COUNTED = ("question", "request", "issue")             # open ones of these = "needs attention"
 STATES = ("open", "done")
-MAX_TITLE, MAX_BODY, MAX_NAME, MAX_TAGS = 200, 20000, 80, 8
+MAX_TITLE, MAX_BODY, MAX_REPLY, MAX_NAME, MAX_TAGS = 200, 200_000, 20_000, 80, 8
+# key -> (emoji, what it means); the order is the order of the buttons
+REACTIONS = {"up": ("👍", "agree / useful"), "down": ("👎", "disagree / not useful"), "love": ("❤️", "love it"),
+             "idea": ("💡", "learned something"), "seen": ("👀", "read it"), "confused": ("😕", "confusing")}
+MOODS = {1: ("😠", "hate it"), 2: ("😕", "confusing"), 3: ("😐", "meh"), 4: ("🙂", "good"), 5: ("😍", "love it")}
+MAX_FEEDBACK = 4000
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS board_posts (
@@ -60,6 +72,28 @@ CREATE TABLE IF NOT EXISTS board_replies (
     author      TEXT NOT NULL,
     author_name TEXT,
     body        TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS board_reactions (
+    post_id     INTEGER NOT NULL REFERENCES board_posts(id) ON DELETE CASCADE,
+    who         TEXT NOT NULL,          -- username, or a name / browser id in single-user mode
+    who_name    TEXT,
+    reaction    TEXT NOT NULL,          -- a key of REACTIONS
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (post_id, who, reaction)
+);
+CREATE TABLE IF NOT EXISTS board_feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    token       TEXT NOT NULL,          -- lets the (anonymous) sender add words right after the click
+    page        TEXT NOT NULL,          -- path, e.g. /sessions/S001_rest_1
+    area        TEXT NOT NULL,          -- page grouped, e.g. /sessions/…
+    page_title  TEXT NOT NULL DEFAULT '',
+    part        TEXT NOT NULL DEFAULT '',   -- which part of the page they pointed at (optional)
+    mood        INTEGER,                -- 1..5 (MOODS) or NULL
+    text        TEXT NOT NULL DEFAULT '',
+    who         TEXT,                   -- NULL = anonymous
+    who_name    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_board_replies_post ON board_replies(post_id);
 CREATE INDEX IF NOT EXISTS idx_board_posts_session ON board_posts(session_id);
@@ -203,6 +237,7 @@ class BoardStore:
     def delete(self, post_id: int) -> bool:
         with self._con() as con:
             con.execute("DELETE FROM board_replies WHERE post_id=?", (post_id,))
+            con.execute("DELETE FROM board_reactions WHERE post_id=?", (post_id,))
             return con.execute("DELETE FROM board_posts WHERE id=?", (post_id,)).rowcount > 0
 
     def set_pinned(self, post_id: int, pinned: bool) -> dict:
@@ -228,7 +263,7 @@ class BoardStore:
 
     # ---- replies ---------------------------------------------------------------
     def add_reply(self, post_id: int, author: str, body: str, author_name: str | None = None) -> dict:
-        author, body = _text(author, MAX_NAME, "the name"), _text(body, MAX_BODY, "the reply")
+        author, body = _text(author, MAX_NAME, "the name"), _text(body, MAX_REPLY, "the reply")
         if not author:
             raise BoardError("who is writing? (name missing)")
         if not body:
@@ -280,6 +315,9 @@ class BoardStore:
                 rep = self._replies(con, [p["id"] for p in rows])
                 for p in rows:
                     p["replies"] = rep[p["id"]]
+            reac = self._reactions(con, [p["id"] for p in rows])
+            for p in rows:
+                p["reactions"] = reac[p["id"]]
         return rows
 
     def count(self, kind: str | None = None, state: str | None = None, session_id: str | None = None,
@@ -296,6 +334,7 @@ class BoardStore:
                 return None
             p = self._post(r)
             p["replies"] = self._replies(con, [p["id"]])[p["id"]]
+            p["reactions"] = self._reactions(con, [p["id"]])[p["id"]]
         return p
 
     def recent(self, n: int = 5) -> list[dict]:
@@ -323,3 +362,128 @@ class BoardStore:
                 if r["kind"] in out:
                     out[r["kind"]] = r["n"]
         return {**out, "all": sum(out.values())}
+
+    # ---- reactions -------------------------------------------------------------
+    def _reactions(self, con, ids: list[int]) -> dict[int, dict[str, list[dict]]]:
+        """{post_id: {reaction key: [{"who", "name"}, ...] in the order they were given}}; keys with nobody left out."""
+        out: dict[int, dict[str, list[dict]]] = {i: {} for i in ids}
+        if ids:
+            marks = ",".join("?" * len(ids))
+            for r in con.execute(f"SELECT * FROM board_reactions WHERE post_id IN ({marks}) ORDER BY created_at, rowid", ids):
+                out[r["post_id"]].setdefault(r["reaction"], []).append({"who": r["who"], "name": r["who_name"] or r["who"]})
+        return out
+
+    def react(self, post_id: int, who: str, reaction: str, on: bool | None = None, who_name: str | None = None) -> bool:
+        """Give (on=True), take back (on=False) or toggle (None) one reaction; returns whether it is now given."""
+        if reaction not in REACTIONS:
+            raise BoardError(f"reaction must be one of: {', '.join(REACTIONS)}")
+        who = _text(who, MAX_NAME, "the name")
+        if not who:
+            raise BoardError("who is reacting? (name missing)")
+        with self._con() as con:
+            if not con.execute("SELECT 1 FROM board_posts WHERE id=?", (post_id,)).fetchone():
+                raise KeyError(post_id)
+            key = (post_id, who, reaction)
+            have = con.execute("SELECT 1 FROM board_reactions WHERE post_id=? AND who=? AND reaction=?", key).fetchone()
+            want = (not have) if on is None else bool(on)
+            if want and not have:
+                con.execute("INSERT INTO board_reactions (post_id, who, who_name, reaction, created_at) VALUES (?,?,?,?,?)",
+                            (*key[:2], _text(who_name, MAX_NAME, "the name") or who, reaction, _now()))
+            elif have and not want:
+                con.execute("DELETE FROM board_reactions WHERE post_id=? AND who=? AND reaction=?", key)
+        return want
+
+    # ---- site feedback ---------------------------------------------------------
+    @staticmethod
+    def area(page: str) -> str:
+        """Group pages: '/' -> '/', '/sessions/S001' -> '/sessions/…', '/board?x' -> '/board'."""
+        segs = [s for s in str(page or "/").split("?")[0].split("#")[0].split("/") if s]
+        return "/" + (segs[0] + ("/…" if len(segs) > 1 else "") if segs else "")
+
+    def add_feedback(self, page: str, mood=None, text: str = "", *, page_title: str = "", part: str = "",
+                     who: str | None = None, who_name: str | None = None) -> dict:
+        import secrets
+        page = _text(page, 300, "the page") or "/"
+        mood = self._mood(mood)
+        text = _text(text, MAX_FEEDBACK, "the feedback")
+        if mood is None and not text:
+            raise BoardError("pick a face or write a few words")
+        now = _now()
+        with self._con() as con:
+            fid = con.execute(
+                "INSERT INTO board_feedback (created_at, updated_at, token, page, area, page_title, part, mood, text,"
+                " who, who_name) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (now, now, secrets.token_urlsafe(16), page, self.area(page), _text(page_title, 200, "the title"),
+                 _text(part, 300, "the part"), mood, text, _text(who, MAX_NAME, "the name") or None,
+                 _text(who_name, MAX_NAME, "the name") or None)).lastrowid
+        return self.feedback_item(fid, with_token=True)
+
+    def update_feedback(self, fid: int, token: str, **changes) -> dict:
+        """The sender adds / changes words, mood, part or name (only with the token they got back)."""
+        cur = self.feedback_item(fid, with_token=True)
+        if cur is None:
+            raise KeyError(fid)
+        if not token or token != cur["token"]:
+            raise PermissionError("not your feedback")
+        mood = self._mood(changes["mood"]) if "mood" in changes else cur["mood"]
+        text = _text(changes["text"], MAX_FEEDBACK, "the feedback") if "text" in changes else cur["text"]
+        part = _text(changes["part"], 300, "the part") if "part" in changes else cur["part"]
+        who = (_text(changes["who"], MAX_NAME, "the name") or None) if "who" in changes else cur["who"]
+        name = (_text(changes.get("who_name"), MAX_NAME, "the name") or who) if "who" in changes else cur["who_name"]
+        if mood is None and not text:
+            raise BoardError("pick a face or write a few words")
+        with self._con() as con:
+            con.execute("UPDATE board_feedback SET mood=?, text=?, part=?, who=?, who_name=?, updated_at=? WHERE id=?",
+                        (mood, text, part, who, name if who else None, _now(), fid))
+        return self.feedback_item(fid)
+
+    @staticmethod
+    def _mood(m):
+        if m in (None, "", 0):
+            return None
+        try:
+            m = int(m)
+        except (TypeError, ValueError):
+            m = 0
+        if m not in MOODS:
+            raise BoardError("mood must be 1 (hate it) .. 5 (love it)")
+        return m
+
+    def feedback_item(self, fid: int, with_token: bool = False) -> dict | None:
+        with self._con() as con:
+            r = con.execute("SELECT * FROM board_feedback WHERE id=?", (fid,)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        if not with_token:
+            d.pop("token")
+        return d
+
+    def delete_feedback(self, fid: int) -> bool:
+        with self._con() as con:
+            return con.execute("DELETE FROM board_feedback WHERE id=?", (fid,)).rowcount > 0
+
+    def feedback(self, area: str | None = None, limit: int = 200) -> list[dict]:
+        """Newest first, without tokens."""
+        with self._con() as con:
+            rows = con.execute("SELECT * FROM board_feedback" + (" WHERE area=?" if area else "") +
+                               " ORDER BY id DESC LIMIT ?", ((area,) if area else ()) + (max(1, min(int(limit), 1000)),))
+            return [{k: r[k] for k in r.keys() if k != "token"} for r in rows]
+
+    def feedback_summary(self) -> list[dict]:
+        """Per area: {"area", "title" (latest page title), "n", "moods": {1: n, ..5}, "avg", "last_at"};
+        the areas people feel worst about first."""
+        out: dict[str, dict] = {}
+        with self._con() as con:
+            for r in con.execute("SELECT area, page_title, mood, created_at FROM board_feedback ORDER BY id"):
+                a = out.setdefault(r["area"], {"area": r["area"], "title": "", "n": 0, "moods": {m: 0 for m in MOODS},
+                                               "last_at": ""})
+                a["n"] += 1
+                a["title"] = r["page_title"] or a["title"]
+                a["last_at"] = r["created_at"]
+                if r["mood"] in MOODS:
+                    a["moods"][r["mood"]] += 1
+        for a in out.values():
+            k = sum(a["moods"].values())
+            a["avg"] = round(sum(m * n for m, n in a["moods"].items()) / k, 2) if k else None
+        return sorted(out.values(), key=lambda a: (a["avg"] if a["avg"] is not None else 3, -a["n"]))

@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Site feedback · Lab board · NBE lab{% endblock %}
+{% block head %}
+<style>
+.fbp { max-width: 960px; }
+.faces th, .faces td { text-align: center; }
+.faces th:first-child, .faces td:first-child { text-align: left; }
+.faces td.zero { color: var(--muted); }
+.faces tr.on td { background: var(--grid); }
+.bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; min-width: 90px; background: var(--grid); }
+.bar i { display: block; height: 100%; }
+.m1 { background: var(--bad); } .m2 { background: var(--s4); } .m3 { background: var(--muted); }
+.m4 { background: var(--s3); } .m5 { background: var(--good); }
+.items { display: grid; gap: 10px; margin-top: 12px; }
+.item { display: grid; grid-template-columns: 40px 1fr; gap: 10px; }
+.item .face { font-size: 26px; line-height: 1; text-align: center; padding-top: 2px; }
+.item .where { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.item .where .when { margin-left: auto; }
+.item .part { margin-top: 4px; color: var(--text-2); font-size: 13px; }
+.item .part::before { content: "📍 "; }
+.item .said { margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 640px) { .item .where .when { margin-left: 0; flex-basis: 100%; } }
+</style>
+{% endblock %}
+{% block content %}
+<div class="fbp">
+<p><a href="/board">← Lab board</a></p>
+<h1>What people said about the site</h1>
+<div class="sub">Every page has a <b>Feedback</b> button in the menu: one click on a face, a few words if you like.
+  It is anonymous unless the sender adds their name. The pages people like least are at the top.</div>
+
+{% if not summary %}
+<div class="card note" style="text-align:center; padding:28px">Nothing yet. Press <b>Feedback</b> at the top of any page – a single face is enough.</div>
+{% else %}
+<div class="card scroll">
+<table class="faces">
+  <thead><tr><th>Page</th><th>Said</th>{% for m, v in moods.items() %}<th title="{{ v[1] }}">{{ v[0] }}</th>{% endfor %}<th>Mix</th><th>Latest</th></tr></thead>
+  <tbody>
+  {% for a in summary %}
+  {% set k = a.moods.values() | sum %}
+  <tr class="{{ 'on' if f_area == a.area }}">
+    <td><a href="/board/feedback?area={{ a.area | urlencode }}">{{ a.name }}</a> <span class="note">{{ a.area }}</span></td>
+    <td class="num">{{ a.n }}</td>
+    {% for m in moods %}<td class="{{ 'zero' if not a.moods[m] }}">{{ a.moods[m] }}</td>{% endfor %}
+    <td><div class="bar" title="{% for m, v in moods.items() %}{{ v[0] }} {{ a.moods[m] }}  {% endfor %}">{% if k %}{% for m in moods %}{% if a.moods[m] %}<i class="m{{ m }}" style="width: {{ (100 * a.moods[m] / k) | round(1) }}%"></i>{% endif %}{% endfor %}{% endif %}</div></td>
+    <td class="note">{{ ago(a.last_at) }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<h2>{% if f_area %}About {{ f_area }} · <a href="/board/feedback" style="font-weight:400">show all pages</a>{% else %}Everything, newest first{% endif %}</h2>
+<div class="items">
+{% for f in items %}
+  <div class="card item" id="fb-{{ f.id }}">
+    <div class="face" title="{{ moods[f.mood][1] if f.mood else 'no face picked' }}">{{ moods[f.mood][0] if f.mood else '💬' }}</div>
+    <div>
+      <div class="where"><a href="{{ f.page }}">{{ f.page_title or f.page }}</a>
+        <span class="note">{{ f.who_name or 'anonymous' }}</span>
+        <span class="note when" title="{{ f.created_at[:16].replace('T', ' ') }} UTC">{{ ago(f.created_at) }}</span>
+        {% if can_delete %}<button type="button" class="link note" data-del="{{ f.id }}">Delete</button>{% endif %}</div>
+      {% if f.part %}<div class="part">{{ f.part }}</div>{% endif %}
+      {% if f.text %}<div class="said">{{ f.text }}</div>{% endif %}
+    </div>
+  </div>
+{% else %}
+  <div class="card note">Nothing about this page yet.</div>
+{% endfor %}
+</div>
+{% endif %}
+</div>
+{% if can_delete %}
+<script>
+document.addEventListener('click', async ev => {
+  const b = ev.target.closest('[data-del]'); if (!b || !confirm('Delete this feedback? This cannot be undone.')) return;
+  const r = await fetch('/api/feedback/' + b.dataset.del, {method: 'DELETE'});
+  if (r.ok) document.getElementById('fb-' + b.dataset.del).remove(); else alert('Could not delete (error ' + r.status + ').');
+});
+</script>
+{% endif %}
+{% endblock %}

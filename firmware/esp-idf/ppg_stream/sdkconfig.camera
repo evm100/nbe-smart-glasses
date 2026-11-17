@@ -20,7 +20,7 @@ CONFIG_PPG_CAM_FPS=0
 # "CAM WIN=n" at run time: smaller = finer pixels + smaller view (min 240), larger = the opposite.
 # SVGA has twice the lines of CIF, so clkdiv 1 (twice the driver's CIF sensor clock) keeps the sensor at
 # ~25 fps; clkdiv 3 halves it to ~12.5 (which worked, with some driver overruns). "CAM CLK=n".
-CONFIG_PPG_CAM_WINDOW=376
+CONFIG_PPG_CAM_WINDOW=480
 CONFIG_PPG_CAM_WIN_CLKDIV=1
 # only the 160x160 middle of the zoomed frame is sent: narrower view, same pixel detail, 25.6 kB/frame
 # = ~640 kB/s at 25 fps. USB Serial/JTAG measured ~0.85 MB/s (57.6 kB frames took 67 ms), so 25 fps

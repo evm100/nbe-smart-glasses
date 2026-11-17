@@ -38,7 +38,7 @@ def test_create_get_and_validation(store):
 
     assert store.create("ev", "note", "", "first line is the title\nmore")["title"] == "first line is the title"
     for bad in (dict(kind="rant", title="x"), dict(kind="note", title="", body="  "),
-                dict(kind="note", title="x" * 201), dict(kind="note", title="x", body="y" * 20001)):
+                dict(kind="note", title="x" * 201), dict(kind="note", title="x", body="y" * 200_001)):
         with pytest.raises(BoardError):
             store.create("ev", **bad)
     with pytest.raises(BoardError):
@@ -94,7 +94,7 @@ def test_state_and_counts(store):
     store.set_state(i["id"], "done")
     assert store.counts() == {"question": 1, "request": 1, "issue": 0, "open": 2}
     assert store.kind_counts()["all"] == 6 and store.kind_counts("done") == {
-        "announcement": 0, "note": 0, "question": 1, "request": 0, "issue": 1, "status": 0, "all": 2}
+        "announcement": 0, "note": 0, "doc": 0, "question": 1, "request": 0, "issue": 1, "status": 0, "all": 2}
 
     o = store.set_state(q["id"], "open")
     assert o["state"] == "open" and o["closed_by"] is None and o["closed_at"] is None
@@ -142,6 +142,61 @@ def test_filters_and_search(store):
     assert ids(q="100%") == [q] and ids(q="%") == [q] and ids(q="battery_level") == [q] and ids(q="batteryXlevel") == []
     assert ids(kind="issue", state="open") == []
     assert store.count() == 3 and store.count(device="gls03") == 2 and store.count(q="cuff") == 1
+
+
+def test_reactions_store(store):
+    p = store.create("ev", "doc", "Stress brainstorm", "# x")["id"]
+    assert store.react(p, "ada", "up", who_name="Ada") is True
+    assert store.react(p, "otto", "up") is True and store.react(p, "ada", "idea") is True
+    assert store.react(p, "ada", "up", on=True) is True                      # giving twice = still one
+    r = store.get(p)["reactions"]
+    assert [g["name"] for g in r["up"]] == ["Ada", "otto"] and len(r["idea"]) == 1 and "down" not in r
+    assert store.react(p, "ada", "up") is False                              # toggle takes it back
+    assert [g["who"] for g in store.list()[0]["reactions"]["up"]] == ["otto"]
+    with pytest.raises(BoardError):
+        store.react(p, "ada", "rofl")
+    with pytest.raises(KeyError):
+        store.react(999, "ada", "up")
+    store.delete(p)
+    with store._con() as con:
+        assert con.execute("SELECT COUNT(*) FROM board_reactions").fetchone()[0] == 0
+
+
+def test_feedback_store(store):
+    assert store.area("/") == "/" and store.area("/sessions/S001_x?t=1") == "/sessions/…" and store.area("/board") == "/board"
+    a = store.add_feedback("/sessions/S1", 1, page_title="S1 · Session")
+    assert a["token"] and a["mood"] == 1 and a["who"] is None and a["area"] == "/sessions/…"
+    with pytest.raises(PermissionError):
+        store.update_feedback(a["id"], "wrong", text="x")
+    u = store.update_feedback(a["id"], a["token"], text="too many numbers", part="under “HR”: chart", who="olga", who_name="Olga")
+    assert u["text"] == "too many numbers" and u["who_name"] == "Olga" and "token" not in u
+    assert store.update_feedback(a["id"], a["token"], who=None)["who"] is None   # changed their mind: anonymous again
+    store.add_feedback("/sessions/S2", 2)
+    store.add_feedback("/board", 5, "love the board")
+    store.add_feedback("/board", None, "but where is search?")
+    for bad in (dict(mood=None, text=""), dict(mood=9), dict(mood="x")):
+        with pytest.raises(BoardError):
+            store.add_feedback("/", **bad)
+    sm = store.feedback_summary()
+    assert [x["area"] for x in sm] == ["/sessions/…", "/board"]                # worst first
+    assert sm[0]["n"] == 2 and sm[0]["avg"] == 1.5 and sm[1]["moods"][5] == 1 and sm[1]["n"] == 2
+    assert [f["text"] for f in store.feedback(area="/board")] == ["but where is search?", "love the board"]
+    assert all("token" not in f for f in store.feedback())
+    assert store.delete_feedback(a["id"]) and not store.delete_feedback(a["id"])
+
+
+def test_markdown_render_and_excerpt():
+    from sglab.web.md import excerpt, first_heading, render
+    h = str(render("# T\n\n| a | b |\n|---|---|\n| **1** | [x](https://e.org) |\n\n- one\n- two\n\n<i>raw</i> "
+                   "[bad](javascript:alert(1)) ![img](https://e.org/p.png) see https://e.org/z."))
+    assert "<h1>T</h1>" in h and '<div class="md-table"><table>' in h and "<strong>1</strong>" in h and "<li>one</li>" in h
+    assert '<a href="https://e.org" target="_blank" rel="noopener noreferrer">x</a>' in h
+    assert "<i>" not in h and "&lt;i&gt;raw" in h and 'href="javascript' not in h and "<img" not in h
+    assert '<a href="https://e.org/z" target="_blank"' in h                  # bare address, trailing dot left out
+    assert "a<br />\nb" in str(render("a\nb"))                              # plain text keeps its line breaks
+    assert excerpt("## Intro\n**Bold** and [link](http://x) | cell |") == "Intro Bold and link cell"
+    assert excerpt("word " * 100, 20).endswith("…") and len(excerpt("word " * 100, 20)) <= 21
+    assert first_heading("# Title\n\nrest") == ("Title", "rest") and first_heading("no heading") == ("", "no heading")
 
 
 # ---------------------------------------------------------------- web
@@ -204,10 +259,10 @@ def test_api_login_and_roles(server):
     p = post(u["olga"], kind="question", title="Who has the cuff?", body="need it at 3")
     assert p["author"] == "olga" and p["author_name"] == "Olga" and p["url"] == f"/board/{p['id']}"
     assert p["kind_label"] == "Question" and p["state_label"] == "needs an answer"
-    assert p["can"] == {"edit": True, "delete": True, "pin": False, "state": True, "reply": True}
+    assert p["can"] == {"edit": True, "delete": True, "pin": False, "state": True, "reply": True, "react": True}
     assert u["vic"].post(f"/api/board/{p['id']}/replies", json={"body": "me"}).status_code == 403
     assert u["vic"].get(f"/api/board/{p['id']}").json()["can"] == {
-        "edit": False, "delete": False, "pin": False, "state": False, "reply": False}
+        "edit": False, "delete": False, "pin": False, "state": False, "reply": False, "react": True}
     assert "needs an operator account" in u["vic"].get("/board").text.replace("<b>", "").replace("</b>", "")
     assert 'id="composer"' not in u["vic"].get("/board").text and 'id="composer"' in u["olga"].get("/board").text
 
@@ -266,7 +321,7 @@ def test_api_author_vs_other_vs_admin(server):
     rid = u["otto"].post(f"{url}/replies", json={"body": "noted"}).json()["replies"][0]["id"]
     a = u["ada"].patch(url, json={"pinned": True, "title": "Charge ALL glasses"}).json()
     assert a["pinned"] is True and a["title"] == "Charge ALL glasses" and a["author"] == "olga"
-    assert a["can"] == {"edit": True, "delete": True, "pin": True, "state": False, "reply": True}
+    assert a["can"] == {"edit": True, "delete": True, "pin": True, "state": False, "reply": True, "react": True}
     assert u["ada"].delete(f"/api/board/replies/{rid}").status_code == 200
     assert u["ada"].delete(url).json() == {"ok": True}
     assert u["olga"].get(url).status_code == 404 and u["ada"].delete(url).status_code == 404
@@ -369,7 +424,7 @@ def test_single_user_mode(local):
     assert r.status_code == 400 and "name" in r.json()["error"]
     p = c.post("/api/board", json={"kind": "question", "title": "Where is the charger?", "author": "EV"}).json()
     assert p["author"] == p["author_name"] == "EV"
-    assert p["can"] == {"edit": True, "delete": True, "pin": True, "state": True, "reply": True}  # local admin
+    assert p["can"] == {"edit": True, "delete": True, "pin": True, "state": True, "reply": True, "react": True}  # local admin
     url = f"/api/board/{p['id']}"
     assert c.post(f"{url}/replies", json={"body": "top drawer"}).status_code == 400            # name needed here too
     r = c.post(f"{url}/replies", json={"body": "top drawer", "author": "MK"}).json()
@@ -380,3 +435,93 @@ def test_single_user_mode(local):
     html = c.get(f"/board/{p['id']}").text
     assert "Where is the charger?" in html and "top drawer" in html and "answered" in html
     assert c.delete(url).status_code == 200 and c.get("/api/board").json()["posts"] == []
+
+
+def test_markdown_docs_collapse_and_download(server):
+    app, u = server
+    doc = "# Stress and fatigue\n\nA starting point.\n\n## Dimensions\n\n| Dimension | Trigger |\n| --- | --- |\n| Cognitive | n-back |\n"
+    long = doc + ("More words here. " * 400)
+    p = post(u["olga"], kind="doc", title="Stress and fatigue — brainstorm", body=long)
+    assert p["kind_label"] == "Write-up" and p["state_label"] is None and p["minutes"] >= 5
+    assert p["excerpt"].startswith("Stress and fatigue A starting point. Dimensions Dimension Trigger")
+    html = u["vic"].get("/board").text
+    assert f'<article class="card post k-doc" id="post-{p["id"]}"' in html               # collapsed on the list
+    assert "<th>Dimension</th>" in html and 'class="excerpt if-closed"' in html and "min read" in html
+    single = u["vic"].get(f"/board/{p['id']}").text
+    assert 'class="card post k-doc open"' in single and 'data-act="toggle"' not in single
+    d = u["vic"].get(f"/board/{p['id']}/download")
+    assert d.status_code == 200 and d.headers["content-type"].startswith("text/markdown")
+    assert 'filename="Stress_and_fatigue_brainstorm.md"' in d.headers["content-disposition"] and d.text.startswith("# Stress and fatigue\n")
+    plain = post(u["olga"], title="no heading", body="just text")
+    assert u["vic"].get(f"/board/{plain['id']}/download").text == "# no heading\n\njust text\n"
+    assert u["vic"].get("/board/999/download").status_code == 404
+    pv = u["vic"].post("/api/board/preview", json={"body": "**hi** <b>x</b>"}).json()["html"]
+    assert "<strong>hi</strong>" in pv and "<b>" not in pv
+    assert "Add a .md file" in u["olga"].get("/board").text
+
+
+def test_api_reactions(server):
+    app, u = server
+    pid = post(u["olga"], title="React to me")["id"]
+    url = f"/api/board/{pid}/react"
+    r = u["vic"].post(url, json={"reaction": "up"})                   # viewers react too
+    assert r.status_code == 200
+    up = {x["key"]: x for x in r.json()["reactions"]}["up"]
+    assert up == {"key": "up", "emoji": "👍", "label": "agree / useful", "n": 1, "mine": True, "names": ["Vic"]}
+    assert [x["key"] for x in r.json()["reactions"]] == ["up", "down", "love", "idea", "seen", "confused"]
+    r = u["otto"].post(url, json={"reaction": "up", "on": True}).json()
+    up = {x["key"]: x for x in r["reactions"]}["up"]
+    assert up["n"] == 2 and up["mine"] is True and "who" not in up
+    assert {x["key"]: x for x in u["vic"].get(f"/api/board/{pid}").json()["reactions"]}["up"]["mine"] is True
+    assert {x["key"]: x for x in u["vic"].post(url, json={"reaction": "up"}).json()["reactions"]}["up"]["n"] == 1
+    assert u["vic"].post(url, json={"reaction": "rofl"}).status_code == 400
+    assert u["vic"].post("/api/board/999/react", json={"reaction": "up"}).status_code == 404
+    assert TestClient(app, headers=ORIGIN).post(url, json={"reaction": "up"}).status_code == 401
+    html = u["vic"].get("/board").text
+    assert 'data-act="react" data-key="up"' in html and 'title="agree / useful: Otto"' in html
+
+
+def test_api_feedback(server):
+    app, u = server
+    r = u["vic"].post("/api/feedback", json={"page": "/sessions/S001", "page_title": "S001 · Session", "mood": 1})
+    assert r.status_code == 201 and r.json()["token"] and r.json()["who"] is None
+    fid, tok = r.json()["id"], r.json()["token"]
+    url = f"/api/feedback/{fid}"
+    assert u["otto"].patch(url, json={"token": "nope", "text": "x"}).status_code == 403
+    e = u["vic"].patch(url, json={"token": tok, "text": "I hate the wall of numbers", "part": "under “HR”: chart"})
+    assert e.status_code == 200 and e.json()["text"] == "I hate the wall of numbers" and e.json()["who"] is None
+    s = u["vic"].patch(url, json={"token": tok, "signed": True}).json()
+    assert s["who"] == "vic" and s["who_name"] == "Vic" and s["text"] == "I hate the wall of numbers"
+    assert u["vic"].patch(url, json={"token": tok, "signed": False}).json()["who"] is None
+    assert u["vic"].post("/api/feedback", json={"page": "/"}).status_code == 400
+    assert u["vic"].patch("/api/feedback/999", json={"token": "x", "text": "y"}).status_code == 404
+    u["olga"].post("/api/feedback", json={"page": "/board", "mood": 5, "text": "<script>x</script>"})
+
+    d = u["vic"].get("/api/feedback").json()
+    assert [a["area"] for a in d["summary"]] == ["/sessions/…", "/board"] and "token" not in d["items"][0]
+    html = u["vic"].get("/board/feedback").text
+    assert "I hate the wall of numbers" in html and "under “HR”: chart" in html and "anonymous" in html
+    assert "<script>x</script>" not in html and "&lt;script&gt;x&lt;/script&gt;" in html and "data-del" not in html
+    assert "I hate" not in u["vic"].get("/board/feedback?area=/board").text
+    assert 'id="fb-btn"' in u["vic"].get("/devices").text and 'id="fb-btn"' not in TestClient(app).get("/login").text
+    # feedback stays out of the audit log (anonymous means anonymous); only an admin deletes
+    assert not [a for a in app.state.ctx.auth.audit_log() if a["action"].startswith("board.feedback") and a["action"] != "board.feedback_delete"]
+    assert u["olga"].delete(url).status_code == 403
+    assert u["ada"].delete(url).json() == {"ok": True} and u["ada"].delete(url).status_code == 404
+    assert "data-del" in u["ada"].get("/board/feedback").text
+
+
+def test_single_user_reactions(local):
+    c = local
+    pid = c.post("/api/board", json={"kind": "note", "title": "x", "author": "EV"}).json()["id"]
+    url = f"/api/board/{pid}/react"
+    assert c.post(url, json={"reaction": "up"}).status_code == 400            # nobody at all
+    r = c.post(url, json={"reaction": "up", "guest": "abc123"}).json()
+    up = {x["key"]: x for x in r["reactions"]}["up"]
+    assert up["n"] == 1 and up["mine"] is True and up["names"] == ["someone"] and up["who"] == ["guest:abc123"]
+    r = c.post(url, json={"reaction": "up", "author": "MK", "guest": "zzz"}).json()
+    up = {x["key"]: x for x in r["reactions"]}["up"]
+    assert up["n"] == 2 and up["mine"] is True and up["who"] == ["guest:abc123", "MK"]
+    assert 'data-who="guest:abc123' in c.get("/board").text
+    f = c.post("/api/feedback", json={"page": "/", "mood": 4, "signed": True, "author": "EV"}).json()
+    assert f["who_name"] == "EV"

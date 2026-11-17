@@ -639,7 +639,7 @@ menu "PPG stream (MAX30102)"
             int "Frame rate cap (frames/s, 0 = as fast as the sensor and USB allow)"
             depends on PPG_CAMERA
             range 0 60
-            default 15
+            default 0
             help
                 Can be changed at run time: "CAM FPS=10".
 
@@ -655,13 +655,13 @@ menu "PPG stream (MAX30102)"
             int "Fixed exposure (aec_value, 0-1200)"
             depends on PPG_CAMERA
             range 0 1200
-            default 300
+            default 700
 
         config PPG_CAM_GAIN
             int "Fixed analog gain (0-30)"
             depends on PPG_CAMERA
             range 0 30
-            default 2
+            default 4
 
         config PPG_CAM_VFLIP
             bool "Flip vertically"
