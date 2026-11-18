@@ -1,0 +1,14 @@
+# NBE Pi gateway settings (optional: copy to gateway.conf to change any of these).
+# The Pi's Wi-Fi is NOT configured here: it keeps using whatever network it's already on.
+
+UPLINK_IFACE="wlan0"         # the Wi-Fi interface that has internet
+LAN_IFACE="eth0"             # the Ethernet port the lab router plugs into
+LAN_ADDR="192.168.77.1/24"   # the Pi's lab-side address; it hands out the rest of this subnet by DHCP
+                             # (must not overlap the Wi-Fi subnet; setup.sh checks)
+
+CHECK_HOST="nbe.evm100.org"  # what the watchdog/status page test (the nodes' MQTT broker)
+CHECK_PORT="8884"
+ALLOW_SSH_FROM_UPLINK="yes"  # keep SSH reachable from the Wi-Fi side (how you log in today);
+                             # everything else from that side is blocked. SSH from the lab side always works.
+STATUS_PORT="80"             # status page at http://192.168.77.1 from the lab network, 0 = off
+REBOOT_AFTER_MIN="30"        # watchdog reboots the Pi after this long offline, 0 = never

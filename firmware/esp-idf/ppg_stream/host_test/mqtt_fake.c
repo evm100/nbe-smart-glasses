@@ -26,6 +26,8 @@ static bool s_up;
 int g_batches, g_max_batch, g_offline_publishes, g_dropped_frames, g_resends_asked;
 static FILE *s_frames;
 static uint64_t s_expected;           // the "server": stream offset it has everything before
+static uint32_t s_srv_boot;           // ... of this boot (a new boot = a new stream, like FrameReceiver)
+int g_stops, g_starts;
 static char s_reply[64];              // ACK / RESEND waiting for fake_mqtt_pump()
 
 esp_mqtt_client_handle_t esp_mqtt_client_init(const esp_mqtt_client_config_t *c)
@@ -65,7 +67,16 @@ void fake_mqtt_connected(bool up)
 esp_err_t esp_mqtt_client_start(esp_mqtt_client_handle_t c)
 {
     (void)c;
+    g_starts++;
     fake_mqtt_connected(true);
+    return 0;
+}
+esp_err_t esp_mqtt_client_stop(esp_mqtt_client_handle_t c)
+{
+    (void)c;
+    g_stops++;
+    fake_mqtt_connected(false);
+    s_reply[0] = 0;  // an ACK on its way is lost with the connection
     return 0;
 }
 esp_err_t esp_mqtt_client_reconnect(esp_mqtt_client_handle_t c) { (void)c; return 0; }
@@ -97,6 +108,10 @@ int esp_mqtt_client_publish(esp_mqtt_client_handle_t c, const char *topic, const
     fflush(s_frames);
     uint64_t off = le(f + 8, 8), end = off + (uint64_t)(len - 20);
     uint32_t boot = (uint32_t)le(f + 4, 4);
+    if (boot != s_srv_boot) {
+        s_srv_boot = boot;
+        s_expected = off;
+    }
     if (off > s_expected) {
         snprintf(s_reply, sizeof s_reply, "RESEND %08lx %llu", (unsigned long)boot, (unsigned long long)s_expected);
         g_resends_asked++;
@@ -120,6 +135,9 @@ uint32_t ulTaskNotifyTake(BaseType_t c, TickType_t w) { (void)c; (void)w; return
 esp_err_t net_start(void (*on_ip)(void)) { on_ip(); return 0; }
 bool net_has_ip(void) { return true; }
 void net_watchdog(void) {}
+int g_net_pauses, g_net_resumes;
+void net_pause(void) { g_net_pauses++; }
+void net_resume(void) { g_net_resumes++; }
 void esp_restart(void) { abort(); }
 int net_rssi(void) { return -55; }
 int net_tx_power_dbm(void) { return 11; }
@@ -127,7 +145,7 @@ void net_ip_str(char *out, int len) { snprintf(out, (size_t)len, "10.0.0.2"); }
 void net_mac_str(char *out, int len) { snprintf(out, (size_t)len, "dc:da:0c:12:34:56"); }
 void net_ssid_str(char *out, int len) { snprintf(out, (size_t)len, "UCSD-DEVICE"); }
 bool net_time_synced(void) { return true; }
-uint32_t esp_random(void) { return 0x5eed1234u; }
+uint32_t esp_random(void) { static uint32_t r = 0x5eed1234u; return r++; }
 int64_t net_epoch_ms(void) { return 1790000000000LL + esp_timer_get_time() / 1000; }
 esp_err_t esp_crt_bundle_attach(void *conf) { (void)conf; return 0; }
 

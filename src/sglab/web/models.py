@@ -81,9 +81,30 @@ def models_page(request: Request, user=viewer):
                          "progress": j.get("progress"), "error": j["error"], "started": j["created_at"]})
     jobs = [dict(t) for t in ctx.model_tasks] + jobs
     cfg = mdl.layer4_config(s)
+    # the headline per site: the run that beats its baseline by the most (bpmodel.default_run)
+    from ..bpmodel import default_run
+    from ..dataset import subject_code
+    best = []
+    by_key = {f"{m['name']}/{m['run_id']}": m for m in runs}
+    for role in ("glasses", "finger", "head"):
+        d = default_run(s, role)
+        if d and d["key"] in by_key:
+            m = by_key[d["key"]]
+            best.append({"role": role, "m": m, "x": mdl.explain(m), "key": d["key"]})
+    seen = {r["role"]: set(r["m"].get("subjects", [])) for r in best}
+    c = ctx.cat()
+    try:
+        tests = [{"sid": x["session_id"], "subject": x.get("subject_id"), "protocol": x.get("protocol"),
+                  "started": x.get("started_at"), "n_bp": x["n_bp"], "processed": x["n_processed"] > 0,
+                  "seen": [r for r, subj in seen.items() if subject_code(x.get("subject_id")) in subj]}
+                 for x in c.sessions() if x.get("n_bp")][:15]
+    finally:
+        c.close()
+    names = list(dict.fromkeys(m["name"] for m in reversed(runs)))
     return ctx.render(request, "models.html", {
         "rows": rows, "history": history, "datasets": list_datasets(s), "jobs": jobs, "cfg": cfg,
-        "spec": sweep_spec(s), "remote": ctx.jobs is not None, "msg": request.query_params.get("msg")})
+        "spec": sweep_spec(s), "remote": ctx.jobs is not None, "msg": request.query_params.get("msg"),
+        "best": best, "tests": tests, "names": names})
 
 
 @router.get("/models/{name}/{run_id}", response_class=HTMLResponse)
@@ -162,6 +183,23 @@ def _json_safe(v):
     if isinstance(v, list):
         return [_json_safe(x) for x in v]
     return None if isinstance(v, float) and v != v else v
+
+
+@router.get("/api/models/{name}/{run_id}/predictions")
+def api_run_predictions(request: Request, name: str, run_id: str, user=viewer):
+    """predictions.csv of a run as columns (for the interactive predicted-vs-cuff plots)."""
+    import pandas as pd
+
+    m = mdl.get_run(C(request).settings, name, run_id)
+    if m is None:
+        raise HTTPException(404, f"model run {name}/{run_id} not found")
+    from pathlib import Path
+    p = Path(m["path"]) / "predictions.csv"
+    if not p.exists():
+        return {"rows": []}
+    df = pd.read_csv(p)
+    keep = [c for c in ("target", "split", "subject", "session_id", "t_ref", "y", "pred", "baseline", "cal") if c in df]
+    return _json_safe({"rows": df[keep].astype(object).where(df[keep].notna(), None).to_dict(orient="records")})
 
 
 @router.get("/api/models")

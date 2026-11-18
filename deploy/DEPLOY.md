@@ -292,7 +292,7 @@ Node certificates and the CA move with `/srv/nbe/pki`; boards don't need re-flas
 | node never online | `idf.py monitor` on the board: Wi-Fi reason codes (UCSD-DEVICE MAC registered? 2.4 GHz?), "transport error" (URI / port blocked / CA), "connection refused" (cert not from the device CA / disabled at broker) |
 | node online, trial gets no data | ACL not loaded (`Denied PUBLISH` in mosquitto log), topic prefix mismatch, node disabled on `Nodes` |
 | "stale" | node stopped publishing status but the broker hasn't timed it out yet (≤ 45 s) — power/Wi-Fi |
-| port 8884 blocked on a network | use 8883 if free, or terminate MQTT on 443 with nginx `stream { ssl_preread }` SNI routing (separate hostname) |
+| port 8884 blocked on a network | share 443: nginx `stream { ssl_preread }` routes ALPN `mqtt` to mosquitto and the rest to the websites on `127.0.0.1:8443 proxy_protocol`. Set `[gateway] broker_uri = "mqtts://…:443"`. The USB gateway sends that ALPN. See `deploy/evmserver/nginx-stream-443.conf` and `enable-mqtt-443.sh` |
 | login says too many attempts | 5 failures per username / 20 per IP in 15 min; wait, or restart the service |
 
 ## 11. Security summary

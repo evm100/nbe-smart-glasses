@@ -1,0 +1,274 @@
+<title>From Pulse to Pressure</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@500;650&family=Inter:wght@400;550&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: single reading column like a lab notebook, diagrams break out slightly wider; signal = teal, pressure = red */
+:root{
+  --bg:#f3f6f6; --panel:#ffffff; --fg:#17201f; --muted:#5b6866; --line:#d5dddc;
+  --sig:#0e7c74; --bp:#c2412d; --eye:#5b5bd6; --chem:#a26a00;
+  --display:"Sora",ui-sans-serif,system-ui,sans-serif;
+  --body:"Inter",ui-sans-serif,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f1514; --panel:#172120; --fg:#e3ebe9; --muted:#93a29f; --line:#2b3836;
+  --sig:#3cc2b5; --bp:#f07a63; --eye:#9a9af5; --chem:#e0a73c; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f1514; --panel:#172120; --fg:#e3ebe9; --muted:#93a29f; --line:#2b3836;
+  --sig:#3cc2b5; --bp:#f07a63; --eye:#9a9af5; --chem:#e0a73c; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:16px;line-height:1.62}
+.wrap{max-width:820px;margin:0 auto;padding-block:40px 80px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  display:flex;flex-direction:column;gap:22px}
+p,li{max-width:66ch}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;margin:0;line-height:1.2}
+h1{font-size:clamp(30px,6vw,46px);font-weight:650;letter-spacing:-.01em}
+h2{font-size:24px;font-weight:650;margin-top:30px}
+h3{font-size:17px;font-weight:650}
+p{margin:0}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.lede{font-size:18px;color:var(--muted)}
+.sig{color:var(--sig);font-weight:550}.bp{color:var(--bp);font-weight:550}
+code,.mono{font-family:var(--mono);font-size:.9em}
+figure{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px;display:flex;flex-direction:column;gap:10px;min-width:0}
+figcaption{font-size:14px;color:var(--muted)}
+.scroll{overflow-x:auto}
+svg{display:block;width:100%;height:auto;min-width:560px}
+svg text{font-family:var(--mono);font-size:12px;fill:var(--fg)}
+svg .m{fill:var(--muted)}
+.callout{border-left:3px solid var(--bp);padding:4px 0 4px 16px}
+.callout.s{border-color:var(--sig)}
+ul{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px}
+.controls{display:flex;flex-wrap:wrap;gap:8px}
+.controls button{font-family:var(--mono);font-size:13px;border:1px solid var(--line);background:var(--bg);color:var(--fg);padding:6px 12px;border-radius:999px;cursor:pointer}
+.controls button[aria-pressed="true"]{background:var(--sig);color:var(--panel);border-color:var(--sig)}
+.controls button:focus-visible{outline:2px solid var(--sig);outline-offset:2px}
+canvas{width:100%;height:260px;display:block}
+.kern{font-family:var(--mono);font-size:13px;color:var(--muted)}
+</style>
+
+<div class="wrap">
+  <span class="eyebrow">NBE smart glasses · ML notebook · Nov 2026</span>
+  <h1>From pulse to pressure</h1>
+  <p class="lede">What a one-dimensional convolutional network would do with our glasses PPG, how the cuff readings fit in, and how a larger model could later read stress and fatigue from every sensor at once.</p>
+
+  <h2>1. A network maps a window to a target</h2>
+  <p>A neural network is a function with adjustable knobs. You show it an input and the answer you wanted, it measures how wrong it was, and it nudges every knob a little to be less wrong. Repeat that thousands of times. Nothing in the network knows what the answer <em>means</em>. You decide that by what you put on the output side during training.</p>
+  <p>Predicting the next sample of the same series is one choice of target. Predicting <span class="bp">blood pressure</span> from a window of <span class="sig">PPG</span> is another. The convolutional layers are identical in both cases. Only the last layer and the training answers change.</p>
+
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 760 250" role="img" aria-label="1D CNN pipeline from a 10 second PPG window to systolic and diastolic outputs">
+      <!-- input wave -->
+      <text x="10" y="22" class="m">input: 10 s PPG = 1000 samples</text>
+      <path id="wave" fill="none" stroke="var(--sig)" stroke-width="2"/>
+      <!-- conv blocks -->
+      <g>
+        <rect x="190" y="60" width="16" height="130" rx="2" fill="var(--sig)" opacity=".25"/>
+        <rect x="210" y="60" width="16" height="130" rx="2" fill="var(--sig)" opacity=".35"/>
+        <rect x="230" y="60" width="16" height="130" rx="2" fill="var(--sig)" opacity=".45"/>
+        <text x="182" y="210">conv 1</text><text x="172" y="226" class="m">16 filters</text>
+        <rect x="290" y="80" width="14" height="90" rx="2" fill="var(--sig)" opacity=".35"/>
+        <rect x="306" y="80" width="14" height="90" rx="2" fill="var(--sig)" opacity=".45"/>
+        <rect x="322" y="80" width="14" height="90" rx="2" fill="var(--sig)" opacity=".55"/>
+        <rect x="338" y="80" width="14" height="90" rx="2" fill="var(--sig)" opacity=".65"/>
+        <text x="290" y="210">conv 2</text><text x="282" y="226" class="m">32 filters</text>
+        <rect x="400" y="98" width="12" height="54" rx="2" fill="var(--sig)" opacity=".5"/>
+        <rect x="414" y="98" width="12" height="54" rx="2" fill="var(--sig)" opacity=".6"/>
+        <rect x="428" y="98" width="12" height="54" rx="2" fill="var(--sig)" opacity=".7"/>
+        <rect x="442" y="98" width="12" height="54" rx="2" fill="var(--sig)" opacity=".8"/>
+        <rect x="456" y="98" width="12" height="54" rx="2" fill="var(--sig)" opacity=".9"/>
+        <text x="404" y="210">conv 3</text><text x="396" y="226" class="m">64 filters</text>
+        <!-- pooled vector -->
+        <rect x="520" y="60" width="14" height="130" rx="2" fill="none" stroke="var(--fg)" stroke-dasharray="3 3"/>
+        <text x="500" y="210">pool</text><text x="486" y="226" class="m">64 numbers</text>
+        <!-- dense -->
+        <circle cx="590" cy="95" r="7" fill="var(--muted)"/><circle cx="590" cy="125" r="7" fill="var(--muted)"/><circle cx="590" cy="155" r="7" fill="var(--muted)"/>
+        <text x="572" y="210">dense</text>
+        <!-- outputs -->
+        <circle cx="670" cy="105" r="9" fill="var(--bp)"/><circle cx="670" cy="145" r="9" fill="var(--bp)"/>
+        <text x="686" y="109">SBP</text><text x="686" y="149">DBP</text>
+        <text x="640" y="210">head</text><text x="630" y="226" class="m">2 outputs</text>
+      </g>
+      <g stroke="var(--muted)" stroke-width="1.2" fill="none">
+        <path d="M160 125 L184 125"/><path d="M252 125 L284 125"/><path d="M358 125 L394 125"/><path d="M474 125 L514 125"/><path d="M540 125 L578 125"/><path d="M600 125 L656 125"/>
+      </g>
+    </svg>
+    </div>
+    <figcaption>Everything up to "pool" is the <strong>feature extractor</strong>, which turns raw waveform into a handful of numbers describing it. The <strong>head</strong> is the small part that turns those numbers into an answer. Swap the head and the same extractor can predict the next sample, BP, heart rate, or signal quality.</figcaption>
+  </figure>
+
+  <h2>2. What one kernel does</h2>
+  <p>A kernel is a short list of weights, maybe 7 to 15 samples long (70 to 150 ms at 100 Hz). It slides along the signal and at each position multiplies and adds. Where the waveform locally looks like the kernel, the output is large. Pick a kernel below to see what it picks out of a synthetic pulse. In a real network these weights are not hand-written: training discovers them, and they often end up resembling exactly these kinds of detectors.</p>
+  <figure>
+    <div class="controls" role="group" aria-label="Kernel choice">
+      <button id="k-up" aria-pressed="true">upstroke detector</button>
+      <button id="k-peak" aria-pressed="false">peak / notch detector</button>
+      <button id="k-smooth" aria-pressed="false">smoother</button>
+    </div>
+    <div class="kern" id="kweights"></div>
+    <canvas id="demo" aria-label="Synthetic PPG and the kernel's output"></canvas>
+    <figcaption>Top trace: input PPG. Bottom trace: the kernel's output, called a feature map. A layer has many kernels, so it produces many feature maps side by side. The next layer convolves over <em>those</em>, so it can detect combinations, like "a steep upstroke followed by a notch 300 ms later".</figcaption>
+  </figure>
+  <p>Stacking layers and shrinking the signal between them (pooling) lets deeper kernels see more time. The first layer sees 70 ms. After a few layers a single unit is looking at a whole heartbeat or more. That is how the network gets from "slope here" to "shape of this beat" to "how these beats behave over ten seconds".</p>
+
+  <h2>3. Where the cuff readings come in</h2>
+  <p>The cuff series is not the validation set. It is the <strong>label</strong>: the answer the network is trained to produce. Validation means something else, namely holding back some labeled examples (we already hold out whole sessions) and checking the network on them after training.</p>
+  <p>Because cuff readings are sparse, each one becomes a training example by cutting the PPG around the moment it was taken.</p>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 760 180" role="img" aria-label="Timeline with continuous PPG and sparse cuff readings, with windows cut around each reading">
+      <path id="longwave" fill="none" stroke="var(--sig)" stroke-width="1.2"/>
+      <g fill="var(--bp)" opacity=".12">
+        <rect x="120" y="20" width="70" height="80"/><rect x="390" y="20" width="70" height="80"/><rect x="630" y="20" width="70" height="80"/>
+      </g>
+      <g stroke="var(--bp)" stroke-width="1" stroke-dasharray="3 3"><path d="M155 20 V130"/><path d="M425 20 V130"/><path d="M665 20 V130"/></g>
+      <g fill="var(--bp)"><circle cx="155" cy="140" r="6"/><circle cx="425" cy="140" r="6"/><circle cx="665" cy="140" r="6"/></g>
+      <text x="138" y="166">124/78</text><text x="408" y="166">131/82</text><text x="648" y="166">118/75</text>
+      <text x="10" y="14" class="m">PPG at 100 Hz, continuous</text>
+      <text x="230" y="140" class="m">no label here: not used for BP training</text>
+    </svg>
+    </div>
+    <figcaption>Shaded spans are the PPG windows paired with each cuff reading. Several slightly shifted windows can be cut per reading, but they are near-copies of each other, so 40 readings still means roughly 40 independent examples.</figcaption>
+  </figure>
+  <ul>
+    <li><strong>Interpolating</strong> between cuff readings invents labels. BP can move a lot in two minutes, so the network would learn our guesses. Use windows near real readings instead.</li>
+    <li><strong>The window does not need to span the gap.</strong> It needs to cover the moment of the reading, about 10 to 30 seconds. The gaps simply hold no training data.</li>
+    <li><strong>Once trained</strong>, the network runs on every window as it slides along. That turns sparse cuff readings into a continuous estimated BP series, which is the new sequence you described.</li>
+  </ul>
+
+  <div class="callout">
+    <h3>The real obstacle is the count</h3>
+    <p>Our honest headline is 40 scored readings from 2 subjects. A small CNN has tens of thousands of knobs. Trained from scratch on 40 answers it will memorise them. The ridge model on hand-made features is the right tool for data this size, and it stays the baseline any CNN must beat under the same session-held-out test.</p>
+  </div>
+
+  <h2>4. Making a CNN practical anyway</h2>
+  <p>Three standard tricks, and the first connects straight back to the next-sample video.</p>
+  <ul>
+    <li><strong>Self-supervised pretraining.</strong> We have hours of glasses PPG with no cuff attached. Train the network to predict the next samples, or to fill in hidden gaps, on all of it. That needs no labels. Its convolutional layers learn what a pulse looks like on <em>our</em> sensor. Then keep those layers, replace the head with a BP head, and fine-tune on the 40 labeled windows. Predicting the next value is the warm-up, and BP is the real task.</li>
+    <li><strong>Pretraining on public data.</strong> PulseDB packages millions of 10-second PPG segments with arterial-line BP from thousands of hospital patients (built from MIMIC-III and VitalDB). It is finger PPG, not forehead or temple, so it is a starting point that still needs fine-tuning.</li>
+    <li><strong>Predict change, not absolute BP.</strong> Calibrate once per person with a cuff, then have the network predict the difference from that baseline. Absolute calibration-free BP from PPG is where published models tend to fall apart on new people. This matches the leave-one-subject-out failure we already saw.</li>
+  </ul>
+
+  <h2>5. The layer above: reading the whole person</h2>
+  <p>Each sensor gets its own encoder, a model suited to that kind of data. Every encoder outputs a short vector of numbers on a shared clock, say every 5 seconds. A fusion model reads the recent history of all those vectors and outputs several scores at once.</p>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 760 330" role="img" aria-label="Multimodal fusion architecture">
+      <g font-size="12">
+        <rect x="10" y="20" width="150" height="46" rx="6" fill="none" stroke="var(--sig)"/><text x="22" y="40">PPG, 100 Hz</text><text x="22" y="56" class="m">raw waveform</text>
+        <rect x="10" y="86" width="150" height="46" rx="6" fill="none" stroke="var(--eye)"/><text x="22" y="106">eye camera</text><text x="22" y="122" class="m">video frames</text>
+        <rect x="10" y="152" width="150" height="46" rx="6" fill="none" stroke="var(--chem)"/><text x="22" y="172">glucose, cortisol,</text><text x="22" y="188" class="m">uric acid (later)</text>
+        <rect x="10" y="218" width="150" height="46" rx="6" fill="none" stroke="var(--muted)"/><text x="22" y="238">context</text><text x="22" y="254" class="m">time of day, motion</text>
+
+        <rect x="200" y="20" width="170" height="46" rx="6" fill="var(--sig)" opacity=".14"/><text x="210" y="40">1D CNN</text><text x="210" y="56" class="m">BP, HR, HRV, shape</text>
+        <rect x="200" y="86" width="170" height="46" rx="6" fill="var(--eye)" opacity=".14"/><text x="210" y="106">2D CNN or tracker</text><text x="210" y="122" class="m">pupil, blinks, gaze</text>
+        <rect x="200" y="152" width="170" height="46" rx="6" fill="var(--chem)" opacity=".14"/><text x="210" y="172">small per-sensor net</text><text x="210" y="188" class="m">slow trends, slopes</text>
+        <rect x="200" y="218" width="170" height="46" rx="6" fill="var(--muted)" opacity=".14"/><text x="210" y="238">plain features</text><text x="210" y="254" class="m">no learning needed</text>
+
+        <rect x="420" y="20" width="150" height="244" rx="8" fill="none" stroke="var(--fg)"/>
+        <text x="432" y="120">fusion model</text>
+        <text x="432" y="140" class="m">reads last N min</text>
+        <text x="432" y="156" class="m">GRU or transformer</text>
+        <text x="432" y="172" class="m">+ "missing" flags</text>
+
+        <rect x="610" y="30" width="140" height="34" rx="17" fill="var(--bp)" opacity=".15"/><text x="624" y="52">stress</text>
+        <rect x="610" y="78" width="140" height="34" rx="17" fill="var(--bp)" opacity=".15"/><text x="624" y="100">mental fatigue</text>
+        <rect x="610" y="126" width="140" height="34" rx="17" fill="var(--bp)" opacity=".15"/><text x="624" y="148">physical fatigue</text>
+        <rect x="610" y="174" width="140" height="34" rx="17" fill="var(--bp)" opacity=".15"/><text x="624" y="196">hunger / energy</text>
+        <rect x="610" y="222" width="140" height="34" rx="17" fill="none" stroke="var(--bp)" stroke-dasharray="3 3"/><text x="624" y="244">confidence</text>
+      </g>
+      <g stroke="var(--muted)" fill="none" stroke-width="1.1">
+        <path d="M160 43H200"/><path d="M160 109H200"/><path d="M160 175H200"/><path d="M160 241H200"/>
+        <path d="M370 43H420"/><path d="M370 109H420"/><path d="M370 175H420"/><path d="M370 241H420"/>
+        <path d="M570 142L610 47"/><path d="M570 142L610 95"/><path d="M570 142L610 143"/><path d="M570 142L610 191"/><path d="M570 142L610 239"/>
+      </g>
+      <text x="200" y="300" class="m">encoders: one per sensor, turn raw data into a few numbers every 5 s</text>
+      <text x="200" y="318" class="m">heads: one per score, all trained together</text>
+    </svg>
+    </div>
+    <figcaption>Each block is the same recipe as the BP network: an encoder that summarises, then a head that answers. The fusion model is just another encoder whose input is the other encoders' outputs.</figcaption>
+  </figure>
+  <h3>How it differs from the 1D CNN</h3>
+  <ul>
+    <li><strong>The eye camera is two-dimensional.</strong> A 2D CNN slides square kernels over each image instead of a line over time. Our classical tracker already pulls pupil size, blinks and gaze per frame, so it can be the eye encoder for now. A learned 2D CNN can replace it later if it proves more robust.</li>
+    <li><strong>Different speeds.</strong> PPG changes within a heartbeat, the eyes within a second, and cortisol over tens of minutes. Putting every encoder on one shared 5 second clock is what lets them sit side by side.</li>
+    <li><strong>Memory.</strong> A trend matters as much as a value. A recurrent net (GRU) or a transformer carries the last several minutes, so "HR rising for 10 minutes while pupils dilate" can mean something different from one high reading.</li>
+    <li><strong>Sensors that are not there yet.</strong> Train with a "missing" flag per sensor and randomly hide sensors during training. Then the glucose or cortisol encoder can be added later without starting over.</li>
+    <li><strong>Several outputs at once.</strong> Stress, mental fatigue and physical fatigue share most of their evidence, so one shared body with several heads learns better than separate models.</li>
+  </ul>
+  <div class="callout s">
+    <h3>The hard part is the labels</h3>
+    <p>BP has a cuff. Stress and fatigue have no cuff. The answers have to come from somewhere: short self-report scales during sessions (a 1 to 9 sleepiness scale, a workload questionnaire), controlled tasks known to cause stress (timed mental arithmetic, a cold-water hand soak), rest periods as the calm reference, and later salivary cortisol as a chemical check. Scores should also be relative to each person's own baseline, since resting heart rate and pupil size differ a lot between people. Designing that labeling protocol is a research contribution in its own right.</p>
+  </div>
+
+  <h2>6. A sensible order of work</h2>
+  <ul>
+    <li>Keep logging glasses PPG continuously, cuff or no cuff. Unlabeled hours are fuel for self-supervised pretraining.</li>
+    <li>Build the 1D CNN as a delta-BP model and test it against the ridge baseline under the same session-held-out split.</li>
+    <li>Add simple stress and fatigue labels to the session protocol now, so the data exists when the fusion model is ready.</li>
+    <li>Start fusion with plain features and a simple model, then move to the GRU or transformer version once there are enough labeled sessions to justify it.</li>
+  </ul>
+</div>
+
+<script>
+(function(){
+  // synthetic PPG beat: systolic peak + dicrotic notch/wave
+  function beat(t){ // t in [0,1)
+    const s=Math.exp(-Math.pow((t-0.18)/0.07,2));
+    const d=0.45*Math.exp(-Math.pow((t-0.45)/0.09,2));
+    return s+d;
+  }
+  function ppg(n,fs,hr,seed){
+    const out=[];let phase=0;
+    for(let i=0;i<n;i++){const f=hr/60*(1+0.04*Math.sin(i/fs*0.9+seed));phase+=f/fs;out.push(beat(phase%1)+0.08*Math.sin(i/fs*0.25*2*Math.PI));}
+    return out;
+  }
+  function pathFrom(arr,x0,w,y0,h){
+    let mn=Math.min(...arr),mx=Math.max(...arr);
+    return arr.map((v,i)=>(i?'L':'M')+(x0+i*w/(arr.length-1)).toFixed(1)+' '+(y0+h-(v-mn)/(mx-mn)*h).toFixed(1)).join(' ');
+  }
+  document.getElementById('wave').setAttribute('d',pathFrom(ppg(300,100,72,0),10,150,60,120));
+  document.getElementById('longwave').setAttribute('d',pathFrom(ppg(2400,100,70,1.3),10,740,30,60));
+
+  const kernels={
+    up:{w:[-1,-1,-1,0,1,1,1],label:'weights: [-1 -1 -1 0 1 1 1]  rises where the signal is climbing'},
+    peak:{w:[-1,0,1,0,1,0,-1].map((v,i)=>[-1,-0.5,0.5,1,0.5,-0.5,-1][i]),label:'weights: [-1 -0.5 0.5 1 0.5 -0.5 -1]  rises at bumps: the main peak and the dicrotic wave'},
+    smooth:{w:[1,1,1,1,1,1,1].map(v=>v/7),label:'weights: [1 1 1 1 1 1 1] / 7  a moving average, removes fast jitter'}
+  };
+  const sigRaw=ppg(400,100,75,0.4).map((v,i)=>v+0.03*Math.sin(i*1.7)+0.02*Math.sin(i*3.1));
+  let current='up';
+  const cv=document.getElementById('demo');
+  function draw(){
+    const dpr=window.devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;
+    cv.width=W*dpr;cv.height=H*dpr;const c=cv.getContext('2d');c.scale(dpr,dpr);
+    const cs=getComputedStyle(document.documentElement);
+    const col=k=>cs.getPropertyValue(k).trim();
+    c.clearRect(0,0,W,H);
+    const k=kernels[current].w,half=(k.length-1)/2,out=[];
+    for(let i=0;i<sigRaw.length;i++){let s=0;for(let j=0;j<k.length;j++){const idx=Math.min(sigRaw.length-1,Math.max(0,i+j-half));s+=k[j]*sigRaw[idx];}out.push(s);}
+    function trace(arr,y0,h,color){
+      const mn=Math.min(...arr),mx=Math.max(...arr);
+      c.strokeStyle=color;c.lineWidth=2;c.beginPath();
+      arr.forEach((v,i)=>{const x=8+i*(W-16)/(arr.length-1),y=y0+h-(v-mn)/(mx-mn||1)*h;i?c.lineTo(x,y):c.moveTo(x,y);});
+      c.stroke();
+    }
+    c.strokeStyle=col('--line');c.lineWidth=1;c.beginPath();c.moveTo(0,H/2);c.lineTo(W,H/2);c.stroke();
+    c.fillStyle=col('--muted');c.font='12px '+col('--mono');
+    c.fillText('input PPG',8,14);c.fillText('feature map',8,H/2+16);
+    trace(sigRaw,20,H/2-32,col('--sig'));
+    trace(out,H/2+24,H/2-34,col('--bp'));
+    document.getElementById('kweights').textContent=kernels[current].label;
+  }
+  [['k-up','up'],['k-peak','peak'],['k-smooth','smooth']].forEach(([id,key])=>{
+    document.getElementById(id).addEventListener('click',()=>{
+      current=key;document.querySelectorAll('.controls button').forEach(b=>b.setAttribute('aria-pressed',String(b.id===id)));draw();
+    });
+  });
+  draw();
+  window.addEventListener('resize',draw);
+  try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',draw);}catch(e){}
+  new MutationObserver(draw).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}Help · NBE lab{% endblock %}
+{% block head %}<style>
+.help { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; align-items: start; }
+@media (max-width: 900px) { .help { grid-template-columns: minmax(0, 1fr); } .help nav { position: static !important; } }
+.help nav { position: sticky; top: 12px; display: grid; gap: 4px; font-size: 13px; }
+.help nav a { text-decoration: none; }
+.help nav b { margin-top: 10px; color: var(--text-2); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.help h2 { margin-top: 32px; scroll-margin-top: 12px; } .help h2:first-child { margin-top: 0; }
+.help ol, .help ul { padding-left: 20px; margin: 6px 0; } .help li { margin: 5px 0; }
+details.q { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 8px; }
+details.q summary { cursor: pointer; font-weight: 600; }
+details.q[open] summary { margin-bottom: 6px; }
+dl.gloss { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; }
+dl.gloss dt { font-weight: 600; } dl.gloss dd { margin: 0; color: var(--text-2); }
+@media (max-width: 640px) { dl.gloss { grid-template-columns: 1fr; } }
+</style>{% endblock %}
+{% block content %}
+<h1>Help</h1>
+<div class="sub">How to run a recording, read the results, and what to do when something looks wrong. If your problem isn't here, write it on the <a href="/board">board</a> as a “Problem”.
+  If a page annoys or confuses you, press <b>☺ Feedback</b> at the top – one click on a face is enough, and it is anonymous.</div>
+<div class="help">
+<nav>
+  <b>Doing things</b>
+  <a href="#record">Run a recording</a><a href="#cuff">Log cuff and pulse-ox readings</a><a href="#review">Look at a recording</a><a href="#glasses">Camera glasses and the USB gateway</a>
+  <b>Something is wrong</b>
+  <a href="#t-offline">My device is offline</a><a href="#t-nodata">Recording started but no data</a><a href="#t-poor">Signal quality is poor</a><a href="#t-eye">The eye is not found</a><a href="#t-bp">No blood-pressure number</a><a href="#t-closed">I closed the page mid-recording</a><a href="#t-empty">Plots are empty afterwards</a>
+  <b>Reference</b>
+  <a href="#words">What the words mean</a>
+</nav>
+<div>
+
+<h2 id="record">Run a recording</h2>
+<div class="card">
+<ol>
+  <li>Open <a href="/home">Home</a> and check <b>Ready to record?</b> — everything should have a green tick.</li>
+  <li>Switch the devices on and put them on the subject. Wait until they show <span class="pill online">online</span> on <a href="/devices">Devices</a> (about 15 s after power-on).</li>
+  <li>Press <a href="/trial/new"><b>New trial</b></a>. Tick the devices, choose the subject (or “new subject” — a code like S005, never a name), the protocol and posture. Press <b>Start recording</b>.</li>
+  <li>On the live page, look at the top row first: a heart rate should appear within ~15 s and <b>Signal quality</b> should say Good or Fair. If it says Poor, re-seat the sensor <i>now</i> — see <a href="#t-poor">poor signal</a>.</li>
+  <li>During the recording, log what happens with the buttons under <b>Log readings &amp; markers</b> (cuff readings, pulse-ox, “subject moved”, your own notes). Markers are what make a recording understandable later.</li>
+  <li>Press <b>■ Stop</b>, answer the three questions (how it went, notes, keep?) and save. Processing starts by itself; the recording's page opens.</li>
+</ol>
+<p class="note">Nothing is lost if you make a mistake: “Keep = no” only marks a recording as discarded, the files stay.</p>
+</div>
+
+<h2 id="cuff">Log cuff and pulse-ox readings</h2>
+<div class="card">
+<ol>
+  <li>Press <b>Cuff inflation started</b> at the moment the cuff starts pumping. (While the cuff squeezes the arm the finger signal on that arm is disturbed — the software needs to know when.)</li>
+  <li>When the cuff shows its result, type systolic / diastolic (and pulse) and press <b>Log BP</b>.</li>
+  <li>The <b>first</b> good cuff reading of a recording calibrates the live blood-pressure estimate. Take it while the subject is at rest and the signal quality is good.</li>
+  <li>To be able to judge the model afterwards, take further readings — ideally after blood pressure has changed (exercise, cold pressor, posture).</li>
+</ol>
+</div>
+
+<h2 id="review">Look at a recording</h2>
+<div class="card">
+<ul>
+  <li>Open it from <a href="/">Sessions</a>. The tiles at the top are the summary; every plot below shares one time axis.</li>
+  <li><b>Drag</b> on any plot to zoom in — all plots follow, and the detail is loaded again at full resolution (down to single pulses and single camera frames). <b>Double-click</b> to see the whole recording. The buttons <i>10 min / 1 min / 10 s</i> and ◀ ▶ do the same.</li>
+  <li><b>Click</b> a plot to place the cursor; the eye-camera picture jumps to that moment.</li>
+  <li>The web address changes as you zoom — copy it into a board post to point a colleague at exactly what you see.</li>
+  <li><b>Signal quality</b> tells you how much of the recording was usable and, in plain words, why the rest was rejected.</li>
+  <li>Write what you notice under <b>Notes &amp; discussion</b>; it also appears on the board.</li>
+</ul>
+</div>
+
+<h2 id="glasses">Camera glasses and the USB gateway</h2>
+<div class="card">
+<p style="margin-top:0">Camera glasses can send over Wi-Fi by themselves, or through a USB cable to your computer running the small <b>NBE USB gateway</b> program (an admin downloads it for a given pair of glasses from the Nodes page). While the gateway runs and the cable is in, the glasses use the cable.</p>
+<ul>
+  <li>Start the gateway, plug the glasses in, wait until the glasses show <span class="pill online">online</span> on <a href="/devices">Devices</a>.</li>
+  <li>Only <b>one</b> gateway may run per pair of glasses. If the glasses stay offline although your gateway runs, someone left another one running: the Devices page lists it with a <b>shut down</b> button.</li>
+</ul>
+</div>
+
+<h2 id="t-offline">My device is offline</h2>
+<details class="q" open><summary>Check these in order</summary>
+<ol>
+  <li><b>Power.</b> Is it switched on / is the battery charged? After power-on it needs ~15 s to appear.</li>
+  <li><b>Top-right corner of this website.</b> If it says “devices link down”, no Wi-Fi device can be seen by anyone — that is a server problem; tell an admin.</li>
+  <li><b>Wi-Fi.</b> The device must be in range of the lab's device network. Move closer to the router and wait 30 s.</li>
+  <li><b>Glasses on USB:</b> is the gateway program running on your computer, and is it the only one? (See above.)</li>
+  <li><b>State says “stale”:</b> it was online and went silent (out of range or battery empty). It recovers by itself when it is back.</li>
+  <li>Still offline: unplug / switch off for 5 s and on again. If that doesn't help, post a “Problem” on the <a href="/board">board</a> with the device's name.</li>
+</ol></details>
+
+<h2 id="t-nodata">Recording started but no data arrives</h2>
+<details class="q" open><summary>“no data for … s – reconnecting” on the live page</summary>
+<p>The software restarts the device's stream by itself (within 3–20 s); you don't need to stop the recording. If it doesn't come back after half a minute: check the device still has power and is in Wi-Fi range. Data a Wi-Fi device couldn't send is kept on the device for several minutes and delivered when the connection returns.</p>
+<p>Open <b>Stream health</b> at the bottom of the live page for per-device detail (rate, dropped samples, the device's own report).</p></details>
+
+<h2 id="t-poor">Signal quality is poor</h2>
+<details class="q" open><summary>The pulse trace looks ragged, or “Signal quality” says Poor</summary>
+<ul>
+  <li><b>Contact.</b> The sensor must touch skin, flat, with light steady pressure. Glasses: seat the temple arm snugly; hair under the sensor ruins the signal. Finger: not too tight (squeezes the blood out), not loose.</li>
+  <li><b>Movement.</b> Talking, chewing and head movement disturb the glasses signal. Ask the subject to stay still for readings that matter, and log a marker (“talking”, “subject moved”) when they don't.</li>
+  <li><b>Cold hands</b> give a weak finger signal — warm them first.</li>
+  <li><b>Light.</b> Direct sunlight or a lamp shining on the sensor can saturate it.</li>
+</ul>
+<p class="note">On the recording's page, <b>Signal quality</b> shows how much was usable and which check rejected the rest.</p></details>
+
+<h2 id="t-eye">The eye is not found</h2>
+<details class="q" open><summary>The camera picture says “NO EYE” or the circle sits in the wrong place</summary>
+<ul>
+  <li>Look at the picture: the eye should be roughly centred and in focus. Adjust the glasses, then press <b>Re-find eye</b> (takes ~2 s with the eye open, looking straight ahead).</li>
+  <li>“washed out” = too much light on the camera; “too dark / no contrast” = too little. Change the lighting or ask an admin about the camera's exposure setting.</li>
+  <li>After the subject touches or shifts the glasses, press <b>Re-find eye</b> again and log the marker “glasses adjusted”.</li>
+</ul></details>
+
+<h2 id="t-bp">No blood-pressure number</h2>
+<details class="q" open><summary>The blood-pressure tile stays at “---/--”</summary>
+<p>The tile says why underneath. The usual reasons: no cuff reading has been logged yet (the estimate needs one to calibrate — see <a href="#cuff">cuff readings</a>); too few good beats in the last 45 s (fix the <a href="#t-poor">signal</a>); or no model has been trained for that sensor site yet (Models page). The number is a <b>research estimate in validation</b>, not a measurement — never use it for anything medical.</p></details>
+
+<h2 id="t-closed">I closed the page / the computer slept mid-recording</h2>
+<details class="q" open><summary>The recording keeps running on the server</summary>
+<p>Open the website again: a red bar at the top says <b>● Recording</b> with a link back to the live view. If the server itself was restarted, the data recorded up to then is safe; tell an admin, who can recover it (<code>sglab recover</code>).</p></details>
+
+<h2 id="t-empty">Plots are empty afterwards</h2>
+<details class="q" open><summary>“Not processed yet” on a recording's page</summary>
+<p>Press <b>Process now</b> on that page (or <b>Process all</b> on Sessions). Raw signals can always be viewed immediately with the <i>Raw counts</i> button. If it stays “queued”, the processing computer is off — Home shows that; recordings are processed when it is back.</p></details>
+
+<h2 id="words">What the words mean</h2>
+<div class="card"><dl class="gloss">
+  <dt>PPG / pulse signal</dt><dd>Light reflected by the skin, which dims a little with every heartbeat. The basis for heart rate, pulse shape and the blood-pressure estimate.</dd>
+  <dt>Stream</dt><dd>One continuous series of data from one sensor on one device (a pulse signal, a camera, a chemical sensor…).</dd>
+  <dt>Site</dt><dd>Where on the body a sensor sits: glasses (temple), finger, head.</dd>
+  <dt>Beat accepted / rejected</dt><dd>Each heartbeat found in the signal is checked (shape, timing, size). Only accepted beats are used for results.</dd>
+  <dt>Window check</dt><dd>A second, stricter check on 4-second stretches of signal. Its limits are tuned per sensor site.</dd>
+  <dt>Perfusion</dt><dd>How big the pulse is compared with the overall light level — larger means a stronger signal.</dd>
+  <dt>HRV (RMSSD)</dt><dd>How much the time between heartbeats varies, in milliseconds.</dd>
+  <dt>PERCLOS</dt><dd>Share of time the eye is closed. Rises with drowsiness.</dd>
+  <dt>Gaze shift</dt><dd>One quick eye movement to a new position. Its speed is given in camera pixels per second (not yet in degrees).</dd>
+  <dt>Calibration (blood pressure)</dt><dd>The model estimates <i>changes</i>; one cuff reading per recording anchors them to real numbers.</dd>
+  <dt>Processing</dt><dd>The analysis run after a recording: finds beats, measures them, checks quality. Can be repeated any time; the raw recording is never changed.</dd>
+  <dt>Computed on the device</dt><dd>Results a board calculates itself and sends instead of raw data, to save battery. See <a href="/platform">Platform</a>.</dd>
+</dl></div>
+</div>
+</div>
+{% endblock %}

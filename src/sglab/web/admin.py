@@ -223,7 +223,14 @@ def nodes_page(request: Request, user=admin, error: str | None = None):
     rows, unknown = _node_rows(ctx)
     return ctx.render(request, "admin_nodes.html", {
         "nodes": rows, "unknown": unknown, "pki_ready": ctx.registry.pki.exists(), "prov": ctx.settings.provisioning,
-        "ota_url": provision.ota_url(ctx.settings), "error": error}, status_code=400 if error else 200)
+        "ota_url": provision.ota_url(ctx.settings), "error": error,
+        "gateway_platforms": gateway_platforms()}, status_code=400 if error else 200)
+
+
+def gateway_platforms() -> list[tuple[str, str]]:
+    from ..gateway_bundle import PLATFORMS
+
+    return [(k, v[0]) for k, v in PLATFORMS.items()]
 
 
 @router.post("/admin/nodes")
@@ -377,6 +384,22 @@ def nodes_zip(request: Request, node_id: str, user=admin):
     ctx.audit(request, "node.credentials", b["node_id"], {"via": "zip"})
     return Response(provision.bundle_zip(b), media_type="application/zip",
                     headers={"Content-Disposition": f'attachment; filename="{b["node_id"]}_credentials.zip"'})
+
+
+@router.get("/admin/gateway.zip")
+def gateway_zip(request: Request, node: str, platform: str, user=admin):
+    """USB gateway download (sglab.gateway_bundle): unzip on the operator's computer and run."""
+    from .. import gateway_bundle
+
+    ctx = C(request)
+    try:
+        name, data = gateway_bundle.build(ctx.settings, ctx.registry, node.strip().upper(), platform)
+    except NodeError as e:
+        raise HTTPException(404, str(e)) from None
+    except gateway_bundle.BundleError as e:
+        raise HTTPException(502, str(e)) from None
+    ctx.audit(request, "node.credentials", node.strip().upper(), {"via": f"gateway {platform}"})
+    return Response(data, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 # ------------------------------------------------------------------ node API (nbe_node.py)

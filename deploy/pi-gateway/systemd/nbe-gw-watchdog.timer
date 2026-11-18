@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the NBE gateway watchdog every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

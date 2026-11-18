@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Home · NBE lab{% endblock %}
+{% block head %}<style>
+.hero { display: flex; gap: 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.checks { display: grid; gap: 8px; }
+.check { display: grid; grid-template-columns: 22px 170px 1fr; gap: 8px; align-items: baseline; }
+.check .fix { grid-column: 3; color: var(--text-2); font-size: 13px; }
+@media (max-width: 640px) { .check { grid-template-columns: 22px 1fr; } .check .txt, .check .fix { grid-column: 2; } }
+.cols { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; margin-top: 16px; }
+@media (max-width: 900px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+.card h3 { margin: 0 0 10px; font-size: 14px; display: flex; justify-content: space-between; gap: 8px; }
+.card h3 a { font-weight: 400; font-size: 13px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.post { border-top: 1px solid var(--border); padding: 7px 0; } .post:first-child { border-top: 0; padding-top: 0; }
+.post .meta { font-size: 12px; color: var(--text-2); }
+</style>{% endblock %}
+{% block content %}
+<div class="hero">
+  <div><h1>NBE wearable-sensing lab</h1>
+    <div class="sub" style="margin:0">{{ n_sessions }} recording{{ '' if n_sessions == 1 else 's' }} · {{ n_subjects }} subject{{ '' if n_subjects == 1 else 's' }}</div></div>
+  <div class="btnrow">
+    {% if is_operator %}<a href="/trial/new"><button class="primary big">● Start a recording</button></a>{% endif %}
+    <a href="/help"><button class="big">How do I…?</button></a>
+  </div>
+</div>
+
+<h2>Ready to record?</h2>
+<div class="card checks">
+  {% for c in checks %}
+  <div class="check"><span>{% if c.ok %}<span class="ok-dot">✔</span>{% else %}<span style="color:var(--warn)">▲</span>{% endif %}</span>
+    <b>{{ c.label }}</b><span class="txt">{{ c.text }}</span>
+    {% if c.fix %}<span class="fix">{{ c.fix }}</span>{% endif %}</div>
+  {% endfor %}
+  {% if counts.running or counts.queued or unprocessed %}
+  <div class="check"><span class="no-dot">●</span><b>Processing</b>
+    <span class="txt">{{ counts.running }} running, {{ counts.queued }} waiting{% if unprocessed %} · {{ unprocessed }} recording{{ '' if unprocessed == 1 else 's' }} not processed yet (<a href="/">Sessions</a> → Process all){% endif %}</span></div>
+  {% endif %}
+</div>
+
+<div class="cols">
+  <div class="card scroll">
+    <h3>Latest recordings <a href="/">all sessions →</a></h3>
+    <table>
+      <thead><tr><th>Recording</th><th>Subject</th><th>Protocol</th><th class="num">Length</th><th>Processed</th><th>Quality</th></tr></thead>
+      <tbody>
+      {% for r in recent %}
+        <tr><td><a href="/sessions/{{ r.session_id }}">{{ (r.started_at or '')[:16].replace('T', ' ') }}</a></td><td>{{ r.subject_id or '' }}</td><td>{{ r.protocol or '' }}</td>
+          <td class="num">{{ '%d:%02d'|format(((r.duration_s or 0) // 60)|int, ((r.duration_s or 0) % 60)|int) }}</td>
+          <td>{% if r.n_streams and r.n_processed >= r.n_streams %}<span class="pill ok">yes</span>{% else %}<span class="pill incomplete">{{ r.n_processed }}/{{ r.n_streams }}</span>{% endif %}</td>
+          <td>{% if r.quality %}<span class="pill {{ r.quality }}">{{ r.quality }}</span>{% endif %}</td></tr>
+      {% else %}<tr><td colspan="6" class="note">No recordings yet.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h3>Lab board <a href="/board">open the board →</a></h3>
+    <div id="board" class="note">Loading…</div>
+  </div>
+</div>
+
+<div class="cols">
+  <div class="card">
+    <h3>Devices <a href="/devices">details →</a></h3>
+    <div class="chips">
+      {% for d in devices %}<span class="pill {{ 'busy' if d.busy else ('online' if d.online else 'offline') }}">{{ d.label }} · {{ 'recording' if d.busy else d.state }}</span>
+      {% else %}<span class="note">No devices are set up yet.</span>{% endfor %}
+    </div>
+  </div>
+  <div class="card">
+    <h3>What the platform measures <a href="/platform">the whole picture →</a></h3>
+    <div class="chips">
+      {% for s in reg.sensors %}<span class="pill {{ s.status }}" title="{{ status_labels.get(s.status, s.status) }}">{{ s.name }}</span>{% endfor %}
+    </div>
+    <div class="note" style="margin-top:8px">● in use &nbsp; ◐ in validation &nbsp; ◇ platform ready, sensor not on a board yet &nbsp; ○ planned</div>
+  </div>
+</div>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+fetch('/api/board/summary').then(r => r.json()).then(d => {
+  const c = d.counts || {}, open = [[c.question, 'question'], [c.request, 'request'], [c.issue, 'problem']].filter(x => x[0]).map(([n, w]) => `${n} open ${w}${n === 1 ? '' : 's'}`).join(' · ');
+  const el = document.getElementById('board'); el.className = '';
+  el.innerHTML = (open ? `<div class="warn" style="margin-top:0">${open}</div>` : '') + ((d.recent || []).map(p =>
+    `<div class="post"><span class="pill">${esc(p.kind_label || p.kind)}</span> <a href="${esc(p.url)}">${esc(p.title || p.body.slice(0, 80))}</a>
+     <div class="meta">${esc(p.author_name || p.author)} · ${esc((p.activity_at || '').slice(0, 16).replace('T', ' '))}${p.n_replies ? ` · ${p.n_replies} repl${p.n_replies === 1 ? 'y' : 'ies'}` : ''}</div></div>`).join('')
+    || '<span class="note">Nothing yet. Use the board for notes, questions, requests and announcements.</span>');
+}).catch(() => { document.getElementById('board').textContent = ''; });
+</script>
+{% endblock %}

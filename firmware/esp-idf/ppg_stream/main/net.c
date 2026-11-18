@@ -28,6 +28,7 @@ static esp_timer_handle_t s_retry_timer;
 static int s_fails;  // consecutive connection failures
 static volatile int64_t s_last_progress_us;  // last Wi-Fi event / retry: see net_watchdog()
 static bool s_scan_next;
+static volatile bool s_paused;  // net_pause(): radio off on purpose (hybrid link on USB), no retries
 static wifi_ap_record_t s_scan[20];
 
 // Saved networks in order of preference; an empty SSID = not configured. Only #1 can be PEAP.
@@ -84,6 +85,7 @@ static void retry_connect(void *arg)
 {
     (void)arg;
     s_last_progress_us = esp_timer_get_time();
+    if (s_paused) return;
     if (s_ap_next) {
         s_ap_next = false;
         next_network();
@@ -151,6 +153,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *d = data;
         s_has_ip = false;
+        if (s_paused) return;  // net_pause() took the radio down: nothing to retry
         int reason = d ? d->reason : -1;
         // not found: move on at once; refused etc.: give it a few tries (could be a hiccup)
         s_ap_next = ++s_ap_fails >= (reason == WIFI_REASON_NO_AP_FOUND ? 1 : NET_TRIES_PER_AP);
@@ -161,7 +164,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         if (s_backoff_ms < 8000) s_backoff_ms *= 2;
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE) {
         log_scan();
-        esp_wifi_connect();
+        if (!s_paused) esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = data;
         ESP_LOGI(TAG, "got IP " IPSTR " on \"%s\"", IP2STR(&e->ip_info.ip), s_ssid[s_ap]);
@@ -242,6 +245,7 @@ void net_watchdog(void)
     // The retry chain is event driven: a disconnect schedules retry_connect(), whose connect
     // attempt ends in the next GOT_IP or DISCONNECTED event. If an esp_wifi_connect() fails
     // without an event (driver busy, EAP state machine wedged...), nothing would ever retry.
+    if (s_paused) return;
     if (s_has_ip) {
         static int64_t last_dns_check_us;
         int64_t t = esp_timer_get_time();
@@ -257,6 +261,33 @@ void net_watchdog(void)
     ESP_LOGW(TAG, "no Wi-Fi progress for %lld s - restarting the connection attempt", NET_STUCK_US / 1000000);
     esp_wifi_disconnect();  // resets a half-done association; may itself produce DISCONNECTED
     esp_wifi_connect();
+}
+
+void net_pause(void)
+{
+    if (s_paused) return;
+    s_paused = true;
+    esp_timer_stop(s_retry_timer);  // ESP_ERR_INVALID_STATE when not armed: fine
+    s_has_ip = false;
+    esp_err_t err = esp_wifi_stop();
+    ESP_LOGI(TAG, "Wi-Fi off (%s)", esp_err_to_name(err));
+}
+
+void net_resume(void)
+{
+    if (!s_paused) return;
+    s_paused = false;
+    s_backoff_ms = 500;
+    s_fails = s_ap_fails = 0;
+    s_last_progress_us = esp_timer_get_time();
+    esp_err_t err = esp_wifi_start();  // STA_START -> connect
+    if (err == ESP_OK) {
+        esp_wifi_set_max_tx_power((int8_t)(CONFIG_PPG_WIFI_TX_POWER_DBM * 4));  // reset by stop/start
+#if !CONFIG_PPG_WIFI_POWER_SAVE
+        esp_wifi_set_ps(WIFI_PS_NONE);
+#endif
+    }
+    ESP_LOGI(TAG, "Wi-Fi on again (%s)", esp_err_to_name(err));
 }
 
 bool net_has_ip(void)

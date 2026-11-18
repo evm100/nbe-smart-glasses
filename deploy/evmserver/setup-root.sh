@@ -5,7 +5,9 @@
 #
 # web    https://nbe.evm100.org  -> nginx -> sglab on 127.0.0.1:8001
 # nodes  mqtts://nbe.evm100.org:8884 -> host mosquitto (mTLS, NBE Device CA)
-# Leaves UltraLights alone (uvicorn :8000, Docker mosquitto :1883, its nginx sites).
+# USB gateways mqtts://nbe.evm100.org:443 (ALPN mqtt) -> nginx stream router -> the same mosquitto
+# Leaves UltraLights alone (uvicorn :8000, Docker mosquitto :1883), except that every nginx site's
+# "listen 443" moves to 127.0.0.1:8443 behind the :443 stream router (enable-mqtt-443.sh).
 # Every step checks first, so running it again only does what is missing.
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "run with sudo"; exit 1; }
@@ -68,7 +70,8 @@ step "nginx"
 install -m 644 "$REPO/deploy/nginx/nbe-ratelimit.conf" /etc/nginx/conf.d/nbe-ratelimit.conf
 install -m 644 "$HERE/nginx-nbe.conf" /etc/nginx/sites-available/$DOMAIN
 ln -sf ../sites-available/$DOMAIN /etc/nginx/sites-enabled/$DOMAIN
-nginx -t && systemctl reload nginx
+if grep -q '^include /etc/nginx/nbe-stream.conf;' /etc/nginx/nginx.conf; then nginx -t && systemctl reload nginx
+else "$HERE/enable-mqtt-443.sh"; fi   # :443 stream router (websites + MQTT for USB gateways)
 
 step "firewall"
 if ufw status | grep -q "Status: active"; then ufw allow 8884/tcp comment "NBE MQTT nodes"; else echo "ufw inactive - nothing to do"; fi

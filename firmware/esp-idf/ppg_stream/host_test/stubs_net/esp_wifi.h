@@ -26,6 +26,7 @@ esp_err_t esp_wifi_set_storage(wifi_storage_t s);
 esp_err_t esp_wifi_set_mode(wifi_mode_t m);
 esp_err_t esp_wifi_set_config(wifi_interface_t i, wifi_config_t *c);
 esp_err_t esp_wifi_start(void);
+esp_err_t esp_wifi_stop(void);
 esp_err_t esp_wifi_connect(void);
 esp_err_t esp_wifi_disconnect(void);
 esp_err_t esp_wifi_set_ps(wifi_ps_type_t t);

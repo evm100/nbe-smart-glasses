@@ -11,7 +11,15 @@ from .protocol import encode
 
 
 class SerialSource:
-    """Wraps pyserial. readline() returns a str (possibly '') within `timeout` s."""
+    """Wraps pyserial. readline() returns a protocol line, a camera frame (VideoFrame) or ''
+    within `timeout` s.
+
+    Reads both USB links of the firmware: text lines (protocol v1) and binary record envelopes
+    (protocol v2, CONFIG_PPG_LINK_USB_BIN); nbe_gateway.wire.EnvelopeDecoder tells them apart.
+    Sends PING every second like the USB gateway, so a hybrid board (Wi-Fi + USB) streams over this
+    cable while it is read; other firmware ignores it."""
+
+    PING_EVERY_S = 1.0
 
     def __init__(self, port: str, baud: int = 921600, timeout: float = 0.2):
         import serial  # pyserial
@@ -25,13 +33,39 @@ class SerialSource:
             except (ValueError, TypeError):  # platforms without the exclusive option
                 self.ser = serial.Serial(port, baud, timeout=timeout)
         self.ser.reset_input_buffer()
+        from nbe_gateway.wire import EnvelopeDecoder
+
+        self.decoder = EnvelopeDecoder()
+        self.pending: deque = deque()
+        self._last_ping = 0.0
 
     def write(self, cmd: str) -> None:
         self.ser.write((cmd.strip() + "\n").encode())
         self.ser.flush()
 
-    def readline(self) -> str:
-        return self.ser.readline().decode("ascii", "replace")
+    def readline(self):
+        now = time.monotonic()
+        if now - self._last_ping >= self.PING_EVERY_S:
+            self._last_ping = now
+            try:
+                self.write("PING")
+            except Exception:
+                pass
+        if not self.pending:
+            from .framing import FrameError, record_items
+            from nbe_gateway.wire import WireError, split_records
+
+            data = self.ser.read(max(1, self.ser.in_waiting))
+            for kind, item in self.decoder.feed(data):
+                if kind == "text":
+                    self.pending.append(item + "\r\n")
+                    continue
+                try:
+                    for _off, k, body in split_records(item):
+                        self.pending.extend(record_items(k, body))
+                except (WireError, FrameError):
+                    continue
+        return self.pending.popleft() if self.pending else ""
 
     def close(self) -> None:
         try:
@@ -51,7 +85,8 @@ class SimSource:
                  drop_prob: float = 0.0, corrupt_prob: float = 0.0, seed: int = 0,
                  realtime: bool = True, dia_amp: tuple = (0.6, 0.3), duration_s: float = 600.0,
                  dc: float = 120_000, perfusion: float = 0.02, noise_frac: float = 0.03,
-                 motion: tuple = ()):
+                 motion: tuple = (), camera: bool = False, cam_fps: float = 25.0, cam_size: int = 160,
+                 aux: bool = False, edge_features: bool = False):
         from ppg.synthetic import make_recording
 
         self.port = "sim://" + dev
@@ -72,6 +107,44 @@ class SimSource:
         self._t_start = None
         self._boot_us = int(self.rng.integers(1e6, 5e6))
         self._push(encode(f"E,{self._now_us()},BOOT,"))
+        # optional fake eye camera (protocol v2 video stream, like GLS03): frames are queued as
+        # VideoFrame objects next to the text lines, as the USB gateway's source does
+        self.camera, self.cam_fps, self.cam_size = camera, cam_fps, cam_size
+        self._eye = None
+        self._cam_seq = 0
+        # optional fake further sensors (protocol v2.1): a 1 Hz sweat-chemistry patch (glucose, lactate,
+        # cortisol - clearly synthetic) and a skin thermometer; edge_features adds the frame statistics a
+        # camera board can compute itself (firmware CONFIG_PPG_CAMERA_EDGE_FEATURES)
+        self.aux, self.edge_features = aux, edge_features and camera
+        self._aux_seq = [0, 0, 0]
+        self._prev_small = None
+
+    def _aux_headers(self) -> list[str]:
+        out, base = [], f"H,proto=2,dev={self.dev},fw=sim-0.1"
+        if self.aux:
+            out.append(encode(f"{base},sid=2,stream=sweat,kind=samples,sensor=SIM-CHEM,fs=1,"
+                              "ch=glucose|lactate|cortisol,unit=uM|mM|ng/mL,site=sim,sensor_ok=1"))
+            out.append(encode(f"{base},sid=4,stream=skin,kind=samples,sensor=SIM-TEMP,fs=0.5,"
+                              "ch=skin_temp,unit=degC,site=sim,sensor_ok=1"))
+        if self.edge_features:
+            out.append(encode(f"{base},sid=3,stream=cam_feat,kind=features,src=cam,algo=framestats@1,sensor=SIM-EYE,"
+                              f"fs={self.cam_fps:g},ch=brightness|contrast|motion,unit=-|-|-,site=sim,sensor_ok=1"))
+        return out
+
+    def _generate_aux(self, t_start_us: int, el: float) -> None:
+        for k, (sid, fs) in enumerate(((2, 1.0), (4, 0.5))):
+            while self._aux_seq[k] < int(el * fs) + 1:
+                i = self._aux_seq[k]
+                ts = i / fs
+                if sid == 2:   # slow drifts + sensor noise; cortisol reads only every 5th sample
+                    g = 85 + 25 * np.sin(ts / 240) + self.rng.normal(0, 1.5)
+                    la = 6 + 2.5 * np.sin(ts / 150 + 1) + self.rng.normal(0, 0.15)
+                    co = f"{8 + 3 * np.sin(ts / 400 + 2) + self.rng.normal(0, 0.3):.2f}" if i % 5 == 0 else ""
+                    body = f"M,2,{i},{t_start_us + int(ts * 1e6)},{g:.1f},{la:.2f},{co}"
+                else:
+                    body = f"M,4,{i},{t_start_us + int(ts * 1e6)},{33.5 + 0.6 * np.sin(ts / 300) + self.rng.normal(0, 0.03):.2f}"
+                self._push(encode(body))
+                self._aux_seq[k] += 1
 
     def _now_us(self) -> int:
         return self._boot_us + int((time.monotonic() - self._t0) * 1e6)
@@ -80,7 +153,12 @@ class SimSource:
         return encode(f"H,proto=1,dev={self.dev},fw=sim-0.1,sensor=SIM,fs={self.fs:g},ch=ir|red,"
                       f"adc=18,led_ma=6.4|6.4,pw_us=411,avg=1,site=sim")
 
-    def _push(self, line: str) -> None:
+    def _cam_header(self) -> str:
+        n = self.cam_size
+        return encode(f"H,proto=2,dev={self.dev},fw=sim-0.1,sid=1,stream=cam,kind=video,sensor=SIM-EYE,ch=frame,"
+                      f"fs={self.cam_fps:g},w={n},h={n},fmt=gray8,aec=0,exposure=300,gain=2,site=sim,sensor_ok=1")
+
+    def _push(self, line) -> None:
         with self._lock:
             self._out.append(line)
 
@@ -88,9 +166,19 @@ class SimSource:
         c = cmd.strip().upper()
         if c == "INFO":
             self._push(self._header())
+            if self.camera:
+                self._push(self._cam_header())
+            for h in self._aux_headers():
+                self._push(h)
         elif c == "START":
             self._seq = 0
+            self._cam_seq = 0
+            self._aux_seq = [0, 0, 0]
             self._push(self._header())
+            if self.camera:
+                self._push(self._cam_header())
+            for h in self._aux_headers():
+                self._push(h)
             self._push(encode(f"E,{self._now_us()},START,"))
             self._t_start = time.monotonic()
             self._streaming = True
@@ -112,6 +200,10 @@ class SimSource:
                 self._last_status = now
                 self._push(encode(f"S,{self._now_us()},fs_meas={self.fs:.1f},ovf=0,alc_ovf=0,i2c_err=0,tx_drop=0,temp_c=31.25"))
         t_start_us = self._boot_us + int((self._t_start - self._t0) * 1e6)
+        if self.camera:
+            self._generate_frames(t_start_us)
+        if self.aux:
+            self._generate_aux(t_start_us, (time.monotonic() - self._t_start) if self.realtime else (self._seq / self.fs))
         while self._seq < due:
             i = self._seq
             t_us = t_start_us + int(i * 1e6 / self.fs)
@@ -123,6 +215,29 @@ class SimSource:
             if r < self.drop_prob + self.corrupt_prob:
                 line = line[:10] + "9" + line[11:]
             self._push(line)
+
+    def _generate_frames(self, t_start_us: int) -> None:
+        from nbe_gateway.wire import FMT_GRAY8, VideoFrame
+
+        from .eyetrack import SyntheticEye
+
+        if self._eye is None:
+            self._eye = SyntheticEye(self.cam_size, seed=int(self.rng.integers(1 << 30)))
+        el = (time.monotonic() - self._t_start) if self.realtime else (self._seq / self.fs)
+        due = int(el * self.cam_fps) + 1
+        while self._cam_seq < due:
+            ts = self._cam_seq / self.cam_fps
+            img = self._eye.frame(ts)
+            px = img.tobytes()
+            if self.edge_features:  # what the board would compute per frame (every 2nd pixel)
+                small = img[::2, ::2].astype(np.int16)
+                mot = float(np.abs(small - self._prev_small).mean()) if self._prev_small is not None else 0.0
+                self._prev_small = small
+                self._push(encode(f"M,3,{self._cam_seq},{t_start_us + int(ts * 1e6)},{small.mean():.1f},"
+                                  f"{int(small.max() - small.min())},{mot:.2f}"))
+            self._push(VideoFrame(1, self._cam_seq, t_start_us + int(ts * 1e6), self.cam_size, self.cam_size,
+                                  FMT_GRAY8, 300, 2, px))
+            self._cam_seq += 1
 
     def readline(self) -> str:
         self._generate()

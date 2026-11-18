@@ -1,0 +1,14 @@
+[Unit]
+Description=NBE gateway firewall (nothing gets in from the campus side)
+After=nftables.service
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nbe-gw/firewall.nft
+ExecStop=-/usr/sbin/nft delete table inet nbe_gw
+
+[Install]
+WantedBy=multi-user.target

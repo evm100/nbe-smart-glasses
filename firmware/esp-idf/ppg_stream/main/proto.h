@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define PROTO_MAX_LINE 256
+#define PROTO_MAX_LINE 384  // camera boards: the S line carries ~20 fields
 
 typedef struct {
     char *start;  // where '$' was written

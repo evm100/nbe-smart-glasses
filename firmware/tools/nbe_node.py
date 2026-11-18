@@ -27,6 +27,7 @@ import getpass
 import ipaddress
 import json
 import os
+import re
 import shutil
 import ssl
 import subprocess
@@ -102,9 +103,35 @@ def kconfig_lines(vals: dict) -> dict[str, str]:
             out[k] = f"CONFIG_{k}=y"
         elif v is False:
             out[k] = f"# CONFIG_{k} is not set"
+        elif isinstance(v, int):
+            out[k] = f"CONFIG_{k}={v}"
         else:
             esc = str(v).replace("\\", "\\\\").replace('"', '\\"')
             out[k] = f'CONFIG_{k}="{esc}"'
+    return out
+
+
+def overlay_values(path: Path) -> dict:
+    """An sdkconfig fragment (sdkconfig.camera, sdkconfig.hybrid) as values for kconfig_lines."""
+    out: dict = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        m = re.fullmatch(r"# CONFIG_(\w+) is not set", line)
+        if m:
+            out[m[1]] = False
+            continue
+        m = re.fullmatch(r"CONFIG_(\w+)=(.*)", line)
+        if not m:
+            continue
+        k, v = m[1], m[2]
+        if v == "y":
+            out[k] = True
+        elif len(v) >= 2 and v[0] == v[-1] == '"':
+            out[k] = v[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+        elif re.fullmatch(r"-?\d+", v):
+            out[k] = int(v)
+        else:
+            raise ValueError(f"{path.name}: can't carry over {line!r}")
     return out
 
 
@@ -138,7 +165,7 @@ def patch_sdkconfig(path: Path, vals: dict) -> int:
 
 
 def node_values(b: dict, ssid: str, password: str, eap_user: str = "", eap_identity: str = "",
-                eap_domain: str = "", fallbacks: tuple = (), dns: tuple = ()) -> dict:
+                eap_domain: str = "", fallbacks: tuple = (), dns: tuple = (), hybrid: bool = False) -> dict:
     eap = {
         # WPA2-Enterprise PEAP (UCSD-PROTECTED, eduroam...): personal login, password = PPG_WIFI_PASSWORD
         "PPG_WIFI_AUTH_EAP": True, "PPG_WIFI_AUTH_PSK": False, "PPG_WIFI_EAP_USERNAME": eap_user,
@@ -147,7 +174,9 @@ def node_values(b: dict, ssid: str, password: str, eap_user: str = "", eap_ident
     } if eap_user else {"PPG_WIFI_AUTH_PSK": True, "PPG_WIFI_AUTH_EAP": False}
     return eap | {
         "PPG_DEVICE_ID": b["node_id"], "PPG_SITE": b.get("site") or "finger",
-        "PPG_LINK_MQTT": True, "PPG_LINK_USB_SERIAL_JTAG": False, "PPG_LINK_UART": False,
+        # hybrid: Wi-Fi, and the USB gateway takes over while it talks to the board (camera glasses)
+        "PPG_LINK_MQTT": not hybrid, "PPG_LINK_HYBRID": hybrid, "PPG_LINK_USB_BIN": False,
+        "PPG_LINK_USB_SERIAL_JTAG": False, "PPG_LINK_UART": False,
         "PPG_MQTT_BROKER_URI": b["broker_uri"], "PPG_MQTT_TOPIC_PREFIX": b["topic_prefix"],
         "PPG_MQTT_CA_BUNDLE": b["broker_ca_mode"] == "bundle", "PPG_MQTT_CA_PEM": b["broker_ca_mode"] == "pem",
         "PPG_WIFI_SSID": ssid, "PPG_WIFI_PASSWORD": password,
@@ -157,8 +186,10 @@ def node_values(b: dict, ssid: str, password: str, eap_user: str = "", eap_ident
         # per-network DNS server (networks 1, 2, 3); "" = the one DHCP gives
         **{f"PPG_WIFI_DNS{'' if i == 1 else i}": v for i, v in enumerate((tuple(dns) + ("",) * 3)[:3], start=1)},
         "PPG_OTA_URL": b.get("ota_url") or "",  # empty with an old server: no over-the-air updates
-        # USB-C no longer carries data: put the log console there so `idf.py monitor` shows Wi-Fi/MQTT logs
-        "ESP_CONSOLE_USB_SERIAL_JTAG": True, "ESP_CONSOLE_UART_DEFAULT": False,
+        # Wi-Fi only: USB-C no longer carries data, so put the log console there (`idf.py monitor` shows
+        # Wi-Fi/MQTT logs). Hybrid: USB-C carries data to the gateway, the console stays on UART0 and
+        # warnings reach the gateway as $E,..,LOG events (CONFIG_PPG_FORWARD_LOGS)
+        "ESP_CONSOLE_USB_SERIAL_JTAG": not hybrid, "ESP_CONSOLE_UART_DEFAULT": hybrid,
     }
 
 
@@ -294,14 +325,18 @@ def cmd_configure(a):
         (certs / "broker_ca.crt").write_text(b["broker_ca_pem"])
     elif (certs / "broker_ca.crt").exists():
         (certs / "broker_ca.crt").unlink()
+    hybrid = a.hybrid or a.camera
     vals = node_values(b, ssid, pw, a.wifi_eap_user or "", a.wifi_eap_identity or "", a.wifi_eap_domain or "",
-                       tuple(fallbacks), tuple(dns))
+                       tuple(fallbacks), tuple(dns), hybrid=hybrid)
+    if a.camera:  # camera glasses: sdkconfig.camera + sdkconfig.hybrid under this node's own values
+        vals = overlay_values(proj / "sdkconfig.camera") | overlay_values(proj / "sdkconfig.hybrid") | vals
     text = ["# Written by firmware/tools/nbe_node.py for node " + node + " - do not commit (Wi-Fi password)."]
     text += kconfig_lines(vals).values()
     write_private(proj / "sdkconfig.nbe", "\n".join(text) + "\n")
     changed = patch_sdkconfig(sdk, vals) if sdk.exists() else None
 
-    print(f"node {node}: site={b['site']} broker={b['broker_uri']} (CA: {b['broker_ca_mode']}) "
+    print(f"node {node}: {'camera glasses, ' if a.camera else ''}{'hybrid (USB gateway or Wi-Fi), ' if hybrid else ''}"
+          f"site={b['site']} broker={b['broker_uri']} (CA: {b['broker_ca_mode']}) "
           f"wifi={ssid} ({'PEAP as ' + a.wifi_eap_user if a.wifi_eap_user else 'PSK/open'}) "
           + "".join(f"then {fs} " for fs, _ in fallbacks if fs)
           + "".join(f"(network {i} DNS {d}) " for i, d in enumerate(dns, start=1) if d) +
@@ -381,6 +416,10 @@ def main(argv=None) -> int:
                                                "(PSK/open; default: keep current, \"\" = none)")
         s.add_argument(f"--wifi{i}-password", help=f"or env NBE_WIFI{i}_PASSWORD (else asked)")
         s.add_argument(f"--wifi{i}-dns", help=f"DNS server on network {i} (default: keep current, \"\" = DHCP's)")
+    s.add_argument("--hybrid", action="store_true",
+                   help="Wi-Fi node that streams over USB-C instead while the NBE USB gateway talks to it")
+    s.add_argument("--camera", action="store_true",
+                   help="camera glasses (sdkconfig.camera); implies --hybrid (sdkconfig.hybrid)")
     s.add_argument("--register", action="store_true", help="register the node first if it doesn't exist")
     s.add_argument("--site", help="with --register")
     s.add_argument("--build", action="store_true", help="run idf.py build afterwards")

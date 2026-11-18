@@ -9,6 +9,9 @@ turns frames back into ordinary protocol lines for the recorder and tells the hu
 
 Duplicates (the node resends after a reconnect) are dropped by offset, so the recorder sees every
 record once and in order.
+
+Protocol v2 adds camera frame records (0x03, nbe_gateway.wire): ``feed_items`` returns them as
+``VideoFrame`` objects in order with the lines; ``feed`` keeps returning lines only.
 """
 from __future__ import annotations
 
@@ -16,6 +19,8 @@ import struct
 import time
 import zlib
 from dataclasses import dataclass
+
+from nbe_gateway.wire import REC_FRAME, VideoFrame, WireError, decode_frame_record
 
 from .protocol import ProtocolError, Sample, encode, parse_line
 
@@ -127,7 +132,17 @@ def record_lines(kind: int, body: bytes) -> list[str]:
         return [body.decode("ascii", "replace") + "\r\n"]
     if kind == REC_SAMPLES:
         return decode_samples(body)
-    return []  # newer record types: skip
+    return []  # frames (see record_items) and newer record types: skip
+
+
+def record_items(kind: int, body: bytes) -> list:
+    """Like record_lines, plus camera frames as VideoFrame."""
+    if kind == REC_FRAME:
+        try:
+            return [decode_frame_record(body)]
+        except WireError as e:
+            raise FrameError(str(e)) from None
+    return record_lines(kind, body)
 
 
 class FrameReceiver:
@@ -142,6 +157,11 @@ class FrameReceiver:
         self._resends = 0
 
     def feed(self, payload: bytes, now: float | None = None) -> tuple[list[str], str | None]:
+        items, reply = self.feed_items(payload, now)
+        return [x for x in items if isinstance(x, str)], reply
+
+    def feed_items(self, payload: bytes, now: float | None = None) -> tuple[list, str | None]:
+        """(protocol lines and VideoFrames in stream order, reply for the node's cmd topic or None)."""
         now = time.monotonic() if now is None else now
         try:
             f = decode_frame(payload)
@@ -164,7 +184,7 @@ class FrameReceiver:
                 self.stats["dup_bytes"] += _rec_len(rec)
                 continue
             try:
-                lines += record_lines(rec[1], rec[2])
+                lines += record_items(rec[1], rec[2])
             except FrameError:
                 self.stats["bad_frames"] += 1
             self.expected = rec[0] + _rec_len(rec)

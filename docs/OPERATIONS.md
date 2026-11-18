@@ -47,11 +47,15 @@ or set `SGLAB_ROOT=/path/to/smart-glasses`).
 
 | Page | Role | What you do there |
 |---|---|---|
+| **Home** `/home` | viewer | "Ready to record?" checks (devices link, devices online, storage, processing computer), latest recordings, the board, a big *Start a recording* button |
 | **New trial** `/trial/new` | operator | Tick devices (nodes: online / offline / in use by …; local: port found / simulated), pick or create a subject, fill the session fields (last answers remembered per user, trial auto-numbered), **Start recording** |
-| **Trial** `/trials/<id>` | operator | while recording: clock, per-stream rate / samples / dropped / bad lines, live waveforms, cuff / pulse-ox / marker buttons, event log, **Stop**; after Stop: after-recording questions, *Process now*, **Save session** |
+| **Trial** `/trials/<id>` | operator | while recording: clock, per-stream rate / samples / dropped / bad lines, live waveforms, eye camera with per-minute blink / gaze-shift bars, *Other sensors* tiles (any auxiliary stream the board declares), cuff / pulse-ox / marker buttons, event log, **Stop**; after Stop: after-recording questions, *Process now*, **Save session** |
 | **Devices** `/devices` | viewer | live table of nodes + local devices: state, trial / owner, RSSI, last seen, firmware |
 | **Sessions** `/` | viewer | all recordings, filter by subject / protocol / *recorded by me*, include discarded |
-| **Session** `/sessions/<id>` | viewer | metadata, streams, plots, events, QA figures; Process (operator), Force re-process (admin) |
+| **Session** `/sessions/<id>` | viewer | summary tiles; every plot on one shared time axis (drag to zoom: data is re-loaded at full resolution for the visible range, `#t=a,b` in the address is the shareable range); pulse signal with beat markers, heart rate, BP model vs cuff, eye (per-minute blinks, blink duration, gaze shifts, gaze-shift speed; closure / gaze / motion traces; recorded-frame viewer), other sensors, signal quality with the reasons for rejection, features, events, notes (board posts about the session); Process (operator), Force re-process (admin) |
+| **Platform** `/platform` | viewer | what is measured and what it is turned into, with honest statuses, drawn from `config/sensors.toml`; how to add a sensor |
+| **Board** `/board` | viewer (post: operator) | lab log-board: notes, questions, requests, problems, updates, announcements; replies, pin, mark done; posts can link a session or device |
+| **Help** `/help` | viewer | step-by-step recording guide and troubleshooting in plain language |
 | **Subjects** `/subjects` | viewer | subject table |
 | **Nodes** `/admin/nodes` | admin | register nodes, edit name / site / notes, enable / disable, live state, credentials zip, rotate certificate, stop a stray stream |
 | **Users** `/admin/users` | admin | add users, change role, deactivate, reset password, all API tokens |
@@ -80,7 +84,12 @@ single-user mode with `--token`, send `x-sglab-token: <token>`.
 | Endpoint | Role | |
 |---|---|---|
 | `GET /api/sessions`, `GET /api/sessions/{id}` | viewer | catalog |
-| `GET /api/sessions/{id}/signal?stream=…&source=raw\|filtered` | viewer | decimated signal on the session clock |
+| `GET /api/sessions/{id}/signal?stream=…&source=raw\|filtered&t0=…&t1=…&max_points=…` | viewer | signal on the session clock for a time range (min/max decimated only when the range holds more than `max_points`), + beats when the range is ≤ 3 min |
+| `GET /api/sessions/{id}/overview`, `…/quality?stream=…` | viewer | what the session contains; accepted / rejected windows and beats with reasons and the limits in force |
+| `GET /api/sessions/{id}/eye?stream=…`, `…/eye/trace?stream=…&t0=…&t1=…` | viewer | eye tracking: state / progress, summary, per-minute table, every blink and gaze shift; per-frame traces |
+| `GET /api/sessions/{id}/video/{stream}/frame?i=…\|t=…` | viewer | one recorded frame (PNG; `X-Eye` header = tracker overlay) |
+| `GET /api/sessions/{id}/aux?stream=…`, `GET /api/trials/{id}/aux` | viewer / operator | further sensors: recorded / live values |
+| `GET /api/platform`, `GET /api/board`, `GET /api/board/summary` | viewer | sensor registry; board posts (see `sglab/web/board.py`) |
 | `GET /api/sessions/{id}/hr`, `…/epochs?stream=…` | viewer | beat HR, epoch features |
 | `GET /api/devices` | viewer | devices with live state + active trials |
 | `GET /api/trials`, `GET /api/trials/{id}`, `…/live` | operator | active trials, one trial's state, live waveforms |
@@ -120,6 +129,7 @@ Deployment config lives in `config/server.toml` or the file in `$SGLAB_SERVER_CO
 | File | Controls |
 |---|---|
 | `config/lab.toml` | device names → ports + roles, baud, simulated devices, reference instrument models, `[ui] quick_markers = [...]` |
+| `config/sensors.toml` | the sensor / insight registry behind the Platform page and the names + units of auxiliary streams: add an entry when a new sensor arrives, keep the statuses honest |
 | `config/session_fields.toml` | the questions asked before/after each recording (CLI and web) |
 | `config/server.toml` / `/etc/nbe/server.toml` | deployment: data root, accounts, public URL, MQTT, PKI, provisioning (not committed) |
 | `config/pipeline_layer1.json`, `pipeline_layer2.json` | filter bands, quality thresholds, epoch length… (changing them makes `process` redo affected sessions) |

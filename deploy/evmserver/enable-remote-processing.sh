@@ -31,7 +31,8 @@ sed -n '/^\[processing\]/,/^$/p' /etc/nbe/server.toml
 
 step "nginx"
 install -m 644 "$HERE/nginx-nbe.conf" /etc/nginx/sites-available/$DOMAIN
-nginx -t && systemctl reload nginx
+if grep -q '^include /etc/nginx/nbe-stream.conf;' /etc/nginx/nginx.conf; then nginx -t && systemctl reload nginx
+else "$HERE/enable-mqtt-443.sh"; fi   # nginx-nbe.conf listens behind the :443 stream router
 
 step "worker account"
 if nbe user list | grep -qw nbe-worker; then echo "nbe-worker exists"; else

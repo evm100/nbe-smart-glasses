@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Platform · NBE lab{% endblock %}
+{% block head %}<style>
+.flow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+@media (max-width: 1000px) { .flow { grid-template-columns: minmax(0, 1fr); } }
+.flow > div > h2 { margin-top: 8px; }
+.item { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+.item.planned { border-style: dashed; background: none; }
+.item h3 { margin: 0 0 4px; font-size: 15px; display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.item p { margin: 4px 0; color: var(--text-2); font-size: 13px; }
+.item .gives { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.item .gives span { font-size: 12px; background: var(--grid); border-radius: 4px; padding: 1px 7px; }
+.fam { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 14px 0 6px; }
+.legend-row { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 4px 0 16px; }
+.steps { counter-reset: s; display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.steps > div { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.steps > div::before { counter-increment: s; content: counter(s); display: inline-block; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #fff; text-align: center; font-weight: 600; margin-right: 6px; }
+</style>{% endblock %}
+{% block content %}
+<h1>Platform</h1>
+<div class="sub">What the lab's wearable system measures today, what it turns the measurements into, and what is coming.
+  The goal is one continuous picture of how the wearer is doing — from every sensor together.</div>
+<div class="legend-row">
+  {% for k, label in reg.status_labels.items() %}<span><span class="pill {{ k }}">{{ label }}</span> <span class="note">{{ reg.status_help[k] }}</span></span>{% endfor %}
+</div>
+
+<div class="flow">
+  <div>
+    <h2>1 · Sensors</h2>
+    {% for fam, title in [('biophysical', 'Biophysical — the body’s physical signals'), ('biochemical', 'Biochemical — molecules in sweat and fluids')] %}
+    <div class="fam">{{ title }}</div>
+    {% for s in reg.sensors if s.family == fam %}
+    <div class="item {{ s.status }}">
+      <h3>{{ s.name }} <span class="pill {{ s.status }}">{{ s.status_label }}</span></h3>
+      <p>{{ s.measures }}</p>
+      {% if s.hardware %}<p><b>Hardware:</b> {{ s.hardware }}</p>{% endif %}
+      <p>{% if s.usage.sessions %}In <b>{{ s.usage.sessions }}</b> recording{{ '' if s.usage.sessions == 1 else 's' }} — <a href="/sessions/{{ s.usage.last }}">latest</a>
+         {% elif s.status in ('ready', 'planned') %}Not recorded on a real device yet.{% else %}No recordings yet.{% endif %}</p>
+    </div>
+    {% endfor %}
+    {% endfor %}
+  </div>
+  <div>
+    <h2>2 · What each one gives</h2>
+    <div class="fam">Measures taken from the raw signal</div>
+    {% for s in reg.sensors %}
+    <div class="item {{ s.status }}">
+      <h3>{{ s.name }}</h3>
+      <div class="gives">{% for g in s.gives or [] %}<span>{{ g }}</span>{% endfor %}</div>
+      {% if s.used_by %}<p>Feeds: {{ s.used_by | join(' · ') }}</p>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  <div>
+    <h2>3 · Understanding the wearer</h2>
+    <div class="fam">Estimates and states built from the measures</div>
+    {% for i in reg.insights %}
+    <div class="item {{ i.status }}">
+      <h3>{{ i.name }} <span class="pill {{ i.status }}">{{ i.status_label }}</span></h3>
+      <p>Uses: {% for u in i.uses_named %}<span class="pill {{ u.status }}">{{ u.name }}</span> {% endfor %}</p>
+      {% if i.note %}<p>{{ i.note }}</p>{% endif %}
+      <p>{{ {'server': 'Computed on the server after the data arrives.', 'edge': 'Computed on the device itself.', 'both': 'Computed on the device and on the server.'}.get(i.where, '') }}</p>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<h2>Adding a new sensor</h2>
+<div class="steps">
+  <div><b>The board describes it.</b> <span class="note">The firmware declares the new stream — its name, channels and units — when it starts. Nothing has to be changed on this website to record it.
+    (Firmware: copy <code>xstream_template.c</code>; format in <code>firmware/PROTOCOL.md</code>, “Protocol v2.1”.)</span></div>
+  <div><b>It shows up by itself.</b> <span class="note">During a recording the new values appear under “Other sensors” on the live page; afterwards on the session page, on the same time axis as pulse and eye.</span></div>
+  <div><b>Give it a name here.</b> <span class="note">Add a short entry to <code>config/sensors.toml</code> so it gets a proper name, family and status on this page.</span></div>
+  <div><b>Try it without hardware.</b> <span class="note">{% if sim_multi %}Start a <a href="/trial/new">new trial</a> with the simulated device <b>{{ sim_multi }}</b>: pulse, eye camera, a made-up sweat patch (glucose, lactate, cortisol) and skin temperature.{% else %}On a lab PC, the simulated device <code>sim_multi</code> records pulse, eye camera, a made-up sweat patch and skin temperature.{% endif %}</span></div>
+</div>
+
+<h2>Where the computing happens</h2>
+<div class="card">
+  <p style="margin-top:0">Today the glasses send <b>raw data</b> (every pulse sample, every camera frame) and the server does the analysis. That keeps everything
+    re-analysable — any improvement to a method can be re-run on all old recordings — but sending raw video costs battery.</p>
+  <p>The next step is to compute on the glasses and send only the results. The platform is prepared for both at once: a board can send a stream of
+    <b>results it computed itself</b> next to (later: instead of) the raw stream, labelled with the method and its version. The server stores both the same way, so they
+    can be compared before raw transmission is switched off. The first such stream — per-frame brightness, contrast and motion from the eye camera — is in the firmware
+    (off by default until tested on a board) and in the simulator.</p>
+  <p class="note" style="margin-bottom:0">This page is drawn from <code>config/sensors.toml</code>. Statuses are set by hand there — keep them honest.</p>
+</div>
+{% endblock %}

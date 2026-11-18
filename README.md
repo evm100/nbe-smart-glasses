@@ -104,7 +104,13 @@ Server admin commands: `sglab user …`, `sglab pki …`, `sglab node …`, `sgl
 The browser can run the whole experiment, not just show results:
 **New trial** (devices, subject, protocol…) → **Live** (stream health, live waveforms,
 buttons for cuff/pulse-ox/markers, Stop) → **Finish** (after-questions, save, auto-process)
-→ **Session page** with interactive plots. **Devices** shows every node's live state
+→ **Session page** with interactive plots. The session page puts everything on one time axis and re-loads detail as you zoom (single pulses,
+single camera frames, per-minute eye measures). **Home** is the operator's start page, **Platform**
+shows what is measured and what is coming (`config/sensors.toml`), **Board** is the lab's shared
+log-board, **Help** is the in-app guide. Boards can declare further sensors (cortisol, glucose,
+temperature… protocol v2.1 in `firmware/PROTOCOL.md`); they are recorded and shown with no server
+change — try `sim_multi` in a new trial.
+**Devices** shows every node's live state
 (online, RSSI, firmware, in use by whom); admins register nodes and users in the browser.
 
 | New trial | Live |

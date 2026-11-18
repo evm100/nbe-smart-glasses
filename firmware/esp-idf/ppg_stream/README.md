@@ -62,6 +62,97 @@ USB-C port carries only protocol lines. To get logs on USB instead, change
 *Component config → ESP System Settings → Channel for console output*, but they will
 then mix with the data (sglab ignores non-`$` lines, but a log line can split a data line).
 
+### Camera glasses (XIAO ESP32-S3 Sense: OV2640 + MAX30102) → USB gateway
+
+Camera boards stream over USB-C as **binary records** (protocol v2, `../../PROTOCOL.md`
+"Protocol v2") to the **NBE USB gateway** on the operator's computer, which forwards everything
+to the server as this node. The board itself needs no Wi-Fi and no certificates.
+
+```bash
+rm -f sdkconfig
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.camera" menuconfig   # check Identity -> Device ID (GLS03)
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.camera" build
+idf.py -p <PORT> flash
+```
+
+`sdkconfig.camera` selects the USB binary link, the camera (240×240 grayscale, of which only the
+centre 80×80 is sent, at the same pixel scale; no fps cap, i.e. the sensor's ~25 fps; 240 MHz CPU; fixed exposure 300 / gain 2 as on the old MATLAB rig), and puts the camera's SCCB on I2C port 1 so the
+MAX30102 keeps port 0. The MAX30102 is wired as usual (D4/D5). Then on the server: register the node
+(Nodes page), **Download gateway** for the operator's system, unzip it there, double-click the start
+script, plug in the glasses. The node shows as online on the devices page and records like a Wi-Fi
+node; the trial page shows a live camera preview.
+
+Camera settings at run time (sent by the server, or typed into a serial terminal):
+`CAM FPS=10 EXP=400 GAIN=4 AEC=0 WIN=252 CLK=1`. The S line reports `cam_fps` (frames actually sent per second)
+and `cam_drop` (frames the board couldn't send because the PC didn't read fast enough).
+
+**First hardware runs:** frames barely got out (a few per minute). That turned out to be the CPU clock
+(below), not USB bandwidth; the 80×80 centre crop (menuconfig → Camera → Centre crop, `CONFIG_PPG_CAM_CROP`): 6.4 kB per frame,
+~160 kB/s at the sensor's ~25 fps. At IDF's default 160 MHz CPU the camera driver fell behind and only
+~3 frames/min got out; `sdkconfig.camera` sets 240 MHz. The cap (`CAM FPS=n`) skips whole sensor frames
+(one every ~40 ms), so 15 gives 12.5 fps; 0 sends them all. If `cam_fps` drops or `cam_drop` grows,
+the gateway console's camera counters and `board log:` lines show where frames are lost.
+
+**Sensor zoom (current):** instead of cropping the stock framing (CIF mode, 5 sensor pixels per frame
+pixel), the sensor runs in SVGA mode and only its middle 252×252 SVGA pixels are scaled to the 240×240
+frame (`CONFIG_PPG_CAM_WINDOW`, run time `CAM WIN=n`, 0 = stock). Same field of view as the old 100×100
+crop, 2.4× the linear resolution, 57.6 kB/frame. SVGA mode has twice the lines, so `CAM CLK=1` (twice
+the driver's CIF sensor clock) keeps the sensor at ~25 fps (~1.44 MB/s); `CAM CLK=3` would halve it. On GLS03, `CLK=1` with the camera driver on core 0 overran the driver
+(`EV-VSYNC-OVF`, one frame then 4 s timeouts); `CLK=3` worked at ~12 fps and showed USB tops out near
+0.85 MB/s (a 57.6 kB frame took 67 ms). The view also came out wider than the 100×100 reference. So
+`sdkconfig.camera` now sends the 160×160 middle (25.6 kB, ~640 kB/s at 25 fps) and runs the driver on
+core 1 (`CONFIG_CAMERA_CORE1`). `CAM WIN=n` tunes the view live: smaller = finer pixels, narrower view
+(min 240, multiple of 4). `sdkconfig.camera` now uses `WIN=376` (1.5× the 252 view, coarser pixels,
+same 25.6 kB frame). The H line carries `win=` and `clkdiv=` when zoomed. Exposure is counted in
+sensor lines, so the image brightness may differ from the stock framing: adjust `EXP`/`GAIN`.
+
+Before that, 120×120 crop of the stock framing (14.4 kB, ~360 kB/s). **Finding the USB limit:** frame writes block until USB takes
+them, so a crop that's too big rarely shows up as `cam_drop`. Instead the camera task falls behind
+and the driver (grab-latest) quietly replaces frames nobody picked up. Signs, in the order they appear:
+`usb max` (`cam_tx_ms`) climbing toward the 40 ms frame period, then `cam_fps` dropping below ~25
+with `capped` still 0, and only then `usb fail`/`cam_drop`. Also watch `tx_drop` (PPG bytes lost:
+PPG records share the USB port) and the console's `waiting to send` (the uplink to the server,
+not USB, can't keep up; nothing is lost but the live view lags).
+
+### Hybrid: Wi-Fi with USB-C takeover (camera glasses, or any node)
+
+One image, two ways out (`CONFIG_PPG_LINK_HYBRID`, `main/link_mqtt.c` + `main/usbgw.c`):
+
+- **No gateway**: the board is an ordinary Wi-Fi node (MQTT/TLS, its own certificate, store-and-forward
+  ring, OTA). Camera frames go into the same ring as the PPG. **PPG comes first**: once the
+  unacknowledged data would fill `CONFIG_PPG_MQTT_CAM_SHARE_PCT` (50 %) of the ring, new frames are
+  dropped (`cam_drop`, seq gap), so the samples never are.
+- **NBE USB gateway running on the PC it's plugged into** (or `sglab record` on that port): the gateway
+  sends `PING` every second. The board waits ≤1 s for the server's ACKs, leaves the broker cleanly,
+  switches the radio **off**, and sends everything not yet acknowledged, then the live stream, over
+  USB-C (`$E,..,LINK,usb`). The gateway goes on the broker as the node only after that event.
+- **Gateway closed, or cable out**: no `PING` for 5 s (unplugged: at once), radio back on, new `boot`,
+  `$E,..,LINK,wifi`, carry on from the ring. A running trial keeps recording across the switch (the
+  recorder drops the few samples/frames sent twice at a handover by seq). Closing the gateway does
+  **not** STOP a hybrid board.
+- A charger or a PC without the gateway never takes the link (nothing sends `PING`).
+
+Build (holds the node key and Wi-Fi password, like any Wi-Fi node):
+
+```bash
+python ../../tools/nbe_node.py configure GLS03 --camera --wifi-ssid <lab router SSID>   # camera + hybrid
+idf.py build flash
+# PPG-only node with the same USB takeover:  nbe_node.py configure FNG01 --hybrid ...
+# on the server:  deploy/evmserver/build-firmware.sh --camera --hybrid GLS03
+```
+
+`--camera` writes `sdkconfig.camera` + `sdkconfig.hybrid` + the node's values into `sdkconfig.nbe`. The
+log console stays on UART0 (USB-C carries data); warnings reach the gateway / server as `$E,..,LOG`.
+
+`sdkconfig.hybrid` sizes the Wi-Fi path for the camera's ~0.65 MB/s (160×160 gray8 at ~25 fps):
+64 kB MQTT frames (one frame record must fit one), a 256 kB window with ACK-clocked sending, a 4 MB
+PSRAM ring (~3 s of frames, minutes of PPG) and a 32 kB TCP send buffer (ESP-IDF's 5.7 kB caps TLS
+at ~150-300 kB/s). **Not yet measured on hardware.** Check on the first run: `cam_fps` ≈ 25 and
+`cam_drop` flat in the S line, `heap` (internal RAM: Wi-Fi + TLS + TCP buffers + camera DMA), and the
+status message's `buf` / `rtx`. Too slow → `CAM FPS=12` (or a smaller crop); still dropping with a good
+RSSI → raise `CONFIG_LWIP_TCP_SND_BUF_DEFAULT` if `heap` allows. Watch the PPG for Wi-Fi TX noise on the
+shared 3.3 V rail (`CONFIG_PPG_WIFI_TX_POWER_DBM` lowers the current spikes).
+
 ## menuconfig → "PPG stream (MAX30102)"
 
 | Menu | Settings | Defaults |
@@ -69,9 +160,11 @@ then mix with the data (sglab ignores non-`$` lines, but a log line can split a 
 | Identity | Device ID (`dev=`), measurement site, board name | FNG01, finger |
 | Wiring | I2C port, SDA/SCL GPIO, I2C clock, internal pull-ups, INT GPIO, marker button GPIO, status LED GPIO + polarity | 0, 5/6, 400 kHz, on, −1, −1, 21 active-low |
 | Sensor | LED mode (SpO2 red+IR / HR red-only), sample rate 50–3200, on-chip averaging 1–32, pulse width 69–411 µs, ADC range 2048–16384 nA, red/IR LED current (0.1 mA units), FIFO poll period, FIFO almost-full level | SpO2, 400 sps, 1, 411 µs, 16384 nA, 6.4 mA, 5 ms |
-| Link | USB Serial/JTAG (USB-C), UART (+ number, baud, TX/RX GPIO), or Wi-Fi + MQTT; TX buffer size | USB, 8192 B |
+| Link | USB Serial/JTAG (USB-C) text lines, USB binary records (camera boards / USB gateway), UART (+ number, baud, TX/RX GPIO), or Wi-Fi + MQTT; TX buffer size | USB, 8192 B (32768 B binary) |
+| Camera | OV2640 on/off (USB binary link only), frame size 96×96…640×480, centre crop (gray8), sensor zoom window + clock divider, raw grayscale or JPEG (+ quality), fps cap, auto / fixed exposure + gain, flip / mirror | off; 240×240 gray8, no crop (sdkconfig.camera: crop 160, zoom window 376 / clkdiv 1, driver on core 1), 15 fps (sdkconfig.camera: 0 = no cap), exposure 300, gain 2 |
 | Link → Wi-Fi | SSID, password / WPA2-Enterprise (PEAP), fallback networks 2 + 3 (password/open, tried in order when the one before isn't found or keeps refusing), modem sleep, max transmit power, 20 MHz only, SNTP server | UCSD-DEVICE, PSK, off, 20 dBm, off, pool.ntp.org |
 | Link → MQTT | broker URI, topic prefix, broker CA (public bundle / private PEM), send period, largest frame, unacknowledged window, store-and-forward buffer, outbox limit (status only), status period, stop when the server goes offline | written by nbe_node.py; 250 ms, 8 kB, 64 kB, 2 MB with PSRAM, 64 kB, 15 s, on |
+| Auxiliary sensor streams | auxiliary streams on/off (`$M` lines, protocol v2.1), synthetic demo stream "sweat", camera frame statistics on the board (`cam_feat`) | off, off, off |
 | Behaviour | Autostart without `START`, status-line period, die-temperature reporting, quiet logs after boot | off, 1000 ms, on, on |
 
 **Give every board its own Device ID** (e.g. `GLS01` for the glasses, `FNG01` for the finger).
@@ -107,6 +200,42 @@ The sglab live page shows these under **Device report**, and the last report is 
 
 Commands from the PC: `INFO`, `START`, `STOP` (case-insensitive). If the sensor is missing,
 the firmware keeps retrying once per second and answers `START` with a `SENSOR_ERR` event.
+
+## Adding a sensor
+
+Further sensors (sweat glucose / lactate / cortisol / uric acid, temperature, anything ≤ ~20 Hz) and
+values computed on the board are **auxiliary streams** (protocol v2.1, `../../PROTOCOL.md`): each has
+its own `H` line and sends `$M,<sid>,<seq>,<t_us>,<values>` lines, on any link. The server reads the
+`H` line and records and shows the stream; it needs no change for a new sensor.
+
+1. Copy `main/xstream_template.c` (a commented I2C electrochemical front end with a checklist at the
+   top) to `main/xstream_<name>.c` and fill in the descriptor: stream id, name, channels, units, rate,
+   calibration constants for the `H` line, and `init()` / `read()` for your chip.
+2. Give it a stream id in `main/xstream.h` and one `xs_register(&..._stream);` line in
+   `register_streams()` in `main/xstream.c`.
+3. Add a `PPG_AUX_<NAME>` option to the menu "Auxiliary sensor streams" in `main/Kconfig.projbuild`
+   and the file to `srcs` in `main/CMakeLists.txt`.
+
+Try the path first without hardware: menuconfig → Auxiliary sensor streams → enable "Auxiliary
+streams" and "Demo stream 'sweat'" (`CONFIG_PPG_AUX=y`, `CONFIG_PPG_AUX_DEMO=y`). The board then sends a
+synthetic glucose | lactate stream at 1 Hz (`sensor=DEMO`; turn it off again for real trials):
+
+```
+$H,proto=2,dev=FNG01,fw=0.9.0-idf,sid=2,stream=sweat,kind=samples,sensor=DEMO,fs=1,ch=glucose|lactate,unit=uM|mM,site=finger,sensor_ok=1*4E
+$M,2,0,1012000,80.5,1.05*58
+$S,2002000,fs_meas=400.0,...,sweat_n=1,sweat_err=0,heap=300000*06
+```
+
+Healthy: `<stream>_n` grows by `fs` per second, `<stream>_err` stays 0.
+
+**Features computed on the board.** `CONFIG_PPG_CAMERA_EDGE_FEATURES` (camera boards, gray8) makes the
+camera task compute brightness, contrast and motion per frame and send them as the stream `cam_feat`
+(`kind=features,src=cam,algo=framestats@1`), next to the frames, so the server can compare them with
+its own. A task that computes values from its own data calls `xs_push()` / `xs_push_at()` instead of
+providing `read()`; see `frame_stats()` in `main/camera.c`.
+
+Not yet run on hardware: the auxiliary task, the demo and the frame statistics are verified by the
+host test only (below).
 
 ## First test on hardware
 
@@ -154,6 +283,11 @@ checks every batch holds whole lines), type-checks the Wi-Fi code (PSK, PEAP) ag
 - channel order
 - FIFO-overflow detection
 
+Three more builds turn on the auxiliary streams (`check_xstream.py`): the demo stream on the USB text
+link, and demo + camera frame statistics on the USB binary and the hybrid link. Checked: the `H` lines'
+fields, `M` checksums, `seq` from 0 after `START`, increasing `t_us`, the demo's values, and the frame
+statistics against a recomputation from the received pixels. `xstream_template.c` is compile-checked.
+
 It catches logic and C errors, not ESP-IDF API mismatches; only a real `idf.py build` does that.
 
 ## Files
@@ -163,16 +297,28 @@ CMakeLists.txt          project (ESP-IDF)
 sdkconfig.defaults      target esp32s3, 1 kHz tick, console on UART0, 8 MB flash, PSRAM, OTA partitions + rollback
 partitions.csv          two ~4 MB app slots for over-the-air updates
 sdkconfig.nbe           (generated, not committed) per-node values from nbe_node.py
+sdkconfig.camera        overlay for camera glasses (USB binary link + OV2640), see "Camera glasses"
+sdkconfig.hybrid        overlay on top of it: Wi-Fi + USB takeover, sized for the camera, see "Hybrid"
 main/Kconfig.projbuild  the menuconfig menu
-main/idf_component.yml  managed components (espressif/mqtt)
+main/idf_component.yml  managed components (espressif/mqtt, espressif/esp32-camera)
 main/app_main.c         tasks: sensor (FIFO → D lines, status, SYNC, start/stop) + commands
 main/max30102.c/.h      register-level driver on i2c_master
 main/proto.c/.h         line builder with XOR checksum (no printf)
 main/link.h             transport interface used by app_main
 main/link.c             USB Serial/JTAG or UART transport
-main/link_mqtt.c        MQTT transport: batching, store-and-forward, status/LWT, commands
+main/link_mqtt.c        MQTT transport: batching, store-and-forward, status/LWT, commands, camera frames
+                        (PPG first); hybrid link: hands the stream to the USB gateway and back
+main/usbgw.c/.h         hybrid link, USB side: gateway heartbeat (PING), commands, envelope writes
+main/link_usb_bin.c     USB binary transport (protocol v2 envelopes: text + samples + camera frames)
+main/camera.c/.h        OV2640 stream (sid 1 "cam"): capture task, H line, CAM command, S-line stats;
+                        frame statistics on the board (sid 3 "cam_feat")
+main/xstream.c/.h       auxiliary streams (protocol v2.1): descriptors, H lines, M lines, polling task
+main/xstream_demo.c     synthetic demo stream (sid 2 "sweat")
+main/xstream_template.c copy-me template for a new sensor (not built), see "Adding a sensor"
+main/frame.c/.h         binary records (MQTT frames, USB envelopes, frame records), CRC-32
 main/ota.c/.h           over-the-air update ("OTA <token>" command), rollback if the new build can't reach the broker
 main/net.c/.h           Wi-Fi station (PSK or PEAP, up to 3 saved networks), reconnect back-off, SNTP
 main/certs/             (generated, not committed) node certificate + key
-host_test/              PC build + simulator (USB, UART, MQTT batching) + output checker
+host_test/              PC build + simulator (USB, UART, MQTT batching, USB binary + fake camera,
+                        hybrid Wi-Fi -> USB -> Wi-Fi + broker outage) + output checkers
 ```

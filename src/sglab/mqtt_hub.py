@@ -3,9 +3,12 @@
 Topics (prefix default "nbe"; one set per node ID):
 
     nbe/dev/<ID>/status   node -> server, retained JSON, plus last-will {"online": false}
-    nbe/dev/<ID>/data     node -> server, QoS 1: a batch of PPG protocol v1 lines
-                          ($H/$D/$E/$S ... *CS\\r\\n) exactly as on USB serial
-    nbe/dev/<ID>/cmd      server -> node, QoS 1: INFO | START | STOP | OTA <token> (see sglab.firmware)
+    nbe/dev/<ID>/data     node -> server: acknowledged binary frames of records (sglab.framing; firmware
+                          < 0.6: QoS 1 batches of protocol v1 lines). Protocol v2 camera frames reach the
+                          recorder as VideoFrame objects (attach(..., on_frame=)). A USB gateway
+                          (nbe_gateway) publishes here for its board, exactly like a Wi-Fi node.
+    nbe/dev/<ID>/cmd      server -> node, QoS 1: INFO | START | STOP | OTA <token> (see sglab.firmware);
+                          GW-EXIT <gw_id> to a USB gateway (shut_down_gateway)
     nbe/core/status       server -> nodes, retained {"online": true} + last-will {"online": false};
                           nodes stop streaming when the server disappears
 
@@ -29,6 +32,13 @@ log = logging.getLogger("sglab.mqtt")
 
 STALE_AFTER_S = 45.0  # nodes publish status every ~15 s
 ORPHAN_GRACE_S = 10.0  # after startup, a node streaming into no trial is told to STOP
+# USB gateways all connect AS their node (same client ID / certificate), so two of them for one node
+# (one forgotten on another computer) keep kicking each other off the broker and the idle one reports
+# the node offline. Each run has its own gw_id in its status; the hub lists them per node and can
+# shut one down. Paho's reconnect backoff tops out at 30 s, so a fighting gateway shows up at least
+# that often.
+GATEWAY_SEEN_S = 90.0
+GATEWAY_EVICT_S = 1800.0  # keep answering a shut-down gateway's reconnects with GW-EXIT this long
 
 
 class MqttHub:
@@ -41,6 +51,7 @@ class MqttHub:
         self.lock = threading.Lock()
         self.status: dict[str, dict] = {}
         self.sinks: dict[str, Callable[[bytes], None]] = {}
+        self.frame_sinks: dict[str, Callable] = {}  # camera frames (protocol v2), in order with the lines
         self.idle_cbs: dict[str, Callable[[bool], None]] = {}  # node reports streaming true/false
         self.receivers: dict[str, FrameReceiver] = {}  # binary frame reassembly + ACKs per node
         self.on_mac: Callable[[str, str], None] | None = None  # node reported a (new) MAC -> registry
@@ -49,6 +60,8 @@ class MqttHub:
         self.stats = {"data_msgs": 0, "data_bytes": 0, "unrouted": 0, "ignored": 0, "orphan_stops": 0}
         self.t_start = time.time()
         self._orphan_stop: dict[str, float] = {}
+        self.gateways: dict[str, dict[str, dict]] = {}  # node -> gw_id -> what its last status said
+        self.evicted: dict[str, tuple[str, float]] = {}  # gw_id -> (node, until)
         self.client = client or self._make_client()
 
     # ---- connection ---------------------------------------------------------------
@@ -113,11 +126,16 @@ class MqttHub:
                 st = json.loads(payload.decode() or "{}")
             except (ValueError, UnicodeDecodeError):
                 return
+            if st.get("gw_id") and self._gateway_status(node_id, st, retain):
+                return  # a gateway that was shut down: not this node's state any more
             with self.lock:
                 prev = self.status.get(node_id, {})
                 st["_received"] = time.time()
                 st["_retained"] = retain
-                self.status[node_id] = {**prev, **st}
+                # a hybrid board and its USB gateway take turns as the node: when the link changes, the
+                # other one's fields (gw_id, disk_mb, rssi...) are stale - start from this status alone
+                switched = st.get("link") and prev.get("link") and st["link"] != prev["link"]
+                self.status[node_id] = dict(st) if switched else {**prev, **st}
                 idle_cb = self.idle_cbs.get(node_id)
             if self.on_mac and st.get("mac") and st["mac"] != prev.get("mac"):
                 try:
@@ -135,10 +153,13 @@ class MqttHub:
             if is_frame(payload):  # firmware >= 0.6: acknowledged binary frames -> protocol lines
                 with self.lock:
                     rx = self.receivers.setdefault(node_id, FrameReceiver())
-                lines, reply = rx.feed(payload)
+                items, reply = rx.feed_items(payload)
                 if reply:
                     self.client.publish(f"{self.prefix}/dev/{node_id}/cmd", reply, qos=0)
-                payload = "".join(lines).encode()
+                if any(not isinstance(x, str) for x in items):  # camera frames: deliver in order
+                    self._deliver_mixed(node_id, items)
+                    return
+                payload = "".join(items).encode()
                 if not payload:
                     return
             with self.lock:
@@ -151,6 +172,63 @@ class MqttHub:
                 self.stats["unrouted"] += 1
                 if b"$D," in payload:  # samples, not just a boot banner / INFO answer
                     self._maybe_stop_orphan(node_id)
+
+    def _gateway_status(self, node_id: str, st: dict, retain: bool) -> bool:
+        """Note a USB gateway's status; True if it is one that was shut down (it got GW-EXIT again)."""
+        gw, now = str(st["gw_id"]).lower(), time.time()
+        with self.lock:
+            ev = self.evicted.get(gw)
+            if ev and ev[1] < now:
+                self.evicted.pop(gw, None)
+                ev = None
+            if not ev:
+                seen = now if not retain else float(st.get("ts", 0) or 0)
+                self.gateways.setdefault(node_id, {})[gw] = {
+                    "gw_id": gw, "host": st.get("host"), "version": st.get("gateway"), "started": st.get("gw_started"),
+                    "usb": st.get("usb"), "streaming": st.get("streaming"), "fw": st.get("fw"), "seen": seen}
+        if ev and not retain:  # it reconnected (or never heard the first one): say it again
+            self.publish_cmd(node_id, f"GW-EXIT {gw}")
+        return bool(ev)
+
+    def node_gateways(self, node_id: str) -> list[dict]:
+        """USB gateways heard for this node within GATEWAY_SEEN_S, newest first."""
+        now = time.time()
+        with self.lock:
+            gws = self.gateways.get(node_id, {})
+            for k in [k for k, g in gws.items() if now - g["seen"] > GATEWAY_SEEN_S]:
+                del gws[k]
+            out = [{**g, "age_s": round(now - g["seen"], 1)} for g in gws.values()]
+        return sorted(out, key=lambda g: -(g["started"] or 0))
+
+    def shut_down_gateway(self, node_id: str, gw_id: str) -> None:
+        """Tell one USB gateway run to quit, and keep telling it if it reconnects."""
+        gw = gw_id.strip().lower()
+        with self.lock:
+            self.evicted[gw] = (node_id, time.time() + GATEWAY_EVICT_S)
+            self.gateways.get(node_id, {}).pop(gw, None)
+        self.publish_cmd(node_id, f"GW-EXIT {gw}")
+
+    def _deliver_mixed(self, node_id: str, items: list) -> None:
+        with self.lock:
+            sink, fsink = self.sinks.get(node_id), self.frame_sinks.get(node_id)
+            if node_id in self.status:
+                self.status[node_id]["_last_data"] = time.time()
+        if sink is None:
+            self.stats["unrouted"] += 1
+            self._maybe_stop_orphan(node_id)
+            return
+        run: list[str] = []
+        for x in items:
+            if isinstance(x, str):
+                run.append(x)
+                continue
+            if run:
+                sink("".join(run).encode())
+                run = []
+            if fsink:
+                fsink(x)
+        if run:
+            sink("".join(run).encode())
 
     def _maybe_stop_orphan(self, node_id: str) -> None:
         """A node streams but no trial owns it (server restarted mid-trial, a STOP was lost...)."""
@@ -179,6 +257,7 @@ class MqttHub:
         rx = self.receivers.get(node_id)
         if rx:
             st["rx"] = dict(rx.stats)
+        st["gateways"] = self.node_gateways(node_id)
         st.update(node_id=node_id, online=online, claimed_online=claimed,
                   age_s=round(now - heard, 1) if heard else None, in_use=node_id in self.sinks,
                   state="online" if online else ("stale" if claimed else "offline"))
@@ -192,18 +271,21 @@ class MqttHub:
         self.client.publish(f"{self.prefix}/dev/{node_id}/cmd", cmd.strip().upper(), qos=1)
 
     def attach(self, node_id: str, sink: Callable[[bytes], None],
-               on_idle: Callable[[bool], None] | None = None) -> None:
+               on_idle: Callable[[bool], None] | None = None, on_frame: Callable | None = None) -> None:
         with self.lock:
             if node_id in self.sinks:
                 raise RuntimeError(f"node {node_id} is already recording")
             self.sinks[node_id] = sink
             if on_idle:
                 self.idle_cbs[node_id] = on_idle
+            if on_frame:
+                self.frame_sinks[node_id] = on_frame
 
     def detach(self, node_id: str) -> None:
         with self.lock:
             self.sinks.pop(node_id, None)
             self.idle_cbs.pop(node_id, None)
+            self.frame_sinks.pop(node_id, None)
 
 
 class MqttSource:
@@ -216,9 +298,9 @@ class MqttSource:
     def __init__(self, hub: MqttHub, node_id: str):
         self.hub, self.node_id = hub, node_id
         self.port = f"mqtt://{node_id}"
-        self.q: queue.Queue[str] = queue.Queue()
+        self.q: queue.Queue = queue.Queue()  # protocol lines (str) and camera frames (VideoFrame)
         self.idle = threading.Event()
-        hub.attach(node_id, self._feed, self._on_idle)
+        hub.attach(node_id, self._feed, self._on_idle, on_frame=self.q.put)
 
     def _on_idle(self, idle: bool) -> None:
         if idle:
@@ -239,7 +321,8 @@ class MqttSource:
     def write(self, cmd: str) -> None:
         self.hub.publish_cmd(self.node_id, cmd)
 
-    def readline(self) -> str:
+    def readline(self):
+        """A protocol line, a VideoFrame (camera boards), or "" after 0.2 s without data."""
         try:
             return self.q.get(timeout=0.2)
         except queue.Empty:

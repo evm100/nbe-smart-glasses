@@ -1,5 +1,6 @@
 // Link to the PC / server, chosen in menuconfig:
 //   USB Serial/JTAG (XIAO USB-C) or UART  -> link.c       (byte stream to a PC running sglab)
+//   USB binary (camera boards)            -> link_usb_bin.c (records in envelopes, for the USB gateway)
 //   Wi-Fi + MQTT over TLS                 -> link_mqtt.c  (batches of protocol lines to the NBE server)
 // app_main.c doesn't care which: it writes whole protocol lines and reads command bytes.
 #pragma once
@@ -17,6 +18,12 @@ int link_write(const char *buf, size_t len);
 // USB/UART: D lines; MQTT: a compact binary record (frame.h). Never blocks on the network.
 void link_write_samples(uint32_t seq0, const int64_t *t_us, const uint32_t *ch0, const uint32_t *ch1, int n,
                         int64_t period_ns);
+// One camera frame (protocol v2 frame record, stream `sid`). USB binary link only (elsewhere it
+// returns false): false = not sent (no host / host too slow); its seq is then missing on the PC.
+bool link_write_frame(uint8_t sid, uint32_t seq, int64_t t_us, uint16_t w, uint16_t h, uint8_t fmt,
+                      uint16_t exposure, uint8_t gain, const uint8_t *data, size_t len);
+// Camera frames link_write_frame() could not send.
+uint32_t link_frames_dropped(void);
 // Returns bytes read (0 on timeout).
 int link_read(uint8_t *buf, size_t max, uint32_t timeout_ms);
 // Bytes that could not be sent because the PC wasn't reading fast enough

@@ -1,8 +1,10 @@
 """Devices page, trial pages and the trial API (operator role)."""
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from ..commands import CommandError
 from ..control import TrialError, form_to_meta
@@ -84,6 +86,24 @@ def api_devices(request: Request, user=viewer):
     return {"devices": _devices(ctx), "mqtt": ctx.mqtt_state(), "trials": ctx.manager.active()}
 
 
+@router.post("/api/nodes/{node_id}/gateways/{gw_id}/exit")
+def api_gateway_exit(request: Request, node_id: str, gw_id: str, user=operator):
+    """Shut down a USB gateway someone left running for this node (on another computer): every
+    gateway connects as the node, so a second one keeps the first off the broker."""
+    ctx = C(request)
+    if ctx.hub is None:
+        raise HTTPException(400, "MQTT is not configured")
+    node_id = node_id.strip().upper()
+    gw = next((g for g in ctx.hub.node_gateways(node_id) if g["gw_id"] == gw_id.strip().lower()), None)
+    if gw is None:
+        raise HTTPException(404, f"no gateway {gw_id} running for {node_id} (it may have stopped already)")
+    if gw.get("streaming") and ctx.manager.busy().get(f"mqtt://{node_id}"):
+        raise HTTPException(409, f"that gateway is streaming {node_id} into a running trial - stop the trial first")
+    ctx.hub.shut_down_gateway(node_id, gw["gw_id"])
+    ctx.audit(request, "node.gateway_exit", node_id, {"gw_id": gw["gw_id"], "host": gw.get("host")})
+    return {"ok": True, "gw_id": gw["gw_id"]}
+
+
 # ------------------------------------------------------------------ trial pages
 def _new_form(request, ctx, user, error=None, form=None, chosen=None):
     c = ctx.cat()
@@ -163,6 +183,13 @@ async def trial_finish(request: Request, tid: str, user=operator):
     ctx.audit(request, "trial.save", sid, {"trial": tid, "keep": post.get("keep", True)})
     if form.get("process") and post.get("keep", True) is not False:
         ctx.start_processing(sid)
+    if post.get("keep", True) is not False:  # eye tracking of the camera streams, in the background
+        try:
+            import json as _json
+            folder = ctx.settings.raw_dir / sid
+            ctx.eye_jobs.start_session(sid, folder, _json.loads((folder / "session.json").read_text()))
+        except Exception:
+            pass  # the session page starts it on first view
     return RedirectResponse(f"/sessions/{sid}", status_code=303)
 
 
@@ -190,6 +217,89 @@ def api_trial_live(request: Request, tid: str, seconds: float = 8.0, after: str 
     except ValueError:
         raise HTTPException(400, "after: comma-separated integers") from None
     return ctx.manager.live(tid, min(max(seconds, 1.0), 30.0), after=cursors)
+
+
+@router.get("/api/trials/{tid}/video/{stream}/frame")
+def api_trial_video(request: Request, tid: str, stream: str, after: int = -1, user=operator):
+    """Newest frame of a camera stream (lossless PNG for grayscale, JPEG as the board sent it).
+    The live page passes `after` = the X-Frame-Count it shows: the call then waits (up to 1 s) for
+    the next frame, so the preview runs at the camera's frame rate. 204 if none arrived."""
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    try:
+        p = ctx.manager.video_preview(tid, stream, after=after, wait_s=1.0 if after >= 0 else 0.0)
+    except TrialError as e:
+        raise HTTPException(404, str(e)) from None
+    if p is None or p[0] <= after:
+        return Response(status_code=204)
+    headers = {"Cache-Control": "no-store", "X-Frame-Count": str(p[0])}
+    ov = ctx.manager.eye_overlay(tid, stream, p[0])
+    if ov is not None:  # the eye tracker's result for exactly this frame (drawn over it)
+        headers["X-Eye"] = json.dumps({k: ov.get(k) for k in ("state", "x", "y", "r", "gx", "gy", "cx", "cy", "win",
+                                                             "closure", "closed", "head_move", "cal", "why")},
+                                      separators=(",", ":"))
+    return Response(p[1], media_type=p[2], headers=headers)
+
+
+@router.get("/api/trials/{tid}/eye/{stream}")
+def api_trial_eye(request: Request, tid: str, stream: str, after: int = -1, user=operator):
+    """Live eye tracking of a camera stream: summary (blinks/min, PERCLOS, gaze shifts...) and every
+    tracked frame newer than `after` (the `next` of the previous reply)."""
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    try:
+        e = ctx.manager.eye(tid, stream, after)
+    except TrialError as err:
+        raise HTTPException(404, str(err)) from None
+    if e is None:
+        raise HTTPException(404, f"{stream}: no eye tracking (JPEG stream or too small)")
+    return e
+
+
+@router.post("/api/trials/{tid}/eye/{stream}/recalibrate")
+def api_trial_eye_recal(request: Request, tid: str, stream: str, user=operator):
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    try:
+        ok = ctx.manager.eye_recalibrate(tid, stream)
+    except TrialError as err:
+        raise HTTPException(404, str(err)) from None
+    return {"ok": ok}
+
+
+@router.get("/api/trials/{tid}/insights")
+def api_trial_insights(request: Request, tid: str, user=operator):
+    """Live PPG features per stream (HR, HRV, perfusion, quality, beat markers, ensemble beat) and
+    the live BP estimate (sglab.liveppg)."""
+    from ..bpmodel import json_safe
+
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    return json_safe(ctx.manager.insights(tid))
+
+
+@router.post("/api/trials/{tid}/bp-model")
+async def api_trial_bp_model(request: Request, tid: str, user=operator):
+    """{"model": "name/run_id" | "auto", "role": "glasses" | ...}: which model run estimates BP live."""
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    body = await request.json()
+    try:
+        ctx.manager.set_bp_model(tid, body.get("model"), body.get("role"))
+    except TrialError as err:
+        return JSONResponse({"error": str(err)}, status_code=400)
+    return {"ok": True}
+
+
+@router.get("/api/bp-models")
+def api_bp_models(request: Request, role: str | None = None, user=viewer):
+    """Model runs that can estimate BP (have a saved model), newest first, + the default per site."""
+    from ..bpmodel import available_runs, default_run, json_safe
+
+    s = C(request).settings
+    runs = available_runs(s, role)
+    defaults = {r: (default_run(s, r) or {}).get("key") for r in ("finger", "glasses", "head")}
+    return json_safe({"runs": runs, "defaults": defaults})
 
 
 @router.post("/api/trials/{tid}/event")

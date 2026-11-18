@@ -47,6 +47,15 @@ class Sample:
 
 
 @dataclass
+class Measure:
+    """One sample of an auxiliary stream (protocol v2.1 `$M` line); None = no value for that channel."""
+    sid: int
+    seq: int
+    t_us: int
+    values: list
+
+
+@dataclass
 class Event:
     t_us: int
     code: str
@@ -69,7 +78,7 @@ def _kv(fields: list[str]) -> dict:
 
 
 def parse_line(raw: str):
-    """Return Header | Sample | Event | Status, None for non-protocol text.
+    """Return Header | Sample | Measure | Event | Status, None for non-protocol text.
 
     Raises ProtocolError on bad checksum / malformed protocol lines.
     """
@@ -92,6 +101,9 @@ def parse_line(raw: str):
     try:
         if kind == "D":
             return Sample(int(fields[0]), int(fields[1]), [int(v) for v in fields[2:]])
+        if kind == "M":
+            return Measure(int(fields[0]), int(fields[1]), int(fields[2]),
+                           [float(v) if v.strip() else None for v in fields[3:]])
         if kind == "H":
             kv = _kv(fields)
             hdr = Header(

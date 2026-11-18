@@ -1,21 +1,220 @@
 {% extends "base.html" %}
-{% block title %}{{ s.session_id }} · NBE PPG lab{% endblock %}
+{% block title %}{{ s.session_id }} · NBE lab{% endblock %}
 {% block head %}
 <script src="/static/plotly.min.js"></script>
+<style>
+main { max-width: 1440px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 12px 0 4px; }
+.tiles .k { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; min-width: 0; }
+.tiles .k b { font-size: 22px; font-variant-numeric: tabular-nums; display: block; line-height: 1.2; }
+.tiles .k b small { font-size: 12px; font-weight: 500; color: var(--muted); margin-left: 3px; }
+.tiles .k span { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-2); }
+.tiles .k em { display: block; font-style: normal; font-size: 12px; color: var(--text-2); }
+.tiles.in-card .k { background: var(--grid); border: 0; }
+.viewbar { position: sticky; top: 0; z-index: 20; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  background: var(--bg); border-bottom: 1px solid var(--border); padding: 8px 0; margin-top: 10px; }
+.viewbar .range { font-variant-numeric: tabular-nums; font-weight: 600; }
+.viewbar .grow { flex: 1; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; padding: 4px 10px; font-size: 12px; background: var(--surface); color: var(--text-2); }
+.seg button.on { background: var(--grid); color: var(--text); font-weight: 600; }
+.toc { display: flex; gap: 4px 14px; flex-wrap: wrap; font-size: 13px; }
+.toc a { text-decoration: none; }
+h2 { scroll-margin-top: 56px; }
+h2 .note { font-weight: 400; margin-left: 6px; }
+.plot { width: 100%; height: 300px; }
+.res { font-size: 12px; color: var(--text-2); margin-top: 2px; min-height: 1.3em; }
+.res b { color: var(--text); font-weight: 600; }
+.eye-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px 16px; }
+@media (max-width: 900px) { .eye-grid { grid-template-columns: minmax(0, 1fr); } }
+.eye-grid .plot { height: 190px; }
+.eye-grid h4 { margin: 8px 0 0; font-size: 13px; }
+.eye-grid h4 span { font-weight: 400; color: var(--text-2); }
+.eye-detail { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; margin-top: 10px; }
+@media (max-width: 900px) { .eye-detail { grid-template-columns: minmax(0, 1fr); } }
+.viewer .frame { position: relative; width: 100%; aspect-ratio: 1; background: var(--grid); border-radius: 8px; overflow: hidden; }
+.viewer img, .viewer canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.viewer img { image-rendering: pixelated; }
+.viewer input[type=range] { width: 100%; padding: 0; margin: 8px 0 4px; }
+.progress { height: 8px; border-radius: 4px; background: var(--grid); overflow: hidden; max-width: 420px; margin: 8px 0; }
+.progress i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .5s; }
+.reasons { display: grid; grid-template-columns: max-content minmax(80px, 1fr) max-content; gap: 6px 12px; align-items: center; max-width: 780px; }
+.reasons .bar { height: 10px; background: var(--grid); border-radius: 5px; overflow: hidden; }
+.reasons .bar i { display: block; height: 100%; background: var(--bad); border-radius: 5px; }
+.reasons .num { font-variant-numeric: tabular-nums; text-align: right; }
+.reasons small { color: var(--text-2); display: block; }
+.verdict { padding: 8px 12px; border-radius: 8px; background: var(--grid); margin: 6px 0 10px; }
+.verdict.bad { border-left: 3px solid var(--bad); } .verdict.ok { border-left: 3px solid var(--good); } .verdict.mid { border-left: 3px solid var(--warn); }
+details.sec > summary { cursor: pointer; font-weight: 600; font-size: 16px; margin: 28px 0 10px; }
+.post { border-top: 1px solid var(--border); padding: 8px 0; }
+.post:first-child { border-top: 0; }
+.post .meta { font-size: 12px; color: var(--text-2); }
+</style>
 {% endblock %}
 {% block content %}
 <h1>{{ s.session_id }}</h1>
 <div class="sub">
-  {{ s.subject_id }} · {{ s.protocol }} · trial {{ s.trial }} ·
-  {{ '%.0f'|format(s.duration_s or 0) }} s ·
+  {{ s.subject_id }} · {{ s.protocol }} · trial {{ s.trial }} · {{ doc.started_at_local or s.started_at }}
+  {% if s.operator %}· recorded by {{ s.operator }}{% endif %} ·
   <span class="pill {{ s.status }}">{{ s.status }}</span>
   {% if s.quality %}<span class="pill {{ s.quality }}">{{ s.quality }}</span>{% endif %}
+  {% if s.notes %}<div style="margin-top:4px">“{{ s.notes }}”</div>{% endif %}
 </div>
 
+{% if not s.runs and s.streams %}
+<div class="warn">This recording has not been processed yet, so heart rate, quality and blood-pressure plots are empty.
+  {% if is_operator %}<form method="post" action="/sessions/{{ s.session_id }}/process" style="display:inline">
+    <button class="primary" type="submit">Process now</button></form>{% else %}Ask an operator to press “Process”.{% endif %}
+  Raw signals can be viewed right away.</div>
+{% endif %}
+{% if processing and processing not in ('done',) %}<div class="warn" id="proc-banner">Processing: {{ processing }} — this page reloads when it finishes.</div>{% endif %}
+
+<div class="tiles" id="tiles"></div>
+
+<div class="viewbar">
+  <span class="note">Showing</span> <span class="range" id="v-range">whole recording</span>
+  <span class="seg" id="v-zoom">
+    <button data-z="all" class="on">Whole recording</button><button data-z="600">10 min</button><button data-z="60">1 min</button><button data-z="10">10 s</button>
+  </span>
+  <button id="v-prev" title="Move earlier">◀</button><button id="v-next" title="Move later">▶</button>
+  <label class="note">Go to <select id="v-jump"><option value="">an event…</option></select></label>
+  <span class="grow"></span>
+  <span class="note">All plots share this time range. Drag on any plot to zoom in — detail is re-loaded at full resolution. Double-click to see everything. Click to move the cursor.</span>
+</div>
+<div class="toc" id="toc" style="margin-top:10px"></div>
+
+<h2 id="sec-signal">Pulse signal <span class="note">PPG</span></h2>
+<div class="card">
+  <div class="controls">
+    <label>Stream <select id="sig-stream">{% for x in streams %}<option>{{ x }}</option>{% endfor %}</select></label>
+    <span class="seg" id="sig-source"><button data-s="filtered" class="on">Filtered</button><button data-s="raw">Raw counts</button></span>
+    <span class="note">Red shading = windows the quality check rejected. ● = beat accepted, ○ = beat rejected (shown when 3 min or less is visible). Vertical lines = events.</span>
+  </div>
+  <div id="sig" class="plot" style="height:320px"></div>
+  <div class="res" id="sig-res"></div>
+</div>
+
+<h2 id="sec-hr">Heart rate</h2>
+<div class="card">
+  <div class="note" style="margin-bottom:6px">Dots = each accepted beat, line = 30-s average, diamonds = reference devices (cuff pulse / pulse-ox).</div>
+  <div id="hr" class="plot"></div>
+</div>
+
+<h2 id="sec-bp">Blood pressure <span class="note">model estimate vs. cuff</span></h2>
+<div class="card">
+  <div class="controls">
+    <label>Site <select id="bp-role">{% for r in roles %}<option {% if r == 'glasses' %}selected{% endif %}>{{ r }}</option>{% endfor %}</select></label>
+    <label>Model <select id="bp-model"><option value="auto">Auto: best run for this site</option></select></label>
+    <span class="note">What a trained model reads from this session's pulse signal, next to the cuff. Calibrated models use the session's first good cuff reading (◆). Solid line = estimate from enough good beats; dashed = bridged across stretches with too few good beats.</span>
+  </div>
+  <div id="bp-verdict" class="tiles in-card"></div>
+  <div id="bp" class="plot" style="height:340px"></div>
+  <details style="margin-top:6px"><summary class="note" style="cursor:pointer">Every cuff reading: measured vs. model</summary>
+    <div class="scroll"><table id="bp-table" style="margin-top:8px"></table></div></details>
+</div>
+
+{% if videos %}
+<h2 id="sec-eye">Eye <span class="note">camera · per-minute measures</span></h2>
+<div class="card">
+  <div class="controls">
+    <label>Camera <select id="eye-stream">{% for v in videos %}<option>{{ v }}</option>{% endfor %}</select></label>
+    <span class="note" id="eye-note"></span>
+  </div>
+  <div id="eye-wait" hidden><div class="note" id="eye-wait-txt">Tracking the eye in every recorded frame…</div><div class="progress"><i id="eye-prog"></i></div></div>
+  <div id="eye-body" hidden>
+    <div id="eye-tiles" class="tiles in-card"></div>
+    <div class="eye-grid">
+      <div><h4>Blinks per minute</h4><div id="eye-m-blinks" class="plot"></div></div>
+      <div><h4>Average blink duration <span>per minute · ms</span></h4><div id="eye-m-dur" class="plot"></div></div>
+      <div><h4>Gaze shifts per minute</h4><div id="eye-m-shifts" class="plot"></div></div>
+      <div><h4>Average gaze-shift speed <span>per minute · px/s</span></h4><div id="eye-m-speed" class="plot"></div></div>
+    </div>
+    <div class="note">One bar per minute of the recording. Faded bars = the eye was tracked for less than half of that minute (rates are per minute of tracked time).
+      A gaze shift is one eye movement — the pupil jumping to a new position, whatever it then looks at. Speed = distance moved ÷ time it took,
+      in pixels of the camera frame (scaled to 80 px) per second; it is not yet in degrees (that needs a per-wearer calibration).</div>
+    <div class="eye-detail">
+      <div>
+        <div class="controls" style="margin-bottom:2px">
+          <span class="seg" id="eye-view"><button data-v="closure" class="on">Eye closure</button><button data-v="gaze">Gaze position</button><button data-v="motion">Motion</button></span>
+          <span class="note" id="eye-view-note"></span>
+        </div>
+        <div id="eye-trace" class="plot" style="height:280px"></div>
+        <div class="res" id="eye-res"></div>
+      </div>
+      <div class="viewer">
+        <div class="frame"><img id="fr-img" alt=""><canvas id="fr-ov"></canvas></div>
+        <input type="range" id="fr-slider" min="0" max="0" value="0">
+        <div class="btnrow"><button id="fr-play">▶ Play</button><button id="fr-back" title="previous frame">‹</button><button id="fr-fwd" title="next frame">›</button>
+          <label class="note"><input type="checkbox" id="fr-ovl" checked> overlay</label>
+          <span class="note" id="fr-info" style="font-variant-numeric:tabular-nums"></span></div>
+        <div class="note" style="margin-top:4px">The recorded frame at the cursor. Click any plot to jump there.</div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div id="aux-section" hidden>
+  <h2 id="sec-aux">Other sensors</h2>
+  <div id="aux-cards" style="display:grid; gap:16px"></div>
+</div>
+
+<h2 id="sec-quality">Signal quality <span class="note">what was kept, what was rejected, and why</span></h2>
+<div class="card">
+  <div class="controls"><label>Stream <select id="q-stream">{% for x in streams %}<option>{{ x }}</option>{% endfor %}</select></label></div>
+  <div id="q-verdict"></div>
+  <div id="q-strip" class="plot" style="height:200px"></div>
+  <div class="res">Green bars = share of beats accepted in each 30 s. Red strip along the bottom = windows the window check rejected.</div>
+  <div id="q-reasons" style="margin-top:10px"></div>
+  <details style="margin-top:10px"><summary class="note" style="cursor:pointer">The measurements behind the window check, with the limits in force</summary>
+    <div class="controls" style="margin-top:8px"><label>Measure <select id="q-metric"></select></label><span class="note" id="q-metric-note"></span></div>
+    <div id="q-metric-plot" class="plot" style="height:220px"></div></details>
+</div>
+
+<h2 id="sec-feat">Pulse features vs. cuff blood pressure</h2>
+<div class="card">
+  <div class="controls">
+    <label>Stream <select id="feat-stream">{% for x in streams %}<option>{{ x }}</option>{% endfor %}</select></label>
+    <label>Feature <select id="feat-name"></select></label>
+    <span class="note">30-s medians of one pulse-shape feature (top) over the cuff readings (bottom): the relationship the BP model learns.</span>
+  </div>
+  <div id="feat" class="plot" style="height:400px"></div>
+</div>
+
+<h2 id="sec-events">Events</h2>
+<div class="card scroll">
+<table>
+  <thead><tr><th class="num">Time</th><th>Kind</th><th>Source</th><th class="num">SBP</th><th class="num">DBP</th>
+    <th class="num">HR</th><th class="num">SpO2</th><th>Label</th><th></th></tr></thead>
+  <tbody>
+  {% for e in s.events %}
+    <tr><td class="num">{{ '%d:%04.1f'|format((e.t_s // 60)|int, e.t_s % 60) }}</td><td>{{ e.kind }}</td><td>{{ e.source or '' }}</td>
+      <td class="num">{{ '%g'|format(e.sys_mmhg) if e.sys_mmhg is not none else '' }}</td>
+      <td class="num">{{ '%g'|format(e.dia_mmhg) if e.dia_mmhg is not none else '' }}</td>
+      <td class="num">{{ '%g'|format(e.hr_bpm) if e.hr_bpm is not none else '' }}</td>
+      <td class="num">{{ '%g'|format(e.spo2_pct) if e.spo2_pct is not none else '' }}</td>
+      <td>{{ e.label or '' }}</td><td><button class="link" onclick="goTo({{ e.t_s }})">show</button></td></tr>
+  {% else %}<tr><td colspan="9" class="note">No events were logged in this recording.</td></tr>{% endfor %}
+  </tbody>
+</table>
+</div>
+
+<h2 id="sec-notes">Notes &amp; discussion</h2>
+<div class="card">
+  <div id="notes-list" class="note">Loading…</div>
+  <form id="notes-form" class="row-inline" style="margin-top:10px">
+    <select name="kind"><option value="note">Note</option><option value="question">Question</option><option value="issue">Problem</option></select>
+    <input type="text" name="body" placeholder="Write a note or question about this recording — it also appears on the lab board" style="flex:1; min-width:240px; width:auto" required>
+    <button class="primary" type="submit">Post</button>
+  </form>
+</div>
+
+<details class="sec" id="sec-details"><summary>Recording details &amp; processing</summary>
 <div class="grid2">
   <div class="card">
     <dl class="kv">
       <dt>Started</dt><dd>{{ doc.started_at_local or s.started_at }}</dd>
+      <dt>Duration</dt><dd>{{ '%.0f'|format(s.duration_s or 0) }} s</dd>
       <dt>Operator</dt><dd>{{ s.operator or '–' }}</dd>
       {% for k, v in s.extra.items() if k not in ('keep',) %}<dt>{{ k }}</dt><dd>{{ v if v is not none else '–' }}</dd>{% endfor %}
       <dt>Notes</dt><dd>{{ s.notes or '–' }}</dd>
@@ -37,182 +236,546 @@
               <span class="note">v{{ run.pipeline_version }} · {{ run.config_hash }}</span>{% else %}–{% endif %}</td>
         </tr>
       {% endfor %}
+      {% for v in doc.video or [] %}<tr><td>{{ v.stream }}</td><td class="note">camera {{ v.w }}×{{ v.h }} {{ v.fmt }}</td><td class="num">{{ '%.1f'|format(v.stats.effective_fps or 0) }}</td>
+        <td class="num">{{ v.stats.n_frames }}</td><td class="num">{{ v.stats.n_dropped_seq or 0 }}</td><td></td><td class="note">frames</td></tr>{% endfor %}
+      {% for a in doc.aux or [] %}<tr><td>{{ a.stream }}</td><td class="note">{{ a.sensor or '' }} · {{ a.kind }}</td><td class="num">{{ a.fs or '' }}</td>
+        <td class="num">{{ a.stats.n_samples }}</td><td class="num">{{ a.stats.n_dropped_seq or 0 }}</td><td></td><td class="note">{{ (a.channels or [])|join(', ') }}</td></tr>{% endfor %}
       </tbody>
     </table>
+    {% if is_operator %}
     <form method="post" action="/sessions/{{ s.session_id }}/process" style="margin-top:12px">
-      <button class="primary" type="submit">{% if s.runs %}Process (new/changed only){% else %}Process (Layers 1–2){% endif %}</button>
-      {% if s.runs %}<button type="submit" formaction="/sessions/{{ s.session_id }}/process?force=true">Force re-process</button>{% endif %}
-      {% if processing %}<span class="note">processing: {{ processing }} – refresh in a moment</span>{% endif %}
+      <button class="primary" type="submit">{% if s.runs %}Process (new/changed only){% else %}Process{% endif %}</button>
+      {% if s.runs and is_admin %}<button type="submit" formaction="/sessions/{{ s.session_id }}/process?force=true">Force re-process</button>{% endif %}
+      {% if processing %}<span class="note">processing: {{ processing }}</span>{% endif %}
     </form>
+    {% endif %}
   </div>
 </div>
-
-<h2>Signal</h2>
-<div class="card">
-  <div class="controls">
-    <label>Stream <select id="sig-stream">{% for x in streams %}<option>{{ x }}</option>{% endfor %}</select></label>
-    <label>View <select id="sig-source"><option value="filtered">filtered (Layer 1)</option><option value="raw">raw counts</option></select></label>
-    <span class="note">Shaded = windows rejected by Layer 1. Vertical lines = events. Drag to zoom, double-click to reset.</span>
-  </div>
-  <div id="sig" class="plot"></div>
-</div>
-
-<h2>Heart rate</h2>
-<div class="card">
-  <div class="note" style="margin-bottom:6px">Dots = each accepted beat, line = 30 s epoch mean, diamonds = reference devices (cuff pulse / pulse-ox).</div>
-  <div id="hr" class="plot"></div>
-</div>
-
-<h2>Features vs. cuff blood pressure</h2>
-<div class="card">
-  <div class="controls">
-    <label>Stream <select id="feat-stream">{% for x in streams %}<option>{{ x }}</option>{% endfor %}</select></label>
-    <label>Feature <select id="feat-name"></select></label>
-    <span class="note">Epoch medians (valid epochs). This is the relationship Layer 3/4 will learn.</span>
-  </div>
-  <div id="feat" class="plot" style="height:440px"></div>
-</div>
-
-<h2>Events</h2>
-<div class="card scroll">
-<table>
-  <thead><tr><th class="num">t (s)</th><th>Kind</th><th>Source</th><th class="num">SBP</th><th class="num">DBP</th>
-    <th class="num">HR</th><th class="num">SpO2</th><th>Label</th></tr></thead>
-  <tbody>
-  {% for e in s.events %}
-    <tr><td class="num">{{ '%.1f'|format(e.t_s) }}</td><td>{{ e.kind }}</td><td>{{ e.source or '' }}</td>
-      <td class="num">{{ '%g'|format(e.sys_mmhg) if e.sys_mmhg is not none else '' }}</td>
-      <td class="num">{{ '%g'|format(e.dia_mmhg) if e.dia_mmhg is not none else '' }}</td>
-      <td class="num">{{ '%g'|format(e.hr_bpm) if e.hr_bpm is not none else '' }}</td>
-      <td class="num">{{ '%g'|format(e.spo2_pct) if e.spo2_pct is not none else '' }}</td>
-      <td>{{ e.label or '' }}</td></tr>
-  {% else %}<tr><td colspan="8" class="note">No events.</td></tr>{% endfor %}
-  </tbody>
-</table>
-</div>
-
 {% for stream, imgs in images.items() if imgs %}
-<h2>QA figures · {{ stream }}</h2>
+<h3 style="font-size:14px; margin:18px 0 8px">Static report figures · {{ stream }} <span class="note" style="font-weight:400">(made during processing; the plots above are the interactive versions)</span></h3>
 <div class="thumbs">
   {% for im in imgs %}<a href="{{ im.url }}" target="_blank"><img src="{{ im.url }}" alt="{{ im.title }}" loading="lazy">{{ im.title }}</a>{% endfor %}
 </div>
 {% endfor %}
+</details>
 
 <script>
 const SID = {{ s.session_id|tojson }};
 const EVENTS = {{ s.events|tojson }};
+const DURATION = {{ (s.duration_s or 0)|tojson }};
+const PROCESSING = {{ (processing or '')|tojson }};
+const AUTH = {{ 'true' if auth_enabled else 'false' }};
+const $ = id => document.getElementById(id);
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
 const ROLE_COLOR = r => ({finger: css('--s1'), glasses: css('--s2')}[r] || css('--s3'));
 const streamRole = name => name.split('_')[0];
+const api = (path, q) => fetch(`/api/sessions/${SID}/${path}` + (q ? '?' + new URLSearchParams(Object.entries(q).filter(([, v]) => v != null)) : ''));
+const fmtT = (t, dec) => { const neg = t < 0; t = Math.abs(t); const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60;
+  const ss = dec ? s.toFixed(dec).padStart(3 + dec, '0') : String(Math.floor(s)).padStart(2, '0');
+  return (neg ? '−' : '') + (h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`); };
+const fmtSpan = s => s >= 120 ? `${(s / 60).toFixed(s >= 600 ? 0 : 1)} min` : `${s.toFixed(s < 20 ? 1 : 0)} s`;
 
+// ===================================================================== shared time range
+// Every time plot registers here. Zooming one zooms all; plots with a `refetch` reload their data
+// for the visible range (debounced), so detail is always at the best resolution the range allows.
+const FULL = [0, Math.max(DURATION, 1)];
+let VIEW = FULL.slice(), CURSOR = null;
+const plots = {};   // div id -> {refetch?, ready}
+let applying = false, refetchTimer = null;
+
+function timeTicks(t0, t1) {
+  const span = t1 - t0, steps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
+  const step = steps.find(s => span / s <= 9) || 3600, vals = [], text = [];
+  for (let v = Math.ceil(t0 / step) * step; v <= t1 + 1e-9; v += step) { vals.push(+v.toFixed(3)); text.push(fmtT(v, step < 1 ? 1 : 0)); }
+  return {tickmode: 'array', tickvals: vals, ticktext: text};
+}
 function baseLayout(extra) {
-  return Object.assign({
+  const L = {
     paper_bgcolor: css('--surface'), plot_bgcolor: css('--surface'),
     font: {color: css('--text-2'), size: 12, family: 'system-ui, sans-serif'},
-    margin: {l: 60, r: 16, t: 10, b: 40}, hovermode: 'x unified', showlegend: true,
-    legend: {orientation: 'h', y: 1.08, x: 1, xanchor: 'right'},
-    xaxis: {title: 'session time (s)', gridcolor: css('--grid'), zeroline: false, linecolor: css('--border')},
-    yaxis: {gridcolor: css('--grid'), zeroline: false, linecolor: css('--border')},
-  }, extra || {});
+    margin: {l: 58, r: 14, t: 18, b: 34}, hovermode: 'x unified', showlegend: true, dragmode: 'zoom',
+    legend: {orientation: 'h', y: 1.02, yanchor: 'bottom', x: 1, xanchor: 'right'},
+    xaxis: Object.assign({range: VIEW.slice(), gridcolor: css('--grid'), zeroline: false, linecolor: css('--border'), hoverformat: '.2f'}, timeTicks(...VIEW)),
+    yaxis: {gridcolor: css('--grid'), zeroline: false, linecolor: css('--border'), fixedrange: true},
+  };
+  for (const [k, v] of Object.entries(extra || {})) L[k] = (k === 'xaxis' || k === 'yaxis') ? Object.assign(L[k], v) : v;
+  L.shapes = (L.shapes || []).concat(cursorShape());
+  return L;
 }
-const CFG = {responsive: true, displaylogo: false, modeBarButtonsToRemove: ['lasso2d', 'select2d']};
+const yax = (title, more) => Object.assign({title: {text: title, standoff: 6}, gridcolor: css('--grid'), zeroline: false, linecolor: css('--border'), fixedrange: true}, more || {});
+const CFG = {responsive: true, displaylogo: false, modeBarButtonsToRemove: ['lasso2d', 'select2d', 'autoScale2d', 'zoomIn2d', 'zoomOut2d'], doubleClick: false};
+const cursorShape = () => CURSOR == null ? [] : [{type: 'line', name: 'cursor', x0: CURSOR, x1: CURSOR, yref: 'paper', y0: 0, y1: 1, line: {color: css('--accent'), width: 1.5}}];
 
-function eventShapes(yref) {
+function eventShapes() {
   return EVENTS.filter(e => e.kind !== 'device' || /BTN|OVF|ERR/.test(e.label || '')).map(e => ({
-    type: 'line', x0: e.t_s, x1: e.t_s, yref: yref || 'paper', y0: 0, y1: 1,
-    line: {color: e.kind === 'bp' ? css('--text') : css('--muted'), width: 1, dash: e.kind === 'bp' ? 'solid' : 'dot'}
-  }));
+    type: 'line', x0: e.t_s, x1: e.t_s, yref: 'paper', y0: 0, y1: 1, layer: 'below',
+    line: {color: e.kind === 'bp' ? css('--text-2') : css('--muted'), width: 1, dash: e.kind === 'bp' ? 'solid' : 'dot'}}));
 }
-function eventAnnotations() {
-  return EVENTS.filter(e => e.kind === 'bp' || e.kind === 'marker').map(e => ({
-    x: e.t_s, y: 1, yref: 'paper', yanchor: 'bottom', showarrow: false, font: {size: 10, color: css('--text-2')},
-    text: e.kind === 'bp' ? `${e.sys_mmhg}/${e.dia_mmhg}` : (e.label || '').slice(0, 18)
-  }));
+function eventAnnotations() {  // labels only for events inside the view, and only when they fit
+  const inView = EVENTS.filter(e => (e.kind === 'bp' || e.kind === 'marker') && e.t_s >= VIEW[0] && e.t_s <= VIEW[1]);
+  if (inView.length > 8) return [];  // more would overlap: hover / the Events table has them
+  return inView.map(e => ({x: e.t_s, y: 1, yref: 'paper', yanchor: 'bottom', showarrow: false, font: {size: 10, color: css('--text-2')},
+    text: e.kind === 'bp' ? `${e.sys_mmhg}/${e.dia_mmhg}` : esc((e.label || '').slice(0, 18))}));
 }
 function message(div, text) {
-  Plotly.purge(div);
-  document.getElementById(div).innerHTML = `<div class="note" style="padding:24px">${text}</div>`;
+  Plotly.purge(div); delete plots[div];
+  if (!$(div).dataset.h) $(div).dataset.h = $(div).style.height || ' ';
+  $(div).style.height = 'auto';
+  $(div).innerHTML = `<div class="note" style="padding:24px">${text}</div>`;
+}
+function clearMessage(div) { const el = $(div); if (el.querySelector(':scope > .note')) { el.innerHTML = ''; el.style.height = (el.dataset.h || '').trim(); } }
+
+// draw (or redraw) a time plot and hook it into the shared range
+async function draw(div, traces, layout, opt) {
+  clearMessage(div);
+  const first = !plots[div];
+  await Plotly.react(div, traces, baseLayout(layout), CFG);
+  plots[div] = Object.assign(plots[div] || {}, opt || {}, {layout});
+  if (first) {
+    const el = $(div);
+    el.on('plotly_relayout', ev => {
+      if (applying) return;
+      if (ev['xaxis.range[0]'] != null) setView(+ev['xaxis.range[0]'], +ev['xaxis.range[1]'], div);
+      else if (ev['xaxis.range']) setView(+ev['xaxis.range'][0], +ev['xaxis.range'][1], div);
+      else if (ev['xaxis.autorange']) setView(FULL[0], FULL[1]);
+    });
+    el.on('plotly_doubleclick', () => setView(FULL[0], FULL[1]));
+    el.on('plotly_click', ev => { if (ev.points && ev.points.length) setCursor(+ev.points[0].x); });
+  }
+}
+function setView(t0, t1, from) {
+  if (!(t1 > t0)) return;
+  const span = Math.max(t1 - t0, 0.5);
+  t0 = Math.max(FULL[0] - span * 0.02, t0); t1 = Math.min(Math.max(FULL[1], t0 + span) + span * 0.02, Math.max(t1, t0 + span));
+  VIEW = [t0, t1];
+  const whole = t0 <= FULL[0] + 0.5 && t1 >= FULL[1] - 0.5;
+  $('v-range').textContent = whole ? `whole recording (${fmtSpan(FULL[1] - FULL[0])})` : `${fmtT(t0, span < 30 ? 1 : 0)} – ${fmtT(t1, span < 30 ? 1 : 0)}  (${fmtSpan(span)})`;
+  document.querySelectorAll('#v-zoom button').forEach(b => b.classList.toggle('on', b.dataset.z === 'all' ? whole : Math.abs(span - +b.dataset.z) < 0.5));
+  history.replaceState(null, '', whole ? location.pathname : `#t=${t0.toFixed(1)},${t1.toFixed(1)}`);
+  applying = true;
+  const upd = Object.assign({'xaxis.range': [t0, t1]}, Object.fromEntries(Object.entries(timeTicks(t0, t1)).map(([k, v]) => ['xaxis.' + k, k === 'tickmode' ? v : [v]])));
+  const ps = Object.keys(plots).map(d => Plotly.relayout(d, {'xaxis.range': [t0, t1], 'xaxis.tickvals': timeTicks(t0, t1).tickvals, 'xaxis.ticktext': timeTicks(t0, t1).ticktext,
+                                                           'annotations': plots[d].annot ? eventAnnotations() : (plots[d].layout.annotations || [])}).catch(() => {}));
+  Promise.all(ps).then(() => { applying = false; });
+  clearTimeout(refetchTimer);
+  refetchTimer = setTimeout(() => { for (const p of Object.values(plots)) if (p.refetch) p.refetch(); }, 220);
+}
+function setCursor(t, quiet) {
+  CURSOR = t;
+  if (!quiet) for (const d of Object.keys(plots)) {
+    const sh = ((plots[d].layout || {}).shapes || []).concat(cursorShape());
+    applying = true; Plotly.relayout(d, {shapes: sh}).catch(() => {}).then(() => { applying = false; });
+  }
+  if (window.frameSeekTime) frameSeekTime(t);
+}
+function goTo(t) {  // from the events table / the jump list: show 60 s around t
+  const span = Math.min(Math.max(VIEW[1] - VIEW[0], 10), 60);
+  setView(t - span / 2, t + span / 2); setCursor(t);
+  $('sec-signal').scrollIntoView({behavior: 'smooth'});
+}
+document.querySelectorAll('#v-zoom button').forEach(b => b.onclick = () => {
+  if (b.dataset.z === 'all') return setView(FULL[0], FULL[1]);
+  const span = +b.dataset.z, c = CURSOR != null ? CURSOR : (VIEW[0] + VIEW[1]) / 2;
+  const a = Math.min(Math.max(FULL[0], c - span / 2), Math.max(FULL[0], FULL[1] - span));
+  setView(a, a + span);
+});
+const shift = dir => { const span = VIEW[1] - VIEW[0]; const a = Math.min(Math.max(FULL[0], VIEW[0] + dir * span * 0.8), Math.max(FULL[0], FULL[1] - span)); setView(a, a + span); };
+$('v-prev').onclick = () => shift(-1); $('v-next').onclick = () => shift(1);
+$('v-jump').innerHTML += EVENTS.filter(e => e.kind !== 'device').map(e =>
+  `<option value="${e.t_s}">${fmtT(e.t_s)} · ${esc(e.kind === 'bp' ? `cuff ${e.sys_mmhg}/${e.dia_mmhg}` : e.kind === 'spo2' ? `SpO2 ${e.spo2_pct}` : (e.label || e.kind))}</option>`).join('');
+$('v-jump').onchange = e => { if (e.target.value) goTo(+e.target.value); e.target.value = ''; };
+// break a line where consecutive points are further apart than maxGap (no data there: don't bridge it)
+function gapped(x, y, maxGap) { const X = [], Y = []; for (let i = 0; i < x.length; i++) { if (i && x[i] - x[i - 1] > maxGap) { X.push((x[i] + x[i - 1]) / 2); Y.push(null); } X.push(x[i]); Y.push(y[i]); } return [X, Y]; }
+// y-range that ignores a few wild values (one spike must not flatten the whole trace)
+function robustRange(y, lo = 0.005, hi = 0.995, padFrac = 0.15) { const v = y.filter(a => a != null).sort((a, b) => a - b); if (v.length < 20) return null;
+  const q = p => v[Math.min(v.length - 1, Math.floor(p * v.length))], a = q(lo), b = q(hi), pad = (b - a) * padFrac || 1; return [a - pad, b + pad]; }
+const padded = () => { const s = VIEW[1] - VIEW[0]; return [VIEW[0] - s * 0.25, VIEW[1] + s * 0.25]; };
+const seg = (id, key, fn) => document.querySelectorAll(`#${id} button`).forEach(b => b.onclick = () => {
+  document.querySelectorAll(`#${id} button`).forEach(x => x.classList.toggle('on', x === b)); fn(b.dataset[key]); });
+
+// ===================================================================== tiles + contents
+const TILES = {};
+function tile(key, label, value, sub, order) { TILES[key] = {label, value, sub, order}; renderTiles(); }
+function renderTiles() {
+  $('tiles').innerHTML = Object.values(TILES).sort((a, b) => a.order - b.order).map(t =>
+    `<div class="k"><span>${t.label}</span><b>${t.value}</b>${t.sub ? `<em>${t.sub}</em>` : ''}</div>`).join('');
+}
+tile('dur', 'Duration', fmtT(DURATION), `${EVENTS.filter(e => e.kind === 'bp').length} cuff readings · ${EVENTS.filter(e => e.kind === 'marker').length} markers`, 0);
+function toc() {
+  $('toc').innerHTML = [...document.querySelectorAll('main h2[id], details.sec[id]')].filter(h => !h.closest('[hidden]'))
+    .map(h => `<a href="#${h.id}">${esc((h.tagName === 'H2' ? h.childNodes[0].textContent : h.querySelector('summary').textContent).trim())}</a>`).join('');
 }
 
-// Only wipe a message; clearing a live plot's DOM leaves Plotly's state behind and react() then draws nothing.
-function clearMessage(div) {
-  const el = document.getElementById(div);
-  if (el.querySelector(':scope > .note')) el.innerHTML = '';
-}
-
+// ===================================================================== pulse signal
+let sigSource = 'filtered', sigSeq = 0;
 async function drawSignal() {
-  const stream = document.getElementById('sig-stream').value;
-  const source = document.getElementById('sig-source').value;
-  const r = await fetch(`/api/sessions/${SID}/signal?stream=${encodeURIComponent(stream)}&source=${source}`);
-  if (!r.ok) { message('sig', r.status === 409 ? 'Not processed yet – press “Process”, or switch to raw counts.' : 'Could not load signal.'); return; }
+  const stream = $('sig-stream').value; if (!stream) { message('sig', 'This recording has no pulse (PPG) stream.'); return; }
+  const mine = ++sigSeq, [a, b] = padded();
+  const r = await api('signal', {stream, source: sigSource, t0: a.toFixed(3), t1: b.toFixed(3), max_points: 6000});
+  if (mine !== sigSeq) return;
+  if (!r.ok) { message('sig', r.status === 409 ? 'Not processed yet — switch to “Raw counts”, or process the recording.' : 'Could not load the signal.'); $('sig-res').textContent = ''; return; }
   const d = await r.json();
-  clearMessage('sig');
-  const shapes = eventShapes().concat(d.bad_windows.map(([a, b]) => ({
-    type: 'rect', x0: a, x1: b, yref: 'paper', y0: 0, y1: 1, fillcolor: css('--bad-bg'), line: {width: 0}, layer: 'below'})));
-  Plotly.react('sig', [{x: d.t, y: d.y, type: 'scattergl', mode: 'lines', name: `${stream} · ${d.channel}`,
-      line: {width: 1.2, color: ROLE_COLOR(streamRole(stream))}, hovertemplate: '%{y:.4g}<extra></extra>'}],
-    baseLayout({shapes, annotations: eventAnnotations(), yaxis: {title: d.unit, gridcolor: css('--grid'), zeroline: false}, showlegend: false}), CFG);
+  if (d.full_range[1] > FULL[1] + 1) FULL[1] = d.full_range[1];
+  const col = ROLE_COLOR(streamRole(stream));
+  const traces = [{x: d.t, y: d.y, type: 'scattergl', mode: 'lines', name: `${stream} · ${d.channel}`, line: {width: 1.2, color: col}, hovertemplate: '%{y:.4g}<extra></extra>'}];
+  if (d.beats) {
+    const g = d.beats.good, pick = (arr, want) => arr.filter((_, i) => g[i] === want);
+    traces.push({x: pick(d.beats.t, true), y: pick(d.beats.y, true), type: 'scattergl', mode: 'markers', name: 'accepted beat',
+                 marker: {size: 7, color: css('--text')}, text: pick(d.beats.hr || [], true).map(h => h == null ? '' : `${h} bpm`), hovertemplate: 'beat %{text}<extra></extra>'});
+    traces.push({x: pick(d.beats.t, false), y: pick(d.beats.y, false), type: 'scattergl', mode: 'markers', name: 'rejected beat',
+                 marker: {size: 8, color: 'rgba(0,0,0,0)', line: {color: css('--bad'), width: 1.5}}, text: pick(d.beats.reason || [], false), hovertemplate: 'rejected: %{text}<extra></extra>'});
+  }
+  const shapes = eventShapes().concat(d.bad_windows.map(([x0, x1]) => ({type: 'rect', x0, x1, yref: 'paper', y0: 0, y1: 1, fillcolor: css('--bad-bg'), line: {width: 0}, layer: 'below'})));
+  await draw('sig', traces, {shapes, annotations: eventAnnotations(), yaxis: yax(d.unit, sigSource === 'filtered' && robustRange(d.y) ? {range: robustRange(d.y, 0.01, 0.99, 0.6)} : {}), showlegend: !!d.beats}, {refetch: drawSignal, annot: true});
+  const span = VIEW[1] - VIEW[0], per = d.n_in_range / (d.t.length || 1);
+  $('sig-res').innerHTML = d.decimated
+    ? `Summarised: each point stands for about ${Math.round(per)} samples (highs and lows are kept). <b>Zoom in to ${fmtSpan(Math.max(1, span / per / 1.5))} or less to see every sample.</b>`
+    : `<b>Every sample shown</b> (${d.fs || '?'} per second)` + (d.beats ? '' : sigSource === 'filtered' ? ' · zoom to 3 min or less for beat markers' : '');
 }
+$('sig-stream').onchange = drawSignal;
+seg('sig-source', 's', v => { sigSource = v; drawSignal(); });
 
+// ===================================================================== heart rate
 async function drawHR() {
-  const items = await (await fetch(`/api/sessions/${SID}/hr`)).json();
-  if (!items.length) { message('hr', 'Process the session to see beat-by-beat heart rate.'); return; }
-  clearMessage('hr');
-  const traces = [];
+  const items = await (await api('hr')).json();
+  if (!items.length) { message('hr', 'Process the recording to see beat-by-beat heart rate.'); return; }
+  const traces = [], all = [];
   for (const it of items) {
     const c = ROLE_COLOR(it.role);
-    traces.push({x: it.beats_t, y: it.beats_hr, type: 'scattergl', mode: 'markers', name: `${it.stream} beats`,
-                 marker: {size: 4, color: c, opacity: 0.45}, hovertemplate: '%{y:.1f} bpm<extra>beat</extra>'});
-    traces.push({x: it.epoch_t, y: it.epoch_hr, type: 'scatter', mode: 'lines', name: `${it.stream} epoch`,
-                 line: {width: 2.2, color: c}, hovertemplate: '%{y:.1f} bpm<extra>epoch</extra>'});
+    traces.push({x: it.beats_t, y: it.beats_hr, type: 'scattergl', mode: 'markers', name: `${it.role} · each beat`, marker: {size: 4, color: c, opacity: 0.4}, hovertemplate: '%{y:.0f} bpm<extra>beat</extra>'});
+    const [ex, ey] = gapped(it.epoch_t, it.epoch_hr, 45);
+    traces.push({x: ex, y: ey, type: 'scatter', mode: 'lines', connectgaps: false, name: `${it.role} · 30-s average`, line: {width: 2.2, color: c}, hovertemplate: '%{y:.1f} bpm<extra>30-s average</extra>'});
+    all.push(...it.epoch_hr.filter(v => v != null));
+    if (it.epoch_hr.length) { const v = it.epoch_hr.filter(x => x != null).sort((a, b) => a - b); if (v.length) tile('hr-' + it.role, `Heart rate · ${esc(it.role)}`, `${Math.round(v[v.length >> 1])}<small>bpm</small>`, `${Math.round(v[0])}–${Math.round(v[v.length - 1])} over the recording`, 2); }
   }
   const ref = EVENTS.filter(e => e.hr_bpm != null);
-  if (ref.length) traces.push({x: ref.map(e => e.t_s), y: ref.map(e => e.hr_bpm), type: 'scatter', mode: 'markers',
-      name: 'reference', marker: {symbol: 'diamond', size: 10, color: css('--text'), line: {color: css('--surface'), width: 2}},
-      text: ref.map(e => e.kind === 'bp' ? 'cuff' : 'pulse-ox'), hovertemplate: '%{y} bpm<extra>%{text}</extra>'});
-  Plotly.react('hr', traces, baseLayout({shapes: eventShapes(), yaxis: {title: 'bpm', gridcolor: css('--grid'), zeroline: false}}), CFG);
+  if (ref.length) traces.push({x: ref.map(e => e.t_s), y: ref.map(e => e.hr_bpm), type: 'scatter', mode: 'markers', name: 'reference device',
+      marker: {symbol: 'diamond', size: 10, color: css('--text'), line: {color: css('--surface'), width: 2}}, text: ref.map(e => e.kind === 'bp' ? 'cuff' : 'pulse-ox'), hovertemplate: '%{y} bpm<extra>%{text}</extra>'});
+  // robust y-range: single wrong beats must not flatten the plot
+  const beats = items.flatMap(it => it.beats_hr.filter(v => v != null)).sort((a, b) => a - b);
+  const q = p => beats[Math.min(beats.length - 1, Math.floor(p * beats.length))];
+  const range = beats.length > 20 ? [Math.max(30, q(0.005) - 8), Math.min(220, q(0.995) + 8)] : null;
+  draw('hr', traces, {shapes: eventShapes(), yaxis: yax('beats per minute', range ? {range} : {})});
 }
 
+// ===================================================================== blood pressure
+const LBL = {sys_mmhg: 'Systolic', dia_mmhg: 'Diastolic', map_mmhg: 'Mean arterial'};
+const TCOL = t => ({sys_mmhg: css('--bad'), dia_mmhg: css('--s1'), map_mmhg: css('--s5')}[t] || css('--s3'));
+async function loadModels() {
+  try {
+    const m = await (await fetch('/api/bp-models')).json();
+    $('bp-model').innerHTML = '<option value="auto">Auto: best run for this site</option>' +
+      m.runs.map(r => `<option value="${esc(r.key)}">${esc(r.role)} · ${esc(r.name)} · ${esc(r.run_id)}</option>`).join('');
+  } catch (e) {}
+}
+async function drawBP() {
+  const role = $('bp-role').value, model = $('bp-model').value, v = $('bp-verdict'), tb = $('bp-table');
+  v.innerHTML = ''; tb.innerHTML = '';
+  if (!role) { message('bp', 'This recording has no pulse (PPG) stream.'); return; }
+  const r = await api('bp-predict', {role, model});
+  if (!r.ok) {
+    let msg = 'Could not run the model.';
+    try { const j = await r.json(); msg = j.error || j.detail || msg; } catch (e) {}
+    message('bp', esc(msg) + (r.status === 404 ? ' Train one on the <a href="/models">Models</a> page.' : '')); return;
+  }
+  const d = await r.json(), traces = [];
+  for (const t of d.targets) {
+    const ok = d.trace[t].map(x => x != null), xs = d.trace.t.filter((_, i) => ok[i]), ys = d.trace[t].filter(x => x != null);
+    traces.push({x: xs, y: ys, type: 'scatter', mode: 'lines', name: `${LBL[t] || t} · bridged`, showlegend: false, hoverinfo: 'skip', line: {color: TCOL(t), width: 1, dash: 'dot'}, opacity: 0.55});
+    traces.push({x: d.trace.t, y: d.trace[t], type: 'scatter', mode: 'lines+markers', name: `${LBL[t] || t} · model`, connectgaps: false,
+                 line: {color: TCOL(t), width: 2.2}, marker: {size: 3, color: TCOL(t)}, hovertemplate: '%{y:.0f} mmHg<extra>model</extra>'});
+    const rd = d.readings;
+    traces.push({x: rd.map(x => x.t), y: rd.map(x => x['cuff_' + t]), type: 'scatter', mode: 'markers', name: `${LBL[t] || t} · cuff`,
+                 marker: {size: rd.map(x => x.is_cal ? 13 : 10), symbol: rd.map(x => x.is_cal ? 'diamond' : 'circle'), color: css('--surface'), line: {color: TCOL(t), width: 2.5}},
+                 text: rd.map(x => x.is_cal ? 'calibration' : (x['err_' + t] != null ? `model error ${x['err_' + t] > 0 ? '+' : ''}${x['err_' + t]}` : (x.valid ? '' : 'too few good beats'))),
+                 hovertemplate: '%{y} mmHg · %{text}<extra>cuff</extra>'});
+  }
+  const cover = d.trace[d.targets[0]].filter(x => x != null).length / Math.max(d.trace.t.length, 1);
+  if (!cover && !d.readings.length) message('bp', 'The model could not produce an estimate for this recording' + (d.calibrated ? ': it needs one cuff reading to calibrate on, and none was logged.' : '.'));
+  else draw('bp', traces, {shapes: eventShapes(), yaxis: yax('mmHg')});
+  const tiles = d.targets.map(t => `<div class="k"><span>${LBL[t] || t} · average error vs cuff</span><b>${d.mae[t] == null ? '–' : d.mae[t] + '<small>mmHg</small>'}</b></div>`);
+  const nScored = d.readings.filter(x => !x.is_cal && x['err_' + d.targets[0]] != null).length;
+  tiles.push(`<div class="k"><span>Cuff readings scored</span><b>${nScored}</b></div>`);
+  tiles.push(`<div class="k"><span>Time with an estimate</span><b>${Math.round(100 * cover)}<small>%</small></b><em>the rest had too few good beats</em></div>`);
+  tiles.push(`<div class="k"><span>Model</span><b style="font-size:13px; word-break:break-all">${esc(d.model)}</b></div>`);
+  v.innerHTML = tiles.join('');
+  v.insertAdjacentHTML('afterend', '<div id="bp-notes"></div>'); const old = document.querySelectorAll('#bp-notes'); if (old.length > 1) old[1].remove();
+  $('bp-notes').innerHTML = (d.notes || []).map(n => `<div class="warn">${esc(n)}</div>`).join('') +
+    (nScored === 0 && d.calibrated && d.cal ? '<div class="note">Only the calibration reading so far: a second cuff reading (ideally after blood pressure changed) is needed to score the model on this recording.</div>' : '');
+  if (d.readings.length) {
+    tb.innerHTML = '<thead><tr><th class="num">Time</th><th>Used as</th>' + d.targets.map(t => `<th class="num">${LBL[t]} cuff</th><th class="num">model</th><th class="num">error</th>`).join('') + '<th class="num">good beats</th></tr></thead><tbody>' +
+      d.readings.map(x => `<tr><td class="num">${fmtT(x.t)}</td><td>${x.is_cal ? 'calibration' : x.valid ? 'test' : 'too few beats'}</td>` +
+        d.targets.map(t => `<td class="num">${x['cuff_' + t] ?? ''}</td><td class="num">${x['pred_' + t] ?? ''}</td><td class="num">${x['err_' + t] == null ? '' : (x['err_' + t] > 0 ? '+' : '') + x['err_' + t]}</td>`).join('') +
+        `<td class="num">${x.n_good}</td></tr>`).join('') + '</tbody>';
+  }
+}
+$('bp-role').onchange = drawBP; $('bp-model').onchange = drawBP;
+
+// ===================================================================== eye
+const EYE = {open: '#22c55e', closed: '#22d3ee', cal: '#eab308', gaze: '#ef4444', centre: '#eab308'};
+let eye = null, eyeView = 'closure', eyeSeq = 0;
+async function loadEye() {
+  if (!$('eye-stream')) return;
+  const stream = $('eye-stream').value;
+  const r = await api('eye', {stream});
+  if (!r.ok) { let m = 'Eye tracking is not available for this stream.'; try { m = (await r.json()).error || m; } catch (e) {} $('eye-note').textContent = m; return; }
+  const d = await r.json();
+  if (d.state !== 'done') {
+    $('eye-wait').hidden = false; $('eye-body').hidden = true;
+    if (d.state === 'error') { $('eye-wait-txt').textContent = 'Eye tracking failed: ' + (d.error || ''); return; }
+    $('eye-wait-txt').textContent = d.state === 'queued' ? 'Waiting for another recording’s eye tracking to finish…' : `Tracking the eye in every recorded frame… ${Math.round(100 * (d.progress || 0))}%  (done once per recording, then kept)`;
+    $('eye-prog').style.width = `${Math.round(100 * (d.progress || 0))}%`;
+    setTimeout(loadEye, 2000); return;
+  }
+  eye = d; $('eye-wait').hidden = true; $('eye-body').hidden = false;
+  const s = d.summary, k = (l, v, sub) => `<div class="k"><span>${l}</span><b>${v ?? '–'}</b>${sub ? `<em>${sub}</em>` : ''}</div>`;
+  const u = (v, unit) => v == null ? null : `${v}<small>${unit}</small>`;
+  $('eye-tiles').innerHTML = k('Blinks per minute', s.blink_rate_min, `${s.blinks_total} blinks in total`) +
+    k('Average blink duration', u(s.blink_dur_ms, 'ms')) + k('Gaze shifts per minute', s.gaze_shifts_min, `${s.gaze_shifts_total} in total`) +
+    k('Average gaze-shift speed', u(s.gaze_speed, 'px/s')) + k('Eyes closed', u(s.perclos_pct, '%'), 'share of tracked time (PERCLOS)') +
+    k('Eye tracked', u(s.tracked_frac == null ? null : Math.round(100 * s.tracked_frac), '%'), `of ${fmtT(s.duration_s || 0)} · ${d.n_frames} frames · ${d.fps ?? '?'} fps`);
+  $('eye-note').textContent = '';
+  tile('eye', 'Blinks', s.blink_rate_min == null ? '–' : `${s.blink_rate_min}<small>/min</small>`, s.blink_dur_ms == null ? '' : `average ${s.blink_dur_ms} ms long`, 4);
+  if (d.t_last > FULL[1] + 1) FULL[1] = d.t_last;
+  drawEyeMinutes(); drawEyeTrace(); initViewer(stream, d.n_frames);
+}
+function drawEyeMinutes() {
+  const M = eye.minutes, x = M.map(m => m.t0 + 30), half = M.map(m => m.tracked_s >= 30);
+  const bar = (div, key, color, unit, digits) => {
+    const y = M.map(m => m[key]);
+    const vals = y.filter(v => v != null), mean = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    draw(div, [{x, y, type: 'bar', width: 52, name: '', marker: {color, opacity: half.map(h => h ? 0.9 : 0.35)},
+                customdata: M.map(m => [m.minute + 1, m.tracked_s, m.blinks, m.gaze_shifts]),
+                hovertemplate: `minute %{customdata[0]}: <b>%{y:.${digits}f} ${unit}</b><br>eye tracked %{customdata[1]:.0f} s · %{customdata[2]} blinks · %{customdata[3]} gaze shifts<extra></extra>`}],
+      {showlegend: false, bargap: 0.1, margin: {l: 46, r: 10, t: 8, b: 30}, yaxis: yax('', {rangemode: 'tozero'}), hovermode: 'closest',
+       shapes: mean == null ? [] : [{type: 'line', xref: 'paper', x0: 0, x1: 1, y0: mean, y1: mean, line: {color: css('--text-2'), width: 1, dash: 'dash'}}]});
+    const h = $(div).previousElementSibling; let a = h.querySelector('em'); if (!a) { a = document.createElement('em'); a.style.cssText = 'font-style:normal;font-weight:400;color:var(--text-2);float:right'; h.append(a); }
+    a.textContent = mean == null ? '' : `- - average of the minutes: ${mean.toFixed(digits)} ${unit}`;
+  };
+  bar('eye-m-blinks', 'blinks_per_min', css('--s1'), 'blinks/min', 1);
+  bar('eye-m-dur', 'blink_dur_ms', css('--s3'), 'ms', 0);
+  bar('eye-m-shifts', 'gaze_shifts_per_min', css('--s2'), 'shifts/min', 1);
+  bar('eye-m-speed', 'gaze_speed', css('--s5'), 'px/s', 0);
+}
+async function drawEyeTrace() {
+  if (!eye) return;
+  const mine = ++eyeSeq, [a, b] = padded(), stream = $('eye-stream').value;
+  const r = await api('eye/trace', {stream, t0: a.toFixed(3), t1: b.toFixed(3), max_points: 5000});
+  if (mine !== eyeSeq || !r.ok) return;
+  const d = await r.json(), inV = e => e.t >= a && e.t <= b;
+  const shapes = eventShapes().concat(d.no_eye.map(([x0, x1]) => ({type: 'rect', x0, x1, yref: 'paper', y0: 0, y1: 1, fillcolor: css('--grid'), line: {width: 0}, layer: 'below'})));
+  let traces, yaxis, note;
+  const blinks = eye.blinks.filter(inV), shifts = eye.shifts.filter(inV), few = (VIEW[1] - VIEW[0]) <= 600;
+  if (eyeView === 'closure') {
+    traces = [{x: d.closure.t, y: d.closure.y, type: 'scattergl', mode: 'lines', name: 'eye closure', line: {color: EYE.open, width: 1.3}, hovertemplate: '%{y:.0f}% closed<extra></extra>'},
+              {x: blinks.map(e => e.t), y: blinks.map(() => 104), type: 'scatter', mode: 'markers', name: 'blink', marker: {symbol: 'triangle-down', size: 8, color: EYE.closed},
+               text: blinks.map(e => e.dur == null ? '' : `${Math.round(e.dur * 1000)} ms`), hovertemplate: 'blink %{text}<extra></extra>'}];
+    shapes.push({type: 'line', xref: 'paper', x0: 0, x1: 1, y0: 30, y1: 30, line: {color: '#f97316', dash: 'dash', width: 1}});
+    yaxis = yax('closed (%)', {range: [-20, 112]});
+    note = 'How much the pupil/iris has faded vs. the open eye. Above the dashed line (30 %) the eye counts as closed. ▼ = blink.';
+  } else if (eyeView === 'gaze') {
+    traces = [{x: d.gaze.t, y: d.gaze.x, type: 'scattergl', mode: 'lines', name: 'horizontal', line: {color: css('--s1'), width: 1.2}, hovertemplate: '%{y:.1f} px<extra>horizontal</extra>'},
+              {x: d.gaze.t, y: d.gaze.y, type: 'scattergl', mode: 'lines', name: 'vertical', line: {color: css('--s2'), width: 1.2}, hovertemplate: '%{y:.1f} px<extra>vertical</extra>'}];
+    if (few) traces.push({x: shifts.map(e => e.t), y: shifts.map(() => 0), type: 'scatter', mode: 'markers', name: 'gaze shift', marker: {symbol: 'line-ns-open', size: 10, color: css('--text-2')},
+               text: shifts.map(e => `${(e.amp).toFixed(1)} px in ${Math.round(e.dur * 1000)} ms = ${Math.round(e.speed)} px/s`), hovertemplate: 'gaze shift: %{text}<extra></extra>'});
+    yaxis = yax('pupil vs. eye centre (px)');
+    note = 'Where the pupil is relative to the eye’s resting centre, in frame pixels. Steps = gaze shifts' + (few ? ' (ticks on the zero line).' : ' (zoom to 10 min or less to mark each one).');
+  } else {
+    traces = [{x: d.motion.t, y: d.motion.y, type: 'scattergl', mode: 'lines', name: 'motion', line: {color: css('--s5'), width: 1.2}, hovertemplate: '%{y:.3f}<extra>motion</extra>'}];
+    const mb = (eye.motion_blinks || []).filter(t => t >= a && t <= b);
+    traces.push({x: mb, y: mb.map(() => 0), type: 'scatter', mode: 'markers', name: 'blink counted by motion', marker: {symbol: 'triangle-up', size: 8, color: css('--s5')}, hoverinfo: 'name'});
+    yaxis = yax('frame difference');
+    note = 'How much the picture changes from frame to frame — the signal the lab’s original MATLAB blink counter uses.';
+  }
+  $('eye-view-note').textContent = note;
+  await draw('eye-trace', traces, {shapes, yaxis}, {refetch: drawEyeTrace});
+  $('eye-res').innerHTML = (d.decimated ? 'Summarised (highs and lows kept) — zoom in for every frame.' : '<b>Every frame shown.</b>') + (d.no_eye.length ? ' Grey = no eye found in the picture.' : '');
+}
+if ($('eye-view')) { seg('eye-view', 'v', v => { eyeView = v; drawEyeTrace(); }); $('eye-stream').onchange = () => { eye = null; loadEye(); }; }
+
+// ---- frame viewer
+const viewer = {stream: null, n: 0, i: 0, busy: false, want: null, playing: false, url: null, ov: null, w: 1};
+function initViewer(stream, n) {
+  viewer.stream = stream; viewer.n = n; $('fr-slider').max = Math.max(n - 1, 0);
+  showFrame(CURSOR != null || VIEW[0] > FULL[0] + 1 ? {t: (CURSOR ?? VIEW[0]).toFixed(3)} : {i: Math.min(viewer.i, n - 1)});
+}
+async function showFrame(q) {  // q = {i} or {t}; one request in flight, the newest wish wins
+  if (viewer.busy) { viewer.want = q; return; }
+  viewer.busy = true;
+  try {
+    const r = await fetch(`/api/sessions/${SID}/video/${encodeURIComponent(viewer.stream)}/frame?` + new URLSearchParams(q));
+    if (r.ok) {
+      const url = URL.createObjectURL(await r.blob()), img = $('fr-img');
+      img.src = url; try { await img.decode(); } catch (e) {}
+      if (viewer.url) URL.revokeObjectURL(viewer.url); viewer.url = url;
+      viewer.i = +r.headers.get('X-Frame-Index'); viewer.t = +r.headers.get('X-Frame-T'); viewer.w = img.naturalWidth || 1;
+      const ov = r.headers.get('X-Eye'); viewer.ov = ov ? JSON.parse(ov) : null;
+      $('fr-slider').value = viewer.i;
+      $('fr-info').textContent = `${fmtT(viewer.t, 2)} · frame ${viewer.i + 1}/${viewer.n}` + (viewer.ov ? ` · ${viewer.ov.state.replace('_', ' ')}` : '');
+      drawFrameOverlay();
+      if (q.i != null) { CURSOR = viewer.t; if (plots['eye-trace']) { applying = true; Plotly.relayout('eye-trace', {shapes: (plots['eye-trace'].layout.shapes || []).concat(cursorShape())}).catch(() => {}).then(() => { applying = false; }); } }
+    }
+  } catch (e) {}
+  viewer.busy = false;
+  if (viewer.want) { const w = viewer.want; viewer.want = null; showFrame(w); }
+  else if (viewer.playing) { if (viewer.i + 1 < viewer.n) setTimeout(() => showFrame({i: viewer.i + 1}), 25); else togglePlay(); }
+}
+function drawFrameOverlay() {
+  const cv = $('fr-ov'), dpr = devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr; const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  const e = viewer.ov; if (!e || !$('fr-ovl').checked) return;
+  const k = W / viewer.w;
+  if (e.cx != null) { g.setLineDash([4, 4]); g.strokeStyle = EYE.centre; g.lineWidth = 1; g.beginPath(); g.moveTo(0, e.cy * k); g.lineTo(W, e.cy * k); g.stroke(); g.setLineDash([]); }
+  if (e.x != null) { g.strokeStyle = e.state === 'calibrating' ? EYE.cal : e.closed ? EYE.closed : EYE.open; g.lineWidth = 2.2;
+    g.beginPath(); g.arc(e.x * k, e.y * k, Math.max((e.r || 4) * k, 4), 0, 7); g.stroke(); }
+  if (e.gx != null && e.state === 'open') { const x = e.gx * k, y = e.gy * k; g.strokeStyle = EYE.gaze; g.lineWidth = 2; g.beginPath(); g.moveTo(x - 7, y); g.lineTo(x + 7, y); g.moveTo(x, y - 7); g.lineTo(x, y + 7); g.stroke(); }
+  const label = {open: 'EYE OPEN', closed: 'EYE CLOSED', calibrating: 'FINDING EYE', no_eye: 'NO EYE'}[e.state] || e.state;
+  g.font = '600 11px system-ui'; const w = g.measureText(label).width + 12;
+  g.fillStyle = e.state === 'open' ? EYE.open : e.state === 'closed' ? EYE.closed : e.state === 'no_eye' ? '#f87171' : EYE.cal;
+  g.beginPath(); g.roundRect(8, 8, w, 18, 9); g.fill(); g.fillStyle = '#0b0b0b'; g.textBaseline = 'middle'; g.fillText(label, 14, 17.5);
+}
+function togglePlay() { viewer.playing = !viewer.playing; $('fr-play').textContent = viewer.playing ? '❚❚ Pause' : '▶ Play'; if (viewer.playing) showFrame({i: Math.min(viewer.i + 1, viewer.n - 1)}); }
+if ($('fr-slider')) {
+  $('fr-slider').oninput = e => showFrame({i: +e.target.value});
+  $('fr-play').onclick = togglePlay;
+  $('fr-back').onclick = () => showFrame({i: Math.max(viewer.i - 1, 0)});
+  $('fr-fwd').onclick = () => showFrame({i: Math.min(viewer.i + 1, viewer.n - 1)});
+  $('fr-ovl').onchange = drawFrameOverlay;
+  window.frameSeekTime = t => { if (viewer.stream) showFrame({t: t.toFixed(3)}); };
+}
+
+// ===================================================================== other sensors
+async function loadOverview() {
+  const r = await api('overview'); if (!r.ok) return;
+  const o = await r.json();
+  const names = {ppg: 'pulse', eye_camera: 'eye camera'};
+  tile('sensors', 'Recorded', `${o.streams.length + o.videos.length + o.aux.length}<small>streams</small>`,
+       [...o.streams.map(s => esc(s.role) + ' pulse'), ...o.videos.map(() => 'eye camera'), ...o.aux.map(a => esc(a.name))].join(' · '), 1);
+  if (!o.aux.length) return;
+  $('aux-section').hidden = false; toc();
+  for (const a of o.aux) {
+    const id = 'aux-' + a.stream.replace(/[^A-Za-z0-9_-]/g, '_');
+    const what = a.kind === 'features' ? `computed on the device from “${esc(a.src || '?')}” (${esc(a.algo || 'unknown method')})` : `sensor ${esc(a.sensor || '?')}`;
+    $('aux-cards').insertAdjacentHTML('beforeend', `<div class="card"><div class="controls"><b>${esc(a.name)}</b>
+      <span class="pill">${a.kind === 'features' ? 'computed on the device' : 'sensor'}</span>
+      <span class="note">${what} · ${a.samples ?? '?'} readings${a.fs ? ` · every ${a.fs >= 1 ? (1 / a.fs).toFixed(2).replace(/\.?0+$/, '') : Math.round(1 / a.fs)} s` : ''}</span></div>
+      <div id="${id}" class="plot" style="height:${Math.max(200, 130 * a.labels.length + 40)}px"></div></div>`);
+    drawAux(a, id);
+  }
+}
+async function drawAux(a, id) {
+  const [t0, t1] = padded();
+  const r = await api('aux', {stream: a.stream, t0: t0.toFixed(2), t1: t1.toFixed(2)}); if (!r.ok) { message(id, 'Could not load this stream.'); return; }
+  const d = await r.json(), n = d.channels.length, pal = ['--s1', '--s2', '--s3', '--s4', '--s5'];
+  const traces = d.channels.map((c, i) => ({x: c.t, y: c.y, type: 'scatter', mode: c.n < 400 ? 'lines+markers' : 'lines', name: c.name + (c.unit ? ` (${c.unit})` : ''),
+    yaxis: i ? 'y' + (i + 1) : 'y', line: {color: css(pal[i % pal.length]), width: 1.8}, marker: {size: 4}, hovertemplate: `%{y:.4g} ${esc(c.unit || '')}<extra>${esc(c.name)}</extra>`}));
+  const layout = {shapes: eventShapes(), showlegend: false, margin: {l: 64, r: 14, t: 10, b: 34}, xaxis: {anchor: n > 1 ? 'y' + n : 'y'}}, gap = 0.06, h = (1 - gap * (n - 1)) / n;
+  d.channels.forEach((c, i) => { const top = 1 - i * (h + gap);
+    layout['yaxis' + (i ? i + 1 : '')] = yax(c.name + (c.unit ? `<br>${c.unit}` : ''), {domain: [Math.max(0, top - h), top]}); });
+  await draw(id, traces, layout, {refetch: () => drawAux(a, id)});
+}
+
+// ===================================================================== quality
+let QUAL = null;
+const METRICS = {acf_peak: 'Pulse regularity (autocorrelation peak)', skew: 'Pulse-shape skewness', spec_purity: 'Share of energy at the pulse frequency',
+                 amp_ratio: 'Amplitude vs. the session’s usual', hr_disagree: 'Disagreement of two heart-rate estimates (bpm)', pi_pct: 'Perfusion (pulse size, % of the light level)', valid_frac: 'Share of samples present'};
+async function loadQuality() {
+  const stream = $('q-stream').value; if (!stream) { $('q-verdict').innerHTML = '<div class="note">This recording has no pulse (PPG) stream.</div>'; return; }
+  const r = await api('quality', {stream});
+  if (!r.ok) { $('q-verdict').innerHTML = '<div class="note">Process the recording to see its quality report.</div>'; message('q-strip', ''); $('q-reasons').innerHTML = ''; return; }
+  const d = QUAL = await r.json(), W = d.windows, B = d.beats, role = streamRole(stream);
+  const pct = v => v == null ? '–' : Math.round(100 * v) + ' %';
+  let cls = 'ok', txt = '';
+  if (B) { cls = B.good_frac >= 0.6 ? 'ok' : B.good_frac >= 0.3 ? 'mid' : 'bad'; txt += `<b>${pct(B.good_frac)}</b> of the ${B.n} detected beats passed the beat checks — these are what heart rate, features and the blood-pressure model use. `; tile('q-' + role, `Good beats · ${esc(role)}`, `${Math.round(100 * B.good_frac)}<small>%</small>`, `${B.n} beats found`, 3); }
+  if (W) {
+    txt += `<b>${pct(W.good_frac)}</b> of the ${W.n} analysis windows passed the stricter window check. `;
+    const top = Object.entries(W.reasons)[0];
+    if (B && W.good_frac < 0.1 && B.good_frac > 0.5 && top)
+      txt += `<br>The window check rejects almost everything although most beats look fine: one limit (“${esc(top[0])}”, failing in ${pct(top[1])} of windows) does not fit this sensor’s signal and needs re-tuning. Beats are judged separately, so heart rate and blood-pressure estimates are still computed.`;
+  }
+  $('q-verdict').innerHTML = txt ? `<div class="verdict ${cls}">${txt}</div>` : '';
+  const traces = [], shapes = eventShapes();
+  if (B) traces.push({x: B.t, y: B.good_frac_bin.map(v => v == null ? null : 100 * v), type: 'bar', width: 28, name: 'beats accepted (per 30 s)', marker: {color: css('--good'), opacity: 0.8}, hovertemplate: '%{y:.0f}% of beats accepted<extra></extra>'});
+  if (W) { let run = null; const add = (a, b) => shapes.push({type: 'rect', x0: a, x1: b, yref: 'paper', y0: 0, y1: 0.06, fillcolor: css('--bad'), line: {width: 0}});
+    W.good.forEach((g, i) => { if (!g) { if (run && W.t0[i] <= run[1]) run[1] = W.t1[i]; else { if (run) add(...run); run = [W.t0[i], W.t1[i]]; } } }); if (run) add(...run); }
+  if (traces.length) draw('q-strip', traces, {shapes, yaxis: yax('beats accepted (%)', {range: [-8, 104]}), showlegend: false, bargap: 0});
+  const rows = (title, total, reasons) => !reasons || !Object.keys(reasons).length ? '' : `<div class="note" style="margin:8px 0 4px"><b>${title}</b></div><div class="reasons">` +
+    Object.entries(reasons).map(([k, v]) => `<div>${esc(k)}<small>${esc(d.reasons_help[k] || '')}</small></div><div class="bar"><i style="width:${Math.round(100 * v)}%"></i></div><div class="num">${pct(v)}</div>`).join('') + '</div>';
+  $('q-reasons').innerHTML = (W ? rows('Why windows were rejected (a window can fail several checks)', W.n, W.reasons) : '') + (B ? rows('Why beats were rejected', B.n, B.reasons) : '');
+  const ms = W ? Object.keys(W.metrics) : [];
+  $('q-metric').innerHTML = ms.map(m => `<option value="${m}">${METRICS[m] || m}</option>`).join('');
+  drawMetric();
+}
+function drawMetric() {
+  const m = $('q-metric').value, W = QUAL && QUAL.windows; if (!W || !m) return;
+  const x = W.t0.map((a, i) => (a + W.t1[i]) / 2), lim = QUAL.limits[m] || [null, null], shapes = eventShapes();
+  for (const [v, what] of [[lim[0], 'minimum'], [lim[1], 'maximum']]) if (v != null) shapes.push({type: 'line', xref: 'paper', x0: 0, x1: 1, y0: v, y1: v, line: {color: css('--bad'), dash: 'dash', width: 1.2}});
+  const ys = W.metrics[m].filter(v => v != null).sort((a, b) => a - b), q = p => ys[Math.min(ys.length - 1, Math.floor(p * ys.length))];
+  let lo = q(0.01), hi = q(0.99); for (const v of lim) if (v != null) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  const pad = (hi - lo) * 0.1 || 1;
+  draw('q-metric-plot', [{x, y: W.metrics[m], type: 'scattergl', mode: 'markers', marker: {size: 4, color: W.good.map(g => g ? css('--good') : css('--muted'))}, hovertemplate: '%{y:.3g}<extra></extra>'}],
+       {shapes, showlegend: false, yaxis: yax('', {range: [lo - pad, hi + pad]})});
+  $('q-metric-note').textContent = (lim[0] != null || lim[1] != null) ? `Dashed red = limit in force (${lim[0] != null ? 'must be at least ' + lim[0] : ''}${lim[0] != null && lim[1] != null ? ', ' : ''}${lim[1] != null ? 'at most ' + lim[1] : ''}). One dot per window; green = window accepted.` : 'One dot per window; green = window accepted.';
+}
+$('q-stream').onchange = loadQuality; $('q-metric').onchange = drawMetric;
+
+// ===================================================================== features vs cuff
 let EPOCHS = {};
 async function loadEpochs() {
-  const stream = document.getElementById('feat-stream').value;
-  const r = await fetch(`/api/sessions/${SID}/epochs?stream=${encodeURIComponent(stream)}`);
-  if (!r.ok) { message('feat', 'Process the session to see features.'); return; }
+  const stream = $('feat-stream').value; if (!stream) { message('feat', 'This recording has no pulse (PPG) stream.'); return; }
+  const r = await api('epochs', {stream});
+  if (!r.ok) { message('feat', 'Process the recording to see features.'); return; }
   EPOCHS = await r.json();
-  const sel = document.getElementById('feat-name');
-  const prev = sel.value || 'dia_rel';
+  const sel = $('feat-name'), prev = sel.value || 'dia_rel';
   sel.innerHTML = (EPOCHS.features || []).map(f => `<option ${f === prev ? 'selected' : ''}>${f}</option>`).join('');
   drawFeature();
 }
 function drawFeature() {
-  const stream = document.getElementById('feat-stream').value;
-  const f = document.getElementById('feat-name').value;
-  if (!EPOCHS.rows || !EPOCHS.rows.length) { message('feat', 'No epochs (recording shorter than one 30 s epoch?).'); return; }
-  clearMessage('feat');
-  const rows = EPOCHS.rows.filter(r => r.valid);
-  const bp = EVENTS.filter(e => e.kind === 'bp');
-  const c = ROLE_COLOR(streamRole(stream));
-  const traces = [
-    {x: rows.map(r => r.t_center), y: rows.map(r => r[f + '_med']), type: 'scatter', mode: 'lines+markers', name: f,
-     line: {color: c, width: 2}, marker: {size: 8, color: c, line: {color: css('--surface'), width: 2}}, yaxis: 'y'},
-    {x: bp.map(e => e.t_s), y: bp.map(e => e.sys_mmhg), type: 'scatter', mode: 'lines+markers', name: 'cuff SBP',
-     line: {color: css('--s5'), width: 2}, marker: {size: 9, color: css('--s5'), line: {color: css('--surface'), width: 2}}, yaxis: 'y2'},
-    {x: bp.map(e => e.t_s), y: bp.map(e => e.dia_mmhg), type: 'scatter', mode: 'lines+markers', name: 'cuff DBP',
-     line: {color: css('--s3'), width: 2}, marker: {size: 9, color: css('--s3'), line: {color: css('--surface'), width: 2}}, yaxis: 'y2'},
-  ];
-  const ax = {gridcolor: css('--grid'), zeroline: false};
-  Plotly.react('feat', traces, baseLayout({
-    grid: {rows: 2, columns: 1, pattern: 'coupled'},
-    yaxis: Object.assign({title: f, domain: [0.55, 1]}, ax),
-    yaxis2: Object.assign({title: 'mmHg', domain: [0, 0.42]}, ax),
-    shapes: eventShapes(),
-  }), CFG);
+  const stream = $('feat-stream').value, f = $('feat-name').value;
+  if (!EPOCHS.rows || !EPOCHS.rows.length) { message('feat', 'No 30-s epochs (recording shorter than 30 s?).'); return; }
+  const rows = EPOCHS.rows.filter(r => r.valid), bp = EVENTS.filter(e => e.kind === 'bp'), c = ROLE_COLOR(streamRole(stream));
+  const mk = col => ({size: 7, color: col, line: {color: css('--surface'), width: 1.5}});
+  draw('feat', [
+    {x: gapped(rows.map(r => r.t_center), rows.map(r => r[f + '_med']), 45)[0], y: gapped(rows.map(r => r.t_center), rows.map(r => r[f + '_med']), 45)[1], connectgaps: false, type: 'scatter', mode: 'lines+markers', name: f, line: {color: c, width: 2}, marker: mk(c), yaxis: 'y'},
+    {x: bp.map(e => e.t_s), y: bp.map(e => e.sys_mmhg), type: 'scatter', mode: 'lines+markers', name: 'cuff systolic', line: {color: css('--bad'), width: 2}, marker: mk(css('--bad')), yaxis: 'y2'},
+    {x: bp.map(e => e.t_s), y: bp.map(e => e.dia_mmhg), type: 'scatter', mode: 'lines+markers', name: 'cuff diastolic', line: {color: css('--s1'), width: 2}, marker: mk(css('--s1')), yaxis: 'y2'},
+  ], {yaxis: yax(f, {domain: [0.55, 1]}), yaxis2: yax('mmHg', {domain: [0, 0.45]}), shapes: eventShapes()});
 }
+$('feat-stream').onchange = loadEpochs; $('feat-name').onchange = drawFeature;
 
-document.getElementById('sig-stream').onchange = drawSignal;
-document.getElementById('sig-source').onchange = drawSignal;
-document.getElementById('feat-stream').onchange = loadEpochs;
-document.getElementById('feat-name').onchange = drawFeature;
-drawSignal(); drawHR(); loadEpochs();
+// ===================================================================== notes (lab board)
+async function loadNotes() {
+  const box = $('notes-list');
+  try {
+    const r = await fetch('/api/board?session=' + encodeURIComponent(SID));
+    if (!r.ok) throw 0;
+    const d = await r.json(), posts = d.posts || [];
+    box.className = '';
+    box.innerHTML = posts.length ? posts.map(p => `<div class="post"><span class="pill">${esc(p.kind)}</span> ${p.title ? `<b>${esc(p.title)}</b> ` : ''}${esc(p.excerpt || p.body || '')}
+      <div class="meta">${esc(p.author_name || p.author || '')} · ${esc((p.created_at || '').slice(0, 16).replace('T', ' '))}${p.n_replies ? ` · ${p.n_replies} repl${p.n_replies === 1 ? 'y' : 'ies'}` : ''} · <a href="/board/${p.id}">open on the board</a></div></div>`).join('')
+      : '<span class="note">No notes about this recording yet.</span>';
+  } catch (e) { $('sec-notes').hidden = true; box.closest('.card').hidden = true; toc(); }
+}
+$('notes-form').onsubmit = async e => {
+  e.preventDefault();
+  const f = new FormData(e.target), body = f.get('body').trim(); if (!body) return;
+  let author = localStorage.getItem('board-name') || '';
+  if (!AUTH && !author) { author = (prompt('Your name or initials (shown next to the note):') || '').trim(); if (!author) return; localStorage.setItem('board-name', author); }
+  const r = await fetch('/api/board', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({kind: f.get('kind'), title: body.length > 70 ? body.slice(0, 67) + '…' : body, body: body.length > 70 ? body : '', session_id: SID, author})});
+  if (r.ok) { e.target.reset(); loadNotes(); } else { let m = 'Could not post.'; try { m = (await r.json()).error || m; } catch (x) {} alert(m); }
+};
+
+// ===================================================================== go
+toc();
+// a link can carry the time range: /sessions/<id>#t=120,180  (kept up to date while zooming, so the address bar can be shared)
+const mHash = /t=([\d.]+),([\d.]+)/.exec(location.hash);
+if (mHash && +mHash[2] > +mHash[1]) { VIEW = [+mHash[1], +mHash[2]]; setView(VIEW[0], VIEW[1]); } else setView(FULL[0], FULL[1]);
+drawSignal(); drawHR(); loadEpochs(); loadQuality(); loadModels().then(drawBP); loadEye(); loadOverview(); loadNotes();
+if (PROCESSING && !/^(done|error)/.test(PROCESSING)) setInterval(async () => {
+  const r = await fetch('/api/sessions/' + SID); if (!r.ok) return;
+  const p = (await r.json()).processing; if (!p || /^(done|error)/.test(p)) location.reload();
+}, 4000);
 </script>
 {% endblock %}

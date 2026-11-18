@@ -1,0 +1,617 @@
+{% extends "base.html" %}
+{% block title %}{% if single %}{{ single.title }} · {% endif %}Lab board · NBE lab{% endblock %}
+{% block head %}
+<style>
+/* one colour + sign per kind of post (existing theme variables only, so light / dark both work) */
+.k-note { --k: var(--text-2); } .k-question { --k: var(--s1); } .k-request { --k: var(--s5); }
+.k-issue { --k: var(--bad); } .k-status { --k: var(--s3); } .k-announcement { --k: var(--s4); } .k-doc { --k: var(--s2); }
+.k-note .sign::before { content: "✎ "; } .k-question .sign::before { content: "? "; }
+.k-request .sign::before { content: "→ "; } .k-issue .sign::before { content: "! "; }
+.k-status .sign::before { content: "↻ "; } .k-announcement .sign::before { content: "★ "; }
+.k-doc .sign::before { content: "¶ "; }
+.sign::before { color: var(--k); font-weight: 700; }
+.board { max-width: 860px; }
+.board [hidden] { display: none !important; }   /* our display: rules must not un-hide things */
+.board textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; padding: 7px 9px; width: 100%; resize: vertical; display: block; }
+.board input[type=text], .board input[type=search] { width: 100%; }
+.board input.need { border-color: var(--bad); }
+.whoami { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.whoami input[type=text] { width: 200px; }
+/* composer: kind = big segmented buttons */
+.seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg label { position: relative; cursor: pointer; }
+.seg input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.seg span { display: block; padding: 7px 14px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-2); }
+.seg input:checked + span { border-color: var(--k); box-shadow: inset 0 0 0 1px var(--k); background: var(--grid);
+  color: var(--text); font-weight: 600; }
+.seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+#composer summary, .post summary { cursor: pointer; color: var(--text-2); }
+.linkrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 10px; }
+.linkrow label { display: grid; gap: 3px; color: var(--text-2); font-size: 13px; }
+/* filters */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+.chip { display: inline-block; padding: 4px 11px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface); color: var(--text-2); text-decoration: none; white-space: nowrap; }
+.chip b { font-weight: 600; color: var(--muted); margin-left: 3px; }
+.chip.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); color: var(--text); font-weight: 600; }
+.searchrow { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+.searchrow input[type=search] { flex: 1 1 200px; width: auto; max-width: 360px; }
+/* posts */
+.post { border-left: 3px solid var(--k); margin-bottom: 12px; scroll-margin-top: 12px; }
+.post:target { box-shadow: 0 0 0 2px var(--accent); }
+.post.done { border-left-color: var(--border); }
+.post.done h3 a { color: var(--text-2); }
+.post-head { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.post-head .when { margin-left: auto; text-decoration: none; }
+.post h3 { margin: 8px 0 2px; font-size: 16px; overflow-wrap: anywhere; }
+.post h3 a { color: var(--text); text-decoration: none; } .post h3 a:hover { text-decoration: underline; }
+/* collapsed by default on the list: title, a two-line excerpt, reactions; one click opens the rest */
+.post:not(.open) .if-open, .post.open .if-closed { display: none !important; }
+.post .excerpt { margin: 6px 0 0; color: var(--text-2); cursor: pointer; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.post .excerpt:hover { color: var(--text); }
+.post .body { margin-top: 10px; }
+.post.k-doc .body { font-size: 15px; line-height: 1.6; }
+.react-row { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.react-row .toggle { margin-left: auto; font-size: 13px; }
+.rx { padding: 2px 8px; border-radius: 999px; font-size: 13px; line-height: 20px; background: transparent;
+  border: 1px solid var(--border); color: var(--text-2); }
+.rx span { font-variant-numeric: tabular-nums; margin-left: 3px; }
+.rx.zero { border-color: transparent; opacity: .45; filter: grayscale(.7); }
+.rx.zero span { display: none; }
+.rx:hover:not(:disabled) { opacity: 1; filter: none; border-color: var(--border); background: var(--grid); }
+.rx.mine { border-color: var(--accent); background: var(--grid); color: var(--text); opacity: 1; filter: none; }
+.rx:disabled { cursor: default; }
+/* Markdown */
+.md { overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md blockquote, .md pre, .md .md-table { margin: 0 0 .7em; }
+.md ul, .md ol { padding-left: 1.4em; } .md li + li { margin-top: .2em; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 1.2em 0 .45em; line-height: 1.3; }
+.md h1 { font-size: 1.3em; } .md h2 { font-size: 1.18em; } .md h3 { font-size: 1.06em; } .md h4, .md h5, .md h6 { font-size: 1em; }
+.md h1, .md h2 { padding-bottom: .2em; border-bottom: 1px solid var(--border); }
+.md code { font: .9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--grid); padding: 1px 4px; border-radius: 4px; }
+.md pre { background: var(--grid); padding: 10px 12px; border-radius: 6px; overflow-x: auto; }
+.md pre code { background: none; padding: 0; }
+.md blockquote { border-left: 3px solid var(--border); padding: 2px 0 2px 12px; color: var(--text-2); }
+.md hr { border: 0; border-top: 1px solid var(--border); margin: 1.2em 0; }
+.md .md-table { overflow-x: auto; }
+.md table { width: auto; min-width: 50%; font-variant-numeric: normal; }
+.md th, .md td { white-space: normal; border: 1px solid var(--border); padding: 6px 10px; vertical-align: top; }
+.md th { text-transform: none; letter-spacing: 0; font-size: inherit; font-weight: 600; color: var(--text); background: var(--grid); }
+.md tr:hover td { background: none; }
+.md-preview { border: 1px dashed var(--border); border-radius: 6px; padding: 10px 12px; max-height: 480px; overflow: auto; }
+#composer.drop { box-shadow: 0 0 0 2px var(--accent); }
+.attach { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--text-2); }
+.post .links { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.post .links a.pill { text-decoration: none; color: var(--accent); }
+.thread { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 4px; }
+.reply { padding: 8px 0 8px 12px; border-left: 2px solid var(--grid); margin-top: 8px; }
+.reply .by { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.reply .md { margin-top: 2px; }
+.reply-form { display: flex; gap: 8px; align-items: flex-end; margin-top: 12px; }
+.reply-form textarea { flex: 1; min-width: 0; resize: none; }
+.acts { margin-top: 12px; }
+.acts button, .reply button.link { font-size: 13px; }
+.msg:empty { display: none; }
+.section-label { color: var(--text-2); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; margin: 18px 0 8px; }
+.empty { text-align: center; padding: 28px 16px; color: var(--text-2); }
+.empty b { color: var(--text); font-size: 16px; display: block; margin-bottom: 6px; }
+.pager { display: flex; gap: 12px; justify-content: space-between; align-items: center; margin-top: 8px; }
+@media (max-width: 640px) {
+  .seg span { padding: 9px 12px; }
+  .post-head .when { margin-left: 0; flex-basis: 100%; }
+  .whoami input[type=text] { width: 100%; }
+  .acts button { padding: 7px 11px; }
+}
+</style>
+{% endblock %}
+
+{% macro when(iso) -%}
+<time datetime="{{ iso }}" title="{{ (iso or '')[:16].replace('T', ' ') }} UTC">{{ ago(iso) }}</time>
+{%- endmacro %}
+
+{% macro reply_item(r) %}
+<div class="reply" id="reply-{{ r.id }}">
+  <div class="by"><b>{{ r.author_name }}</b> <span class="note">{{ when(r.created_at) }}</span>
+    {% if r.can_delete %}<button type="button" class="link" data-act="delete-reply" data-rid="{{ r.id }}">Delete</button>{% endif %}</div>
+  <div class="md">{{ rich(r.body) }}</div>
+</div>
+{% endmacro %}
+
+{% macro post_card(p, full=False) %}
+{% set kd = kinds | selectattr('key', 'equalto', p.kind) | first %}
+<article class="card post k-{{ p.kind }}{{ ' done' if p.state == 'done' and p.state_label }}{{ ' open' if full }}" id="post-{{ p.id }}" data-id="{{ p.id }}"
+         data-kind="{{ p.kind }}" data-title="{{ p.title }}" data-session="{{ p.session_id or '' }}"
+         data-device="{{ p.device or '' }}" data-tags="{{ p.tags | join(', ') }}">
+  <div class="view">
+    <div class="post-head">
+      <span class="pill sign">{{ p.kind_label }}</span>
+      {% if p.state_label %}<span class="pill {{ 'good' if p.state == 'done' else 'usable' }}"
+        {% if p.state == 'done' and p.closed_at %}title="{{ p.state_label }}{% if p.closed_by %} by {{ p.closed_by }}{% endif %}, {{ p.closed_at[:16].replace('T', ' ') }} UTC"{% endif %}>{{ p.state_label }}</span>{% endif %}
+      {% if p.pinned %}<span class="pill" title="An admin pinned this post, so it stays at the top">pinned</span>{% endif %}
+      <a class="note when" href="{{ p.url }}" title="Link to this post">{{ when(p.created_at) }}</a>
+    </div>
+    <h3><a href="{{ p.url }}"{% if not full %} data-act="toggle"{% endif %}>{{ p.title }}</a></h3>
+    <div class="note">by <b>{{ p.author_name }}</b>{% if p.kind == 'doc' and p.minutes > 1 %} · {{ p.minutes }} min read{% endif %}{% if p.edited %} · edited {{ when(p.updated_at) }}{% endif %}
+      {%- if p.state == 'done' and p.state_label and p.closed_by %} · {{ p.state_label }} by {{ p.closed_by }}{% endif %}</div>
+    {% if not full and p.excerpt %}<div class="excerpt if-closed" data-act="toggle">{{ p.excerpt }}</div>{% endif %}
+    <div class="if-open">
+    {% if p.body %}<div class="body md">{{ rich(p.body) }}</div>{% endif %}
+    {% if p.session_id or p.device or p.tags %}
+    <div class="links">
+      {% if p.session_id %}<a class="pill" href="/sessions/{{ p.session_id | urlencode }}" title="Open this recording">Recording: {{ p.session_id }}</a>{% endif %}
+      {% if p.device %}<a class="pill" href="/devices" title="Open the Devices page">Device: {{ p.device }}</a>{% endif %}
+      {% for t in p.tags %}<a class="pill" href="/board?state=all&amp;q={{ t | urlencode }}" title="Find posts with this tag">#{{ t }}</a>{% endfor %}
+    </div>
+    {% endif %}
+    </div>
+    <div class="react-row">
+      {% for r in p.reactions %}<button type="button" class="rx{{ ' mine' if r.mine }}{{ ' zero' if not r.n }}" data-act="react" data-key="{{ r.key }}"
+        {%- if r.who is defined %} data-who="{{ r.who | join('\n') }}"{% endif %}{% if not p.can.react %} disabled{% endif %}
+        title="{{ r.label }}{% if r.names %}: {{ r.names | join(', ') }}{% endif %}" aria-label="{{ r.label }} ({{ r.n }})">{{ r.emoji }}<span>{{ r.n }}</span></button>{% endfor %}
+      {% if not full %}<button type="button" class="link toggle" data-act="toggle"><span class="if-closed">{{ 'Read · ' ~ p.minutes ~ ' min' if p.kind == 'doc' and p.minutes > 1 else 'Open' }}
+        {%- if p.n_replies %} · {{ p.n_replies }} {{ 'reply' if p.n_replies == 1 else 'replies' }}{% endif %} ↓</span><span class="if-open">Collapse ↑</span></button>{% endif %}
+    </div>
+    <div class="if-open">
+    {% if p.replies or p.can.reply %}
+    <div class="thread">
+      {% if not full and p.replies | length > 3 %}
+      <details><summary>Show {{ p.replies | length - 3 }} earlier {{ 'reply' if p.replies | length == 4 else 'replies' }}</summary>
+        {% for r in p.replies[:-3] %}{{ reply_item(r) }}{% endfor %}</details>
+      {% for r in p.replies[-3:] %}{{ reply_item(r) }}{% endfor %}
+      {% else %}
+      {% for r in p.replies %}{{ reply_item(r) }}{% endfor %}
+      {% endif %}
+      {% if p.can.reply %}
+      <form class="reply-form">
+        <textarea name="body" rows="1" maxlength="20000" aria-label="Reply" placeholder="{{ 'Write an answer…' if p.kind == 'question' and p.state == 'open' else 'Write a reply…' }}"></textarea>
+        <button type="submit">Reply</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% if p.can.state or p.can.pin or p.can.edit or p.can.delete %}
+    <div class="btnrow acts">
+      {% if p.can.state %}{% if p.state == 'open' %}<button type="button" data-act="state" data-to="done">✓ {{ kd.done_button }}</button>
+      {% else %}<button type="button" data-act="state" data-to="open">Reopen</button>{% endif %}{% endif %}
+      {% if p.can.pin %}<button type="button" data-act="pin" data-to="{{ '0' if p.pinned else '1' }}"
+        title="{{ 'Stop keeping this post at the top' if p.pinned else 'Keep this post at the top of the board' }}">{{ 'Unpin' if p.pinned else 'Pin to top' }}</button>{% endif %}
+      {% if p.can.edit %}<button type="button" data-act="edit">Edit</button>{% endif %}
+      {% if p.can.delete %}<button type="button" data-act="delete">Delete</button>{% endif %}
+      {% if p.body %}<a class="note" href="{{ p.url }}/download" title="Save this post as a Markdown file">Download .md</a>{% endif %}
+    </div>
+    {% elif p.body %}<div class="acts"><a class="note" href="{{ p.url }}/download" title="Save this post as a Markdown file">Download .md</a></div>
+    {% endif %}
+    </div>
+  </div>
+  <div class="msg flash err" role="alert"></div>
+  {% if p.can.edit %}<textarea class="raw" hidden>{{ p.body }}</textarea>{% endif %}
+</article>
+{% endmacro %}
+
+{% block content %}
+<div class="board">
+{% if single %}
+<p><a href="/board">← All posts</a></p>
+{% else %}
+<h1>Lab board</h1>
+<div class="sub">The team's shared notebook: notes, questions, requests, problems and updates – so everyone knows what is going on.
+  {% if counts.open %}<b>{{ counts.open }}</b> {{ 'post is' if counts.open == 1 else 'posts are' }} still waiting for someone
+  ({% set parts = [] %}{% if counts.question %}{% set _ = parts.append(counts.question ~ (' question' if counts.question == 1 else ' questions')) %}{% endif %}
+  {%- if counts.request %}{% set _ = parts.append(counts.request ~ (' request' if counts.request == 1 else ' requests')) %}{% endif %}
+  {%- if counts.issue %}{% set _ = parts.append(counts.issue ~ (' problem' if counts.issue == 1 else ' problems')) %}{% endif %}{{ parts | join(', ') }}).{% endif %}</div>
+{% endif %}
+
+{% if ask_name and can_post %}
+<div class="whoami"><label for="who">Your name or initials</label>
+  <input type="text" id="who" maxlength="80" autocomplete="name" placeholder="e.g. EV">
+  <span class="note">Shown next to what you write. Remembered on this computer.</span></div>
+{% endif %}
+
+{% if not single %}
+{% if can_post %}
+<form id="composer" class="card stack" autocomplete="off">
+  <div>
+    <div class="seg" role="radiogroup" aria-label="What kind of post is this?">
+      {% for k in kinds %}<label class="k-{{ k.key }}"><input type="radio" name="kind" value="{{ k.key }}" {% if loop.first %}checked{% endif %}><span class="sign">{{ k.label }}</span></label>{% endfor %}
+    </div>
+    <div class="note" id="kind-hint" style="margin-top:6px">{{ kinds[0].hint }}</div>
+  </div>
+  <input type="text" name="title" maxlength="200" aria-label="Title" placeholder="{{ kinds[0].ph_title }}">
+  <textarea name="body" rows="3" maxlength="200000" aria-label="Details" placeholder="{{ kinds[0].ph_body }}"></textarea>
+  <div class="md md-preview" id="preview" hidden></div>
+  <div class="attach">
+    <button type="button" class="link" id="pick-md">Add a .md file</button>
+    <input type="file" id="md-file" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden>
+    <span>or drop one anywhere on this page ·</span>
+    <button type="button" class="link" id="preview-btn">Preview</button>
+    <span class="note">Markdown works everywhere: **bold**, lists, # headings, tables.</span>
+  </div>
+  <details {% if f_session or f_device %}open{% endif %}>
+    <summary>Is this about a recording or a device? (optional)</summary>
+    <div class="linkrow">
+      <label>Recording (session name)<input type="text" name="session_id" list="session-list" value="{{ f_session }}" placeholder="pick or paste a session name"></label>
+      <label>Device<input type="text" name="device" list="device-list" value="{{ f_device }}" placeholder="e.g. GLS03"></label>
+      <label>Tags<input type="text" name="tags" placeholder="e.g. firmware, cuff"></label>
+    </div>
+  </details>
+  <div class="btnrow"><button class="primary" type="submit">Post to the board</button>
+    <span class="msg flash" role="status"></span></div>
+</form>
+{% else %}
+<div class="card note">You can read everything here. Writing posts and replies needs an <b>{{ post_role }}</b> account – ask a lab admin if you need one.</div>
+{% endif %}
+{% endif %}
+<datalist id="session-list">{% for s in session_options %}<option value="{{ s }}">{% endfor %}</datalist>
+<datalist id="device-list">{% for d in device_options %}<option value="{{ d }}">{% endfor %}</datalist>
+
+<div id="live">
+{% if single %}
+  {{ post_card(single, True) }}
+{% else %}
+  <h2 style="display:flex; gap:12px; align-items:baseline">Posts
+    <a class="note" style="margin-left:auto; font-weight:400" href="/board/feedback">What people said about the site →</a></h2>
+  <div class="chips">
+    <a class="chip{{ ' on' if not f_kind }}" href="{{ link(kind='') }}">All <b>{{ chip.all }}</b></a>
+    {% for k in kinds %}<a class="chip k-{{ k.key }}{{ ' on' if f_kind == k.key }}" href="{{ link(kind=k.key) }}"><span class="sign">{{ k.plural }}</span> <b>{{ chip[k.key] }}</b></a>{% endfor %}
+  </div>
+  <form class="searchrow" method="get" action="/board">
+    {% if f_kind %}<input type="hidden" name="kind" value="{{ f_kind }}">{% endif %}
+    {% if f_session %}<input type="hidden" name="session" value="{{ f_session }}">{% endif %}
+    {% if f_device %}<input type="hidden" name="device" value="{{ f_device }}">{% endif %}
+    {% if f_state != 'open' %}<input type="hidden" name="state" value="{{ f_state }}">{% endif %}
+    <a class="chip{{ ' on' if f_state == 'open' }}" href="{{ link(state='open') }}" title="Hide questions, requests and problems that are already done">Hide finished</a>
+    <a class="chip{{ ' on' if f_state == 'all' }}" href="{{ link(state='all') }}" title="Also show what is already answered, done or fixed">Show everything</a>
+    <input type="search" name="q" value="{{ f_q }}" placeholder="Search the board…" aria-label="Search the board">
+    <button type="submit">Search</button>
+    {% if f_q or f_kind or f_session or f_device or f_state == 'done' %}<a href="/board">Clear filters</a>{% endif %}
+  </form>
+  {% if f_session or f_device %}
+  <div class="warn">Only showing posts about
+    {% if f_session %}recording <a href="/sessions/{{ f_session | urlencode }}">{{ f_session }}</a>{% endif %}
+    {% if f_session and f_device %} and {% endif %}{% if f_device %}device <b>{{ f_device }}</b>{% endif %}.
+    <a href="{{ link(session='', device='') }}">Show all posts</a></div>
+  {% endif %}
+
+  {% if pinned %}
+  <div class="section-label">Pinned</div>
+  {% for p in pinned %}{{ post_card(p) }}{% endfor %}
+  {% if posts %}<div class="section-label">Latest</div>{% endif %}
+  {% endif %}
+  {% for p in posts %}{{ post_card(p) }}{% endfor %}
+
+  {% if not pinned and not posts %}
+  <div class="card empty">
+    {% if empty_board %}
+    <b>Nothing here yet – write the first note.</b>
+    Good first posts: what you are working on this week, a question for the team,
+    or something about a device that the next person should know.
+    {% elif page > 1 %}
+    <b>No more posts.</b> <a href="{{ link(page=1) }}">Back to the newest</a>
+    {% else %}
+    <b>No posts match.</b>
+    {% if f_state == 'open' and not f_q %}Everything here is finished.
+    <a href="{{ link(state='all') }}">Show finished posts too</a>{% else %}Try another word, or <a href="/board">clear the filters</a>.{% endif %}
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if pages > 1 %}
+  <div class="pager">
+    <span>{% if page > 1 %}<a href="{{ link(page=page - 1) }}">← Newer posts</a>{% endif %}</span>
+    <span class="note">Page {{ page }} of {{ pages }} · {{ total }} posts</span>
+    <span>{% if page < pages %}<a href="{{ link(page=page + 1) }}">Older posts →</a>{% endif %}</span>
+  </div>
+  {% endif %}
+{% endif %}
+</div>
+</div>
+
+<template id="edit-tpl">
+<form class="edit-form stack">
+  <label class="note">Kind <select name="kind">{% for k in kinds %}<option value="{{ k.key }}">{{ k.label }}</option>{% endfor %}</select></label>
+  <input type="text" name="title" maxlength="200" aria-label="Title">
+  <textarea name="body" rows="10" maxlength="200000" aria-label="Details"></textarea>
+  <div class="linkrow">
+    <label>Recording (session name)<input type="text" name="session_id" list="session-list"></label>
+    <label>Device<input type="text" name="device" list="device-list"></label>
+    <label>Tags<input type="text" name="tags"></label>
+  </div>
+  <div class="btnrow"><button class="primary" type="submit">Save changes</button>
+    <button type="button" data-act="cancel-edit">Cancel</button></div>
+</form>
+</template>
+
+<script>
+const ASK_NAME = {{ 'true' if ask_name else 'false' }}, SINGLE = {{ 'true' if single else 'false' }};
+const KINDS = {{ kinds | tojson }};
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+// localStorage can be blocked (private windows): everything must work without it
+const mem = { get(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } },
+              set(k, v) { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (e) {} } };
+
+async function api(method, url, body) {
+  let r;
+  try {
+    r = await fetch(url, {method, headers: {'Content-Type': 'application/json'}, body: body ? JSON.stringify(body) : undefined});
+  } catch (e) { throw new Error('Could not reach the server. Check the connection and try again – nothing was lost.'); }
+  let d = null;
+  try { d = await r.json(); } catch (e) {}
+  if (r.status === 401) throw new Error('You have been logged out. Open the login page in another tab, log in, then try again.');
+  if (!r.ok) throw new Error(d && typeof d.error === 'string' ? d.error : 'That did not work (error ' + r.status + '). Please try again.');
+  return d;
+}
+
+function say(el, text, bad) {
+  const m = el && $('.msg', el); if (!m) { if (text) alert(text); return; }
+  m.textContent = text || ''; m.classList.toggle('err', !!bad);
+}
+
+// single-user mode: the name typed at the top travels with every post / reply
+function who(required) {
+  if (!ASK_NAME) return {};
+  const inp = $('#who'), name = inp ? inp.value.trim() : '';
+  if (!name && required) {
+    if (inp) { inp.classList.add('need'); inp.focus(); }
+    throw new Error('Please type your name or initials at the top of the page first.');
+  }
+  return name ? {author: name} : {};
+}
+const whoInput = $('#who');
+if (whoInput) {
+  whoInput.value = mem.get('board-name');
+  whoInput.addEventListener('input', () => { whoInput.classList.remove('need'); mem.set('board-name', whoInput.value.trim()); });
+}
+
+// ---- times ("2 h ago", exact local time on hover)
+function rel(d) {
+  const s = (Date.now() - d) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + ' min ago';
+  if (s < 86400) return Math.floor(s / 3600) + ' h ago';
+  if (s < 14 * 86400) { const n = Math.floor(s / 86400); return n === 1 ? 'yesterday' : n + ' days ago'; }
+  return d.toLocaleDateString();
+}
+function dress() {
+  for (const t of $$('time[datetime]')) {
+    const d = new Date(t.getAttribute('datetime')); if (isNaN(d)) continue;
+    t.textContent = rel(d); t.title = d.toLocaleString();
+  }
+  markMine();
+}
+
+// ---- reload the list part of the page from the server (keeps unsent replies and opened posts)
+async function refresh() {
+  const r = await fetch(location.pathname + location.search);
+  if (r.status === 404) { location.href = '/board'; return; }
+  if (!r.ok) return;
+  const fresh = new DOMParser().parseFromString(await r.text(), 'text/html').getElementById('live');
+  if (!fresh) { location.reload(); return; }   // e.g. we got the login page
+  const drafts = {}, open = new Set(), details = new Set();
+  for (const t of $$('#live .reply-form textarea')) if (t.value) drafts[t.closest('.post').dataset.id] = t.value;
+  if (!SINGLE) for (const p of $$('#live .post.open')) open.add(p.dataset.id);
+  for (const d of $$('#live .post details[open]')) details.add(d.closest('.post').dataset.id);
+  $('#live').innerHTML = fresh.innerHTML;
+  for (const p of $$('#live .post')) {
+    const id = p.dataset.id, t = $('.reply-form textarea', p), d = $('details', p);
+    if (t && drafts[id]) t.value = drafts[id];
+    if (open.has(id)) p.classList.add('open');
+    if (d && details.has(id)) d.open = true;
+  }
+  dress();
+}
+// ---- reactions: one click, no page reload. Without accounts the browser is "who" (typed name, else a random id)
+function guestId() {
+  let g = mem.get('board-guest');
+  if (!g) { g = Math.random().toString(36).slice(2, 12); mem.set('board-guest', g); }
+  return g;
+}
+function myIds() {
+  const name = whoInput ? whoInput.value.trim() : mem.get('board-name');
+  return new Set([name, 'guest:' + guestId()].filter(Boolean));
+}
+function markMine() {   // single-user mode only: the server can't know which browser is which
+  if (!ASK_NAME) return;
+  const me = myIds();
+  for (const b of $$('.rx[data-who]')) b.classList.toggle('mine', b.dataset.who.split('\n').some(w => me.has(w)));
+}
+function drawReactions(card, p) {
+  for (const r of p.reactions) {
+    const b = $(`.rx[data-key="${r.key}"]`, card); if (!b) continue;
+    b.classList.toggle('mine', !!r.mine); b.classList.toggle('zero', !r.n);
+    $('span', b).textContent = r.n;
+    b.title = r.label + (r.names.length ? ': ' + r.names.join(', ') : '');
+    b.setAttribute('aria-label', `${r.label} (${r.n})`);
+    if (r.who) b.dataset.who = r.who.join('\n');
+  }
+  markMine();
+}
+function toggle(card, on) {
+  card.classList.toggle('open', on);
+  if (on && card.getBoundingClientRect().top < 0) card.scrollIntoView({block: 'start'});
+}
+
+// ---- editing a post in place
+function openEdit(card) {
+  if ($('.edit-form', card)) return;
+  const f = $('#edit-tpl').content.firstElementChild.cloneNode(true);
+  const E = f.elements;   // (form.title would be the tooltip attribute, so always go through .elements)
+  card.classList.add('open');
+  E.kind.value = card.dataset.kind; E.title.value = card.dataset.title; E.body.value = $('.raw', card).value;
+  E.session_id.value = card.dataset.session; E.device.value = card.dataset.device; E.tags.value = card.dataset.tags;
+  $('.view', card).hidden = true; card.insertBefore(f, $('.msg', card)); E.title.focus();
+}
+function closeEdit(card) { const f = $('.edit-form', card); if (f) f.remove(); $('.view', card).hidden = false; say(card, ''); }
+
+// ---- buttons on posts
+document.addEventListener('click', async ev => {
+  const btn = ev.target.closest('[data-act]'); if (!btn) return;
+  const card = btn.closest('.post'); if (!card) return;
+  const id = card.dataset.id, act = btn.dataset.act;
+  if (act === 'toggle') {
+    if (btn.tagName === 'A' && (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.button)) return;   // new tab as usual
+    ev.preventDefault(); toggle(card, !card.classList.contains('open')); return;
+  }
+  if (act === 'react') {
+    if (btn.disabled) return;
+    const name = whoInput ? whoInput.value.trim() : '';
+    const before = btn.classList.contains('mine');
+    btn.classList.toggle('mine', !before);   // feels instant; the server's answer settles it
+    try {
+      const p = await api('POST', '/api/board/' + id + '/react',
+                          {reaction: btn.dataset.key, on: !before, ...(ASK_NAME ? {author: name, guest: guestId()} : {})});
+      drawReactions(card, p);
+    } catch (e) { btn.classList.toggle('mine', before); say(card, e.message, true); }
+    return;
+  }
+  if (act === 'edit') { openEdit(card); return; }
+  if (act === 'cancel-edit') { closeEdit(card); return; }
+  if (act === 'delete' && !confirm('Delete this post and all its replies? This cannot be undone.')) return;
+  if (act === 'delete-reply' && !confirm('Delete this reply? This cannot be undone.')) return;
+  btn.disabled = true; say(card, '');
+  try {
+    if (act === 'state') await api('PATCH', '/api/board/' + id, {state: btn.dataset.to, ...who(false)});
+    else if (act === 'pin') await api('PATCH', '/api/board/' + id, {pinned: btn.dataset.to === '1'});
+    else if (act === 'delete-reply') await api('DELETE', '/api/board/replies/' + btn.dataset.rid);
+    else if (act === 'delete') {
+      await api('DELETE', '/api/board/' + id);
+      if (SINGLE) { location.href = '/board'; return; }
+    }
+    await refresh();
+  } catch (e) { say(card, e.message, true); btn.disabled = false; }
+});
+
+// ---- forms: new post, reply, save edit
+document.addEventListener('submit', async ev => {
+  const f = ev.target;
+  if (!f.matches('#composer, .reply-form, .edit-form')) return;
+  ev.preventDefault();
+  const card = f.closest('.post'), where = card || f, btn = $('button[type=submit]', f), E = f.elements;
+  if (btn.disabled) return;
+  say(where, '');
+  try {
+    if (f.matches('.reply-form')) {
+      const body = E.body.value.trim();
+      if (!body) { E.body.focus(); return; }
+      const name = who(true);
+      btn.disabled = true;
+      await api('POST', '/api/board/' + card.dataset.id + '/replies', {body, ...name});
+      E.body.value = ''; E.body.style.height = '';
+    } else {
+      const data = {kind: E.kind.value, title: E.title.value, body: E.body.value, session_id: E.session_id.value,
+                    device: E.device.value, tags: E.tags.value};
+      if (!data.title.trim() && !data.body.trim()) { E.title.focus(); throw new Error('Write a title or some text first.'); }
+      if (card) {   // edit
+        btn.disabled = true;
+        await api('PATCH', '/api/board/' + card.dataset.id, data);
+      } else {      // new post
+        const name = who(true);
+        btn.disabled = true;
+        const p = await api('POST', '/api/board', {...data, ...name});
+        E.title.value = ''; E.body.value = ''; E.tags.value = ''; mem.set('board-draft', '');
+        $('#preview').hidden = true; $('#preview-btn').textContent = 'Preview';
+        // make sure the new post is visible: drop filters that would hide it
+        const u = new URL(location.href), kind = u.searchParams.get('kind');
+        if (u.searchParams.get('q') || u.searchParams.get('page') || (kind && kind !== p.kind) || u.searchParams.get('state') === 'done') {
+          location.href = '/board#post-' + p.id; return;
+        }
+        say(f, 'Posted.');
+        setTimeout(() => say(f, ''), 4000);
+      }
+    }
+    await refresh();
+  } catch (e) { say(where, e.message, true); }
+  finally { if (btn.isConnected) btn.disabled = false; }
+});
+
+// ---- composer: hint + example text follow the chosen kind; the draft survives a reload
+const composer = $('#composer');
+if (composer) {
+  const E = composer.elements;
+  const setKind = () => {
+    const k = KINDS.find(x => x.key === E.kind.value) || KINDS[0];
+    $('#kind-hint').textContent = k.hint; E.title.placeholder = k.ph_title; E.body.placeholder = k.ph_body;
+  };
+  try {
+    const d = JSON.parse(mem.get('board-draft') || '{}');
+    if (d.kind && KINDS.some(x => x.key === d.kind)) E.kind.value = d.kind;
+    E.title.value = d.title || ''; E.body.value = d.body || '';
+  } catch (e) {}
+  setKind();
+  composer.addEventListener('change', setKind);
+  const saveDraft = () => {
+    const d = {kind: E.kind.value, title: E.title.value, body: E.body.value};
+    mem.set('board-draft', d.title || d.body ? JSON.stringify(d) : '');
+  };
+  composer.addEventListener('input', () => { saveDraft(); if (!$('#preview').hidden) showPreview(); });
+
+  // Markdown preview, rendered by the server exactly as the post will look
+  let pv = 0;
+  async function showPreview() {
+    const n = ++pv, box = $('#preview');
+    try {
+      const d = await api('POST', '/api/board/preview', {body: E.body.value});
+      if (n === pv) box.innerHTML = d.html || '<span class="note">Nothing to preview yet.</span>';
+    } catch (e) { box.textContent = e.message; }
+  }
+  $('#preview-btn').addEventListener('click', () => {
+    const box = $('#preview'), on = box.hidden;
+    box.hidden = !on; $('#preview-btn').textContent = on ? 'Hide preview' : 'Preview';
+    if (on) showPreview();
+  });
+
+  // a .md file: picked, or dropped anywhere on the page -> title from its first "# heading", text from the rest
+  async function loadFile(file) {
+    if (!file) return;
+    if (file.size > 400000) { say(composer, 'That file is too big for one post (limit about 200,000 characters).', true); return; }
+    const text = (await file.text()).replace(/^﻿/, '');
+    if (E.body.value.trim() && !confirm('Replace the text you already wrote with ' + file.name + '?')) return;
+    const m = /^\s*#\s+(.+?)\s*#*\s*(?:\n|$)/.exec(text);
+    const title = m ? m[1].trim() : file.name.replace(/\.(md|markdown|txt)$/i, '').replace(/_+/g, ' ').trim();
+    E.title.value = title.slice(0, 200);
+    E.body.value = m ? text.slice(m[0].length).replace(/^\n+/, '') : text;
+    if (E.kind.value === 'note') { E.kind.value = 'doc'; setKind(); }
+    saveDraft();
+    $('#preview').hidden = false; $('#preview-btn').textContent = 'Hide preview'; showPreview();
+    say(composer, 'Loaded ' + file.name + ' – check the title, then post.');
+    composer.scrollIntoView({block: 'start', behavior: 'smooth'});
+  }
+  $('#pick-md').addEventListener('click', () => $('#md-file').click());
+  $('#md-file').addEventListener('change', ev => { loadFile(ev.target.files[0]); ev.target.value = ''; });
+  const hasFile = ev => ev.dataTransfer && [...ev.dataTransfer.types].includes('Files');
+  document.addEventListener('dragover', ev => { if (hasFile(ev)) { ev.preventDefault(); composer.classList.add('drop'); } });
+  document.addEventListener('dragleave', ev => { if (!ev.relatedTarget) composer.classList.remove('drop'); });
+  document.addEventListener('drop', ev => {
+    if (!hasFile(ev)) return;
+    ev.preventDefault(); composer.classList.remove('drop');
+    loadFile(ev.dataTransfer.files[0]);
+  });
+}
+
+// reply boxes grow with the text; Ctrl/Cmd+Enter sends any of the forms
+document.addEventListener('input', ev => {
+  const t = ev.target;
+  if (t.matches && t.matches('.reply-form textarea')) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight + 2, 240) + 'px'; }
+});
+document.addEventListener('keydown', ev => {
+  if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey) && ev.target.form && ev.target.form.matches('#composer, .reply-form, .edit-form')) {
+    ev.preventDefault(); ev.target.form.requestSubmit();
+  }
+});
+
+dress();
+// a link to #post-N that is not on this page (filtered out, or on an older page): open the post itself
+const anchor = /^#post-(\d+)$/.exec(location.hash);
+if (anchor && !document.getElementById('post-' + anchor[1])) location.replace('/board/' + anchor[1]);
+else if (anchor) document.getElementById('post-' + anchor[1]).classList.add('open');
+// pick up other people's posts once a minute, unless you are in the middle of writing here
+setInterval(() => {
+  const a = document.activeElement;
+  if (document.hidden || $('.edit-form') || (a && a.closest && a.closest('#live') && a.matches('textarea, input'))) return;
+  refresh().catch(() => {});
+}, 60000);
+</script>
+{% endblock %}

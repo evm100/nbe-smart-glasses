@@ -11,3 +11,4 @@ typedef struct { uint32_t tx_buffer_size; uint32_t rx_buffer_size; } usb_serial_
 esp_err_t usb_serial_jtag_driver_install(usb_serial_jtag_driver_config_t *c);
 int usb_serial_jtag_read_bytes(void *buf, uint32_t length, uint32_t ticks_to_wait);
 int usb_serial_jtag_write_bytes(const void *src, size_t size, uint32_t ticks_to_wait);
+bool usb_serial_jtag_is_connected(void);
