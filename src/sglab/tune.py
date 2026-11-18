@@ -53,7 +53,8 @@ from ppg.quality import label_quality, quality_metrics
 from ppg.tuning import (feature_jitter, median_wave, pool_agreement, pool_jitter, reference_agreement,
                         shape_error)
 
-from .processing import (_first_sample_dev_s, _first_sample_session_time, _prepared_csv, pipeline_configs, site_overrides,
+from .processing import (_first_sample_dev_s, _first_sample_session_time, _prepared_csv, pipeline_configs, site_family,
+                         site_overrides,
                          stream_configs, stream_layer1)
 
 from .timebase import run_clock, session_clocks
@@ -677,7 +678,11 @@ def apply(study_dir: Path, root: Path, trial: int | None = None) -> tuple[Path, 
             raise ValueError(f"trial {trial} did not finish")
         overlay = trial_overlay(meta, {k: _round(v) for k, v in t.params.items()})
     path = root / "config" / "sites" / f"{meta['site']}.json"
-    cur = json.loads(path.read_text()) if path.exists() else {}
+    # a side of dual glasses without its own file starts from the one it fell back to (glasses.json),
+    # so its new file keeps every other setting it was tuned against
+    fam = path.with_name(f"{site_family(meta['site'])}.json")
+    src = path if path.exists() else fam
+    cur = json.loads(src.read_text()) if src.exists() else {}
     new = deep_merge(cur, overlay)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(new, indent=2, default=_jsonable) + "\n")

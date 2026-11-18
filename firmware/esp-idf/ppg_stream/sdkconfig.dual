@@ -1,0 +1,10 @@
+# Dual-PPG glasses (docs/DUAL_PPG.md): a MAX30102 at each temple on one XIAO ESP32-S3, no camera.
+# Left = the board's primary stream (I2C port 0, D4/D5), right = stream ppg_r (sid 4, I2C port 1, D8/D9).
+# Applied on top of sdkconfig.defaults by nbe_node.py configure --dual / build-firmware.sh --dual.
+# The board's own site (left) comes from the node registry: register it as glasses_l.
+# CONFIG_PPG_CAMERA is not set
+CONFIG_PPG_PPG2=y
+CONFIG_PPG_PPG2_SITE="glasses_r"
+CONFIG_PPG_PPG2_I2C_PORT=1
+CONFIG_PPG_PPG2_I2C_SDA_GPIO=7
+CONFIG_PPG_PPG2_I2C_SCL_GPIO=8

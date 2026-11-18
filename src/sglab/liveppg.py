@@ -224,7 +224,7 @@ class LiveAnalysis(threading.Thread):
             rec = self.trial.rec
             if rec is None or self.trial.state != "recording":
                 continue
-            for w in list(rec.workers):
+            for w in rec.ppg_streams:
                 h = w.header
                 if h is None or not h.fs:
                     continue
@@ -255,7 +255,8 @@ class LiveAnalysis(threading.Thread):
         roles = list(self.ppg)
         if not roles:
             return
-        role = self.bp_role if self.bp_role in roles else ("glasses" if "glasses" in roles else roles[0])
+        role = self.bp_role if self.bp_role in roles else next(
+            (r for r in ("glasses", "glasses_l", "glasses_r") if r in roles), roles[0])
         run = bpmodel.resolve(self.settings, self.bp_model, role)
         base = {"role": role, "roles": roles, "model": run["key"] if run else None,
                 "calibrated": bool(run["config"].get("calibrated")) if run else None}

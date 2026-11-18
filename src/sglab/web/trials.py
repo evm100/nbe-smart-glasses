@@ -298,7 +298,7 @@ def api_bp_models(request: Request, role: str | None = None, user=viewer):
 
     s = C(request).settings
     runs = available_runs(s, role)
-    defaults = {r: (default_run(s, r) or {}).get("key") for r in ("finger", "glasses", "head")}
+    defaults = {r: (default_run(s, r) or {}).get("key") for r in ("finger", "glasses", "glasses_l", "glasses_r", "head")}
     return json_safe({"runs": runs, "defaults": defaults})
 
 

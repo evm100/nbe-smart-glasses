@@ -64,10 +64,10 @@ void frame_header(uint8_t *dst, uint32_t boot, uint64_t offset, const uint8_t *r
     put_le(dst + 16, frame_crc32(0, records, len), 4);
 }
 
-bool srec_add(srec_t *r, uint32_t seq, int64_t t_us, const uint32_t *v, int nch, uint32_t dt_nom_us)
+bool srec_add(srec_t *r, uint8_t sid, uint32_t seq, int64_t t_us, const uint32_t *v, int nch, uint32_t dt_nom_us)
 {
     // worst case per sample: 10 (dt) + 10 per channel
-    if (r->len && (seq != r->next_seq || nch != r->nch || dt_nom_us != r->dt_nom || r->n == UINT16_MAX ||
+    if (r->len && (sid != r->sid || seq != r->next_seq || nch != r->nch || dt_nom_us != r->dt_nom || r->n == UINT16_MAX ||
                    r->len + 10 + 10 * (size_t)nch > SREC_MAX)) {
         return false;
     }
@@ -79,6 +79,7 @@ bool srec_add(srec_t *r, uint32_t seq, int64_t t_us, const uint32_t *v, int nch,
         p += frame_uvarint(p, dt_nom_us);
         *p++ = (uint8_t)nch;
         for (int c = 0; c < nch; c++) p += frame_uvarint(p, v[c]);
+        r->sid = sid;
         r->nch = (uint8_t)nch;
         r->dt_nom = dt_nom_us;
         r->n = 0;
@@ -98,15 +99,22 @@ bool srec_add(srec_t *r, uint32_t seq, int64_t t_us, const uint32_t *v, int nch,
 size_t srec_size(const srec_t *r)
 {
     uint8_t tmp[10];
-    return r->len ? 1 + frame_uvarint(tmp, r->len) + r->len : 0;
+    size_t body = r->len + (r->sid ? 1 : 0);
+    return r->len ? 1 + frame_uvarint(tmp, body) + body : 0;
 }
 
 size_t srec_emit(srec_t *r, uint8_t *dst)
 {
     if (!r->len) return 0;
     size_t n = 0;
-    dst[n++] = REC_SAMPLES;
-    n += frame_uvarint(dst + n, r->len);
+    if (r->sid) {  // protocol v2.2: a further PPG stream
+        dst[n++] = REC_SAMPLES_SID;
+        n += frame_uvarint(dst + n, r->len + 1);
+        dst[n++] = r->sid;
+    } else {
+        dst[n++] = REC_SAMPLES;
+        n += frame_uvarint(dst + n, r->len);
+    }
     memcpy(dst + n, r->body, r->len);
     n += r->len;
     r->len = 0;

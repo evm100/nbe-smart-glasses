@@ -21,6 +21,7 @@ role = "glasses"
 #   sglab record sim                 (one fake finger sensor)
 #   sglab record sim sim_glasses     (fake finger + weaker fake glasses signal)
 #   sglab record sim sim_cam         (fake finger + camera glasses: PPG + eye camera, like GLS03)
+#   sglab record sim sim_dual        (fake finger + dual-PPG glasses: glasses_l + glasses_r from one board)
 [devices.sim]
 port = "sim://SIMF01"
 role = "finger"
@@ -42,6 +43,13 @@ sim = { fs = 100, hr_bpm = 72, seed = 2, dc = 40000, perfusion = 0.004, noise_fr
 port = "sim://SIMX01"
 role = "glasses"
 sim = { fs = 100, hr_bpm = 68, seed = 3, dc = 40000, perfusion = 0.004, noise_frac = 0.05, dia_amp = [0.25, 0.15], camera = true, aux = true, edge_features = true }
+
+# Dual-PPG glasses (protocol v2.2, docs/DUAL_PPG.md): one board, a sensor at each temple. The left one is
+# the board's own stream (role below), the right one becomes the stream glasses_r.
+[devices.sim_dual]
+port = "sim://SIMD01"
+role = "glasses_l"
+sim = { fs = 100, hr_bpm = 70, seed = 4, dc = 40000, perfusion = 0.004, noise_frac = 0.05, dia_amp = [0.25, 0.15], dual = true, site = "glasses_l" }
 
 # Reference instruments, saved into every session's metadata.
 [reference]

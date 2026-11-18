@@ -167,7 +167,7 @@ details.guide dd { color: var(--text-2); }
   <h2>Sweep</h2>
   <p class="note">Searches model kind, settings and which of {{ spec.features | length }} features to use{% if remote %}; runs on the processing worker{% endif %}. The nested check repeats the search once per subject, so 60 trials with 10 subjects is ~660 trials.</p>
   <form method="post" action="/models/sweep" class="row-inline">
-    <label>site <select name="role">{% for r in ['finger', 'glasses', 'head'] %}<option {% if r == cfg.role %}selected{% endif %}>{{ r }}</option>{% endfor %}</select></label>
+    <label>site <select name="role">{% for r in ['finger', 'glasses', 'glasses_l', 'glasses_r', 'head'] %}<option {% if r == cfg.role %}selected{% endif %}>{{ r }}</option>{% endfor %}</select></label>
     <label>trials <input type="number" name="trials" value="{{ spec.trials }}" min="5" max="500"></label>
     <button class="primary">Start sweep</button>
   </form>

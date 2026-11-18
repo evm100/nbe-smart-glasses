@@ -2,7 +2,7 @@
 
 Implementations: `esp-idf/ppg_stream/` (main, ESP-IDF v6) and `arduino/ppg_stream/` (reference, v1).
 v2 (camera boards, USB gateway): see "Protocol v2" below. v2.1 (further sensors, features computed on the
-board): see "Protocol v2.1".
+board): see "Protocol v2.1". v2.2 (a second PPG sensor on the same board, dual-PPG glasses): see "Protocol v2.2".
 
 This is what the firmware sends over USB serial so `sglab record` can capture it.
 It is plain ASCII, so you can still read it in the Arduino serial monitor while
@@ -387,13 +387,44 @@ whether or not it reached the server; so after a lost frame the server cannot re
 the next one, but the board's value is still right. `host_test/check_xstream.py` recomputes all three
 from the pixels of the simulated camera's frames and requires equality.
 
-## One ESP32, two sensors?
+## Protocol v2.2: further PPG streams (dual-PPG glasses)
 
-Two MAX30102s share the I²C address 0x57, so they need two I²C buses (or a mux).
-If both run at the same `fs`, put all channels in one `D` line, e.g.
-`ch=gl_ir|gl_red|fi_ir|fi_red`. Otherwise use one ESP32 per sensor; the recorder
-captures several serial ports at once and aligns them by PC receive time.
-A different, slow sensor on the same board is an auxiliary stream ("Protocol v2.1").
+Firmware ≥ 0.10 with `CONFIG_PPG_PPG2` (`sdkconfig.dual`): a MAX30102 at each temple on one board.
+Design, wiring and server side: `docs/DUAL_PPG.md`. Additions only: a board without the option sends
+exactly what it sent before.
+
+Both MAX30102s have the I²C address 0x57, so each has its own I²C controller (the second one is the
+controller a camera's SCCB would use: no camera on these boards). Each sensor has its own oscillator,
+so their samples are **never** put in one `D` line: each sensor is a stream with its own `seq` and its own
+per-sample `t_us` (timing rule 1, per sensor), on the board's one `esp_timer` clock.
+
+* The first (left) sensor is the board's primary stream, unchanged: `H` line without `sid`, `D` lines,
+  samples records 0x02. Its `site` is the board's (`glasses_l`).
+* The second (right) sensor declares itself with `kind=ppg` and stream id 4:
+
+  ```
+  $H,proto=2,dev=GLS04,fw=0.10.0-idf,sid=4,stream=ppg_r,kind=ppg,sensor=MAX30102,fs=100,ch=red,led_ma=6.4,adc=18,pw_us=411,avg=4,sr=400,range_na=4096,site=glasses_r,board=XIAO_ESP32S3,sensor_ok=1*55
+  ```
+
+  Same keys as the primary `H` line plus `sid`, `stream`, `kind=ppg`; same settings as the primary sensor.
+  It is sent wherever the primary `H` line is, also when the sensor is missing (`sensor_ok=0`).
+* Its samples, on the USB text link: `M` lines (`$M,4,<seq>,<t_us>,<v1>[,<v2>]`, integer counts in `ch=`
+  order). In MQTT data frames and USB envelopes: **record type 0x04**:
+
+  ```
+  record  0x04 | body length (uvarint) | sid u8 | <a 0x02 samples body: n u16 | seq0 | t0_us | dt_nom_us | nch u8 | ...>
+  ```
+
+  The server decodes 0x04 into the same `M` lines (`sglab.framing.record_lines`).
+* `S` line: the second sensor's statistics prefixed with its stream name: `ppg_r_ok`, `ppg_r_fs_meas`,
+  `ppg_r_ovf`, `ppg_r_alc_ovf`, `ppg_r_i2c_err`. `E` lines about it (`SENSOR_ERR`, `FIFO_OVF`) carry the
+  text `ppg_r: ...`. The MQTT status's `sensor_ok` is true if either sensor works; `START` works with either.
+* A sensor that reconnects mid-recording restarts the stream (`H` lines, `START`; both `seq`s from 0), as
+  with one sensor.
+
+The server records the second sensor as an ordinary PPG stream of the session (`<site>_<dev>.csv`, its own
+`streams` entry with role = its `site`). A server without v2.2 skips 0x04 records and ignores the stream;
+the USB gateway forwards records without decoding them and needs no change.
 
 ## Checklist for the firmware
 

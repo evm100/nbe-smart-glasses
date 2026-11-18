@@ -12,6 +12,9 @@ data/raw/<session_id>/):
     <role>_<dev>_<stream>.frames / .csv   camera streams of protocol v2 boards (sglab.video):
                             raw frames + one index row per frame; listed under "video" in
                             session.json (not "streams", which are the PPG streams processing reads)
+    <site>_<dev>.csv        a further PPG sensor of the same board (protocol v2.2, kind=ppg: the
+                            right side of dual glasses, docs/DUAL_PPG.md): an ordinary PPG stream
+                            (PpgSubStream) with its own role = the sensor's site, e.g. glasses_r
 
 Time base: ``t_s`` = seconds since the session started, from the PC's monotonic
 clock. Every stream and every event uses it, which is what lets us line up the
@@ -20,6 +23,7 @@ glasses, the finger sensor and the cuff readings later.
 from __future__ import annotations
 
 import csv
+import itertools
 import json
 import re
 import shutil
@@ -98,6 +102,8 @@ class StreamWorker(threading.Thread):
         self.video_pre_header = 0
         self.aux: dict[int, AuxWriter] = {}      # protocol v2.1 auxiliary sample streams by sid
         self.aux_pre_header = 0
+        self.ppg_children: dict[int, PpgSubStream] = {}  # protocol v2.2 further PPG sensors by sid
+        self.taken_roles: set[str] | None = None  # roles in use in the recording (Recording sets it)
 
     # -- helpers ----------------------------------------------------------
     def _now(self) -> float:
@@ -126,85 +132,43 @@ class StreamWorker(threading.Thread):
             if msg.extra.get("kind") in AUX_KINDS and "sid" in msg.extra:  # v2.1: a further sensor / edge features
                 self._aux_header(msg)
                 return
-            if self.header is None:
-                self.header = msg
-                self.live = deque(maxlen=int(max(msg.fs, 1) * 20))  # live plot 8 s, live analysis 16 s
-                self._open_csv(msg)
-                self.header_event.set()
-            elif msg.channels != self.header.channels:
-                self.error = f"channel list changed mid-recording: {msg.channels}"
+            if msg.extra.get("kind") == "ppg" and "sid" in msg.extra:  # v2.2: a further PPG sensor (dual glasses)
+                self._child_header(msg)
+                return
+            self._ppg_header(msg)
             return
         if isinstance(msg, Sample):
-            if self.header is None:
-                self.stats["n_pre_header"] += 1
-                now = time.monotonic()
-                if now - getattr(self, "_last_info_mono", -INFO_EVERY_S) >= INFO_EVERY_S:
-                    self._last_info_mono = now
-                    self.src.write("INFO")
+            self._handle_sample(msg, t)
+            return
+        if isinstance(msg, Measure) and msg.sid in self.ppg_children:  # v2.2: the further PPG's samples
+            c = self.ppg_children[msg.sid]
+            try:
+                c._handle_sample(Sample(msg.seq, msg.t_us, [int(v) for v in msg.values]), t)
+            except (TypeError, ValueError):  # an empty / fractional field: not a PPG sample
+                c.stats["n_malformed"] += 1
                 return
-            if len(msg.values) != len(self.header.channels):
-                self.stats["n_malformed"] += 1
-                return
-            # loss accounting that tolerates re-ordering (MQTT redelivery after a
-            # Wi-Fi drop can bring old batches late): dropped = span - unique seen
-            if msg.seq in self._seen_recent:
-                self.stats["n_duplicates"] += 1
-                return
-            self._seen_recent.add(msg.seq)
-            if len(self._seen_recent) > 50000:
-                self._seen_recent = {q for q in self._seen_recent if q > msg.seq - 25000}
-            if self._last_seq is not None and msg.seq < self._last_seq:
-                if self._last_seq - msg.seq > 100000:  # device restarted its counter
-                    self.stats["n_seq_resets"] += 1
-                    self._seq_base += self._seq_max - self._seq_min + 1
-                    self._seq_min = self._seq_max = None
-                else:
-                    self.stats["n_out_of_order"] += 1
-            self._seq_min = msg.seq if self._seq_min is None else min(self._seq_min, msg.seq)
-            self._seq_max = msg.seq if self._seq_max is None else max(self._seq_max, msg.seq)
-            self._last_seq = msg.seq
-            span = self._seq_base + (self._seq_max - self._seq_min + 1)
-            self.stats["n_dropped_seq"] = max(0, span - (self.stats["n_samples"] + 1))
-            t_us = msg.t_us + self._dev_off_us
-            self._writer.writerow([f"{t:.6f}", msg.seq, t_us, *msg.values])
-            self.stats["n_samples"] += 1
-            if self.stats["t_first_s"] is None:
-                self.stats["t_first_s"] = t
-            self.stats["t_last_s"] = t
-            self.last_values = msg.values
-            self._last_sample_mono = time.monotonic()
-            self._last_dev_us = t_us if self._last_dev_us is None else max(self._last_dev_us, t_us)
-            dev_s = t_us / 1e6
-            k, off = int(dev_s), t - dev_s
-            cur = self._clock.get(k)
-            if cur is None or off < cur[0]:
-                self._clock[k] = (off, dev_s, t)
-            self._dev_bins[k] = self._dev_bins.get(k, 0) + 1
-            # live plot on the device clock (+ recent least delay), so batched links (MQTT:
-            # 20-80 samples arrive at once) don't draw staircases
-            ref = min((self._clock[j][0] for j in range(k - 5, k + 1) if j in self._clock), default=off)
-            self.live.append((dev_s + ref, msg.values[0], self.live_n))
-            self.live_n += 1
+            self._last_sample_mono = time.monotonic()  # one side streaming = the board is streaming
             return
         if isinstance(msg, Measure):
             aw = self.aux.get(msg.sid)
             if aw is None:  # values before their header (lost): ask for it, like samples do
                 self.aux_pre_header += 1
-                now = time.monotonic()
-                if now - getattr(self, "_last_info_mono", -INFO_EVERY_S) >= INFO_EVERY_S:
-                    self._last_info_mono = now
-                    self.src.write("INFO")
+                self._ask_info()
                 return
             aw.add(msg.seq, t, msg.t_us + self._dev_off_us, msg.values)
             return
         if isinstance(msg, Event):
             if msg.code == "START":
                 self._on_device_start(msg.t_us, t)
+                for c in list(self.ppg_children.values()):
+                    c._on_device_start(msg.t_us, t)
             if msg.code == "SYNC":  # device clock <-> UTC (ms) from SNTP, for cross-node alignment
                 try:
-                    self._sync.append(((msg.t_us + self._dev_off_us) / 1e6, float(msg.text) / 1e3))
+                    unix = float(msg.text) / 1e3
                 except ValueError:
-                    pass
+                    return
+                for w in [self, *self.ppg_children.values()]:
+                    w._sync.append(((msg.t_us + w._dev_off_us) / 1e6, unix))
                 return
             if msg.code in ("LOG", "BOOTLOG"):  # the board's console (camera boards): rawlog only
                 return
@@ -213,6 +177,88 @@ class StreamWorker(threading.Thread):
             return
         if isinstance(msg, Status):
             self.status = msg.values
+
+    def _ask_info(self) -> None:
+        now = time.monotonic()
+        if now - getattr(self, "_last_info_mono", -INFO_EVERY_S) >= INFO_EVERY_S:
+            self._last_info_mono = now
+            self.src.write("INFO")
+
+    def _ppg_header(self, msg: Header) -> None:
+        if self.header is None:
+            self.header = msg
+            self.live = deque(maxlen=int(max(msg.fs, 1) * 20))  # live plot 8 s, live analysis 16 s
+            self._open_csv(msg)
+            self.header_event.set()
+        elif msg.channels != self.header.channels:
+            self.error = f"channel list changed mid-recording: {msg.channels}"
+
+    def _child_header(self, h: Header) -> None:
+        """Protocol v2.2: a further PPG sensor of this board (the right side of dual glasses)."""
+        try:
+            sid = int(h.extra["sid"])
+        except ValueError:
+            return
+        c = self.ppg_children.get(sid)
+        if c is None:
+            role = _safe(h.extra.get("site") or f"{self.role}_{h.extra.get('stream', f's{sid}')}")
+            taken = self.taken_roles if self.taken_roles is not None else set()
+            taken |= {self.role, *(x.role for x in self.ppg_children.values())}
+            while role in taken:
+                role += "_b"
+            taken.add(role)
+            c = self.ppg_children[sid] = PpgSubStream(self, sid, role)
+        c._ppg_header(h)
+
+    def _handle_sample(self, msg: Sample, t: float) -> None:
+        if self.header is None:
+            self.stats["n_pre_header"] += 1
+            self._ask_info()
+            return
+        if len(msg.values) != len(self.header.channels):
+            self.stats["n_malformed"] += 1
+            return
+        # loss accounting that tolerates re-ordering (MQTT redelivery after a
+        # Wi-Fi drop can bring old batches late): dropped = span - unique seen
+        if msg.seq in self._seen_recent:
+            self.stats["n_duplicates"] += 1
+            return
+        self._seen_recent.add(msg.seq)
+        if len(self._seen_recent) > 50000:
+            self._seen_recent = {q for q in self._seen_recent if q > msg.seq - 25000}
+        if self._last_seq is not None and msg.seq < self._last_seq:
+            if self._last_seq - msg.seq > 100000:  # device restarted its counter
+                self.stats["n_seq_resets"] += 1
+                self._seq_base += self._seq_max - self._seq_min + 1
+                self._seq_min = self._seq_max = None
+            else:
+                self.stats["n_out_of_order"] += 1
+        self._seq_min = msg.seq if self._seq_min is None else min(self._seq_min, msg.seq)
+        self._seq_max = msg.seq if self._seq_max is None else max(self._seq_max, msg.seq)
+        self._last_seq = msg.seq
+        span = self._seq_base + (self._seq_max - self._seq_min + 1)
+        self.stats["n_dropped_seq"] = max(0, span - (self.stats["n_samples"] + 1))
+        t_us = msg.t_us + self._dev_off_us
+        self._writer.writerow([f"{t:.6f}", msg.seq, t_us, *msg.values])
+        self.stats["n_samples"] += 1
+        if self.stats["t_first_s"] is None:
+            self.stats["t_first_s"] = t
+        self.stats["t_last_s"] = t
+        self.last_values = msg.values
+        self._last_sample_mono = time.monotonic()
+        self._last_dev_us = t_us if self._last_dev_us is None else max(self._last_dev_us, t_us)
+        dev_s = t_us / 1e6
+        k, off = int(dev_s), t - dev_s
+        cur = self._clock.get(k)
+        if cur is None or off < cur[0]:
+            self._clock[k] = (off, dev_s, t)
+        self._dev_bins[k] = self._dev_bins.get(k, 0) + 1
+        # live plot on the device clock (+ recent least delay), so batched links (MQTT:
+        # 20-80 samples arrive at once) don't draw staircases
+        ref = min((self._clock[j][0] for j in range(k - 5, k + 1) if j in self._clock), default=off)
+        self.live.append((dev_s + ref, msg.values[0], self.live_n))
+        self.live_n += 1
+        return
 
     def _video_header(self, h: Header) -> None:
         try:
@@ -326,14 +372,17 @@ class StreamWorker(threading.Thread):
                     now = time.monotonic()
                     if now - last_flush > 1.0:
                         raw.flush()
-                        if self._csv:
-                            self._csv.flush()
+                        for w in [self, *self.ppg_children.values()]:
+                            if w._csv:
+                                w._csv.flush()
                         for vw in list(self.video.values()) + list(self.aux.values()):
                             vw.flush()
                         m_t, m_n = self._rate_mark
                         dev_rate = self._device_rate()
                         self.rate_hz = dev_rate if dev_rate is not None else (self.stats["n_samples"] - m_n) / (now - m_t)
                         self._rate_mark = (now, self.stats["n_samples"])
+                        for c in list(self.ppg_children.values()):
+                            c.update_rate(now)
                         last_flush = now
                 self.src.write("STOP")
                 end = time.monotonic() + 0.3
@@ -342,8 +391,9 @@ class StreamWorker(threading.Thread):
         except Exception as e:  # keep the session alive, report later
             self.error = f"{type(e).__name__}: {e}"
         finally:
-            if self._csv:
-                self._csv.close()
+            for w in [self, *self.ppg_children.values()]:
+                if w._csv:
+                    w._csv.close()
             for vw in list(self.video.values()) + list(self.aux.values()):
                 vw.close()
             self.src.close()
@@ -416,6 +466,64 @@ class StreamWorker(threading.Thread):
         }
 
 
+_CHILD_ORDER = itertools.count()
+
+
+class PpgSubStream(StreamWorker):
+    """A further PPG sensor of a board (protocol v2.2, kind=ppg; the right side of dual glasses).
+
+    Everything a primary PPG stream has (CSV, seq loss accounting, device-clock and SNTP fits, live
+    buffer, rate) and the same summary, but no thread and no source of its own: the board's
+    StreamWorker reads the lines and hands this stream its header and samples (docs/DUAL_PPG.md)."""
+
+    def __init__(self, parent: StreamWorker, sid: int, role: str):
+        super().__init__(parent.src, role, parent.folder, parent.t0_ns)
+        self.parent, self.sid = parent, sid
+        self.raw_path = parent.raw_path  # one raw log per board
+        self.created = next(_CHILD_ORDER)  # live-plot cursors are by position: keep the order stable
+
+    def start(self):  # never a thread of its own
+        pass
+
+    def join(self, timeout=None):
+        pass
+
+    def is_alive(self) -> bool:
+        return self.parent.is_alive()
+
+    def stall_s(self) -> float:
+        return self.parent.stall_s()
+
+    @property
+    def status(self) -> dict:  # the board's S line
+        return self.parent.status
+
+    @status.setter
+    def status(self, v) -> None:
+        pass
+
+    @property
+    def device_events(self) -> list:  # events are the board's (its StreamWorker keeps them)
+        return []
+
+    @device_events.setter
+    def device_events(self, v) -> None:
+        pass
+
+    def update_rate(self, now: float) -> None:
+        dev_rate = self._device_rate()
+        m_t, m_n = self._rate_mark
+        self.rate_hz = dev_rate if dev_rate is not None else (self.stats["n_samples"] - m_n) / max(now - m_t, 1e-6)
+        self._rate_mark = (now, self.stats["n_samples"])
+
+    def summary(self) -> dict:
+        d = super().summary()
+        d.update(rawlog=self.parent.raw_path.name.replace(".tmp", ""), sid=self.sid,
+                 parent=self.parent.stream_name or _safe(self.parent.role),
+                 stream_kind="ppg", port=self.src.port)
+        return d
+
+
 class Recording:
     def __init__(self, settings, devices: list[dict], sim_kw: dict | None = None):
         self.settings, self.devices = settings, devices
@@ -431,6 +539,13 @@ class Recording:
 
     def now(self) -> float:
         return (time.monotonic_ns() - self.t0_ns) / 1e9
+
+    @property
+    def ppg_streams(self) -> list[StreamWorker]:
+        """Every PPG stream: one per device (the workers), then the further sensors of dual boards
+        (protocol v2.2) in the order they appeared - appended, so positions of earlier ones never move."""
+        children = [c for w in list(self.workers) for c in list(w.ppg_children.values())]
+        return list(self.workers) + sorted(children, key=lambda c: c.created)
 
     def start(self, pre_meta: dict | None = None) -> list[str]:
         """Open every device, send START, wait for headers. Returns warnings."""
@@ -463,6 +578,7 @@ class Recording:
                 shutil.rmtree(self.folder, ignore_errors=True)
                 raise
             w = StreamWorker(src, role, self.folder, self.t0_ns)
+            w.taken_roles = roles  # a further PPG sensor's role must not collide with a device's
             self.workers.append(w)
         for w in self.workers:
             w.start()
@@ -480,7 +596,7 @@ class Recording:
 
     def live_status(self) -> list[dict]:
         out = []
-        for w in self.workers:
+        for w in self.ppg_streams:
             out.append({"role": w.role, "dev": w.header.dev if w.header else "?", "rate_hz": w.rate_hz,
                         "fs": w.header.fs if w.header else None, "samples": w.stats["n_samples"],
                         "dropped": w.stats["n_dropped_seq"], "bad_lines": w.stats["n_checksum_err"] + w.stats["n_malformed"],
@@ -522,7 +638,7 @@ class Recording:
             "status": meta.get("status", "ok"),
             "subject": self.subject_snapshot,
             "reference_devices": self.settings.lab.get("reference", {}),
-            "streams": [w.summary() for w in self.workers] if final else [],
+            "streams": [w.summary() for w in self.ppg_streams] if final else [],
             # camera streams (sglab.video): kept out of "streams" so PPG processing never sees them
             "video": [v for w in self.workers for v in (w.summary()["video"] if final else [])],
             # further sensors and edge-computed features (sglab.auxstream), same reason

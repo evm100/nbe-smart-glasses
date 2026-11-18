@@ -12,6 +12,9 @@
 //                  (uvarints; zz = zigzag; seq increases by 1 per sample)
 //     REC_FRAME    body = sid u8 | seq u32 | t_us u64 | w u16 | h u16 | fmt u8 | exp u16 | gain u8 | pixels
 //                  (protocol v2: one camera frame of stream `sid`, see PROTOCOL.md "Camera frames")
+//     REC_SAMPLES_SID  body = sid u8 | the body of a REC_SAMPLES record
+//                  (protocol v2.2: samples of a further PPG stream, e.g. the right sensor of dual glasses;
+//                  stream 0 keeps using REC_SAMPLES)
 //
 // USB binary link (CONFIG_PPG_LINK_USB_BIN): the same records, in envelopes on the byte stream
 //   envelope  0xA5 0x5A | len u32 | crc32 u32 (of the records) | records
@@ -29,6 +32,7 @@
 #define REC_TEXT 0x01
 #define REC_SAMPLES 0x02
 #define REC_FRAME 0x03
+#define REC_SAMPLES_SID 0x04
 #define FRAME_REC_HDR_LEN 21  // REC_FRAME body header before the pixels
 #define ENV_HDR_LEN 10
 #define ENV_MAGIC0 0xA5
@@ -48,15 +52,16 @@ typedef struct {
     uint8_t body[SREC_MAX];
     size_t len;  // 0 = empty
     uint16_t n;
+    uint8_t sid;  // stream: 0 = REC_SAMPLES, else REC_SAMPLES_SID
     uint8_t nch;
     uint32_t next_seq, dt_nom;
     int64_t last_t;
     uint32_t last[FRAME_MAX_CH];
 } srec_t;
 
-// Appends one sample; false = it doesn't continue the record (seq gap, other channels / rate,
-// full): write out the record (srec_emit) and add the sample again.
-bool srec_add(srec_t *r, uint32_t seq, int64_t t_us, const uint32_t *v, int nch, uint32_t dt_nom_us);
+// Appends one sample of stream `sid`; false = it doesn't continue the record (other stream, seq gap,
+// other channels / rate, full): write out the record (srec_emit) and add the sample again.
+bool srec_add(srec_t *r, uint8_t sid, uint32_t seq, int64_t t_us, const uint32_t *v, int nch, uint32_t dt_nom_us);
 // Writes the record (type + length + body) to dst, which needs srec_size(r) bytes, and empties it.
 size_t srec_size(const srec_t *r);
 size_t srec_emit(srec_t *r, uint8_t *dst);

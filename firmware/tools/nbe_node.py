@@ -270,6 +270,8 @@ def cmd_configure(a):
             b = api("GET", f"/api/nodes/{node}/credentials")
         else:
             raise
+    if a.dual and a.camera:
+        raise Fail("--dual and --camera exclude each other (the camera uses the second I2C controller)")
     if not b["broker_uri"]:
         raise Fail("the server has no broker address configured ([provisioning] broker_uri)")
     if a.site and a.site != b["site"]:
@@ -330,12 +332,17 @@ def cmd_configure(a):
                        tuple(fallbacks), tuple(dns), hybrid=hybrid)
     if a.camera:  # camera glasses: sdkconfig.camera + sdkconfig.hybrid under this node's own values
         vals = overlay_values(proj / "sdkconfig.camera") | overlay_values(proj / "sdkconfig.hybrid") | vals
+    if a.dual:  # dual-PPG glasses (docs/DUAL_PPG.md): a second MAX30102 on I2C port 1; the left one's site is the node's
+        vals = overlay_values(proj / "sdkconfig.dual") | vals
+        if not str(b["site"]).endswith("_l"):
+            print(f"note: {node} is registered with site={b['site']!r}; dual glasses are normally glasses_l "
+                  f"(the right sensor's stream is glasses_r) - change it on the Nodes page")
     text = ["# Written by firmware/tools/nbe_node.py for node " + node + " - do not commit (Wi-Fi password)."]
     text += kconfig_lines(vals).values()
     write_private(proj / "sdkconfig.nbe", "\n".join(text) + "\n")
     changed = patch_sdkconfig(sdk, vals) if sdk.exists() else None
 
-    print(f"node {node}: {'camera glasses, ' if a.camera else ''}{'hybrid (USB gateway or Wi-Fi), ' if hybrid else ''}"
+    print(f"node {node}: {'camera glasses, ' if a.camera else ''}{'dual-PPG glasses, ' if a.dual else ''}{'hybrid (USB gateway or Wi-Fi), ' if hybrid else ''}"
           f"site={b['site']} broker={b['broker_uri']} (CA: {b['broker_ca_mode']}) "
           f"wifi={ssid} ({'PEAP as ' + a.wifi_eap_user if a.wifi_eap_user else 'PSK/open'}) "
           + "".join(f"then {fs} " for fs, _ in fallbacks if fs)
@@ -420,6 +427,9 @@ def main(argv=None) -> int:
                    help="Wi-Fi node that streams over USB-C instead while the NBE USB gateway talks to it")
     s.add_argument("--camera", action="store_true",
                    help="camera glasses (sdkconfig.camera); implies --hybrid (sdkconfig.hybrid)")
+    s.add_argument("--dual", action="store_true",
+                   help="dual-PPG glasses (sdkconfig.dual): a second MAX30102 on I2C port 1 (D8/D9), no camera; "
+                        "register the node with --site glasses_l")
     s.add_argument("--register", action="store_true", help="register the node first if it doesn't exist")
     s.add_argument("--site", help="with --register")
     s.add_argument("--build", action="store_true", help="run idf.py build afterwards")

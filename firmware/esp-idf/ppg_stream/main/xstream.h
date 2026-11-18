@@ -15,7 +15,8 @@
 //
 // Design point: LOW RATE. A text line per sample (~40 bytes) is right for chemistry and features
 // at <= ~20 Hz per stream. Polling has a 10 ms tick, so 50 Hz is the hard limit; anything faster
-// (a second PPG, an IMU, raw ECG) needs the binary samples record instead (link_write_samples).
+// (an IMU, raw ECG) needs the binary samples record instead (link_write_samples; the second PPG of
+// dual glasses does that, app_main.c).
 //
 // Adding a sensor: copy xstream_template.c, then add one line to register_streams() in xstream.c
 // (README.md "Adding a sensor").
@@ -32,6 +33,7 @@
 #include "sdkconfig.h"
 
 // Stream ids in use. 0 = PPG, 1 = camera (camera.h). Give every new stream its own number here.
+// 4 = the second PPG sensor of dual glasses (PPG2_SID in app_main.c, protocol v2.2, kind=ppg).
 #define XS_SID_DEMO 2      // "sweat"     synthetic glucose|lactate (xstream_demo.c)
 #define XS_SID_CAM_FEAT 3  // "cam_feat"  frame statistics computed on the board (camera.c)
 #define XS_SID_TEMPLATE 9  // "chem"      xstream_template.c as shipped: change it in your copy

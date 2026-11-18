@@ -12,6 +12,10 @@
 #                                                       talks to them (sdkconfig.camera + sdkconfig.hybrid;
 #                                                       holds Wi-Fi password + node key like the Wi-Fi nodes)
 #   deploy/evmserver/build-firmware.sh --hybrid FNG01   a PPG-only Wi-Fi node with the same USB takeover
+#   deploy/evmserver/build-firmware.sh --dual GLS04     dual-PPG glasses: a MAX30102 at each temple on one board
+#                                                       (sdkconfig.dual, second sensor on D8/D9, no camera;
+#                                                       docs/DUAL_PPG.md). Add --hybrid for the USB takeover.
+#                                                       Register the node with site glasses_l.
 #
 # Once beforehand:
 #   python3 firmware/tools/nbe_node.py login https://nbe.evm100.org      (admin account)
@@ -38,23 +42,25 @@ TOOL="$REPO/firmware/tools/nbe_node.py"
 BASE="${NBE_FW_DIR:-$HOME/nbe-firmware}"
 IMAGE="${IDF_IMAGE:-espressif/idf:v6.1}"
 WIFI_ENV="${NBE_WIFI_ENV:-$HOME/.config/nbe-node/wifi.env}"
-CAMERA=0; HYBRID=0; NODES=()
+CAMERA=0; HYBRID=0; DUAL=0; NODES=()
 for a in "$@"; do
   case "$a" in
     --camera) CAMERA=1 ;;
     --hybrid) HYBRID=1 ;;
+    --dual) DUAL=1 ;;
     -*) echo "unknown option $a"; exit 1 ;;
     *) NODES+=("$a") ;;
   esac
 done
 if [[ ${#NODES[@]} -eq 0 ]]; then
-  (( CAMERA || HYBRID )) && { echo "usage: $0 [--camera] [--hybrid] <NODE_ID>..."; exit 1; }
+  (( CAMERA || HYBRID || DUAL )) && { echo "usage: $0 [--camera | --dual] [--hybrid] <NODE_ID>..."; exit 1; }
   NODES=(GLS01 HED01 FNG01)
 fi
 
 # USB-only camera build: no Wi-Fi, no node key
 USB_ONLY=$(( CAMERA && ! HYBRID ))
-mode=(); (( HYBRID )) && mode+=(--hybrid); (( CAMERA )) && mode+=(--camera)
+(( CAMERA && DUAL )) && { echo "--camera and --dual exclude each other (the camera uses the second I2C bus)"; exit 1; }
+mode=(); (( HYBRID )) && mode+=(--hybrid); (( CAMERA )) && mode+=(--camera); (( DUAL )) && mode+=(--dual)
 
 if (( ! USB_ONLY )); then
   [[ -f "$WIFI_ENV" ]] || { echo "missing $WIFI_ENV (see the header of this script)"; exit 1; }
@@ -118,7 +124,7 @@ for id in "${NODES[@]}"; do
   progress $! "$BASE/work/$id/build.log" "building $id" \
       || { tail -n 40 "$BASE/work/$id/build.log"; echo "build of $id failed (full log: $BASE/work/$id/build.log)"; exit 1; }
   cp "$w/build/merged-binary.bin" "$BASE/out/$id.bin"
-  grep -E '^CONFIG_PPG_(DEVICE_ID|SITE|WIFI_SSID[23]?|WIFI_DNS[23]?|WIFI_AUTH_EAP|WIFI_EAP_USERNAME|MQTT_BROKER_URI|LINK_USB_BIN|LINK_HYBRID|CAMERA|CAM_FPS|CAM_CROP)=' "$w/sdkconfig" | sed 's/^/   /'
+  grep -E '^CONFIG_PPG_(DEVICE_ID|SITE|WIFI_SSID[23]?|WIFI_DNS[23]?|WIFI_AUTH_EAP|WIFI_EAP_USERNAME|MQTT_BROKER_URI|LINK_USB_BIN|LINK_HYBRID|CAMERA|CAM_FPS|CAM_CROP|PPG2|PPG2_SITE)=' "$w/sdkconfig" | sed 's/^/   /'
   echo "   -> $BASE/out/$id.bin ($(stat -c %s "$BASE/out/$id.bin") bytes, USB flash)"
   if (( ! USB_ONLY )) && [[ -z "${NBE_NO_UPLOAD:-}" ]]; then  # USB-only camera boards: no OTA
     python3 "$TOOL" upload "$id" "$w/build/ppg_stream.bin" | sed 's/^/   /' \

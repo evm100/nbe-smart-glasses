@@ -12,6 +12,10 @@ record once and in order.
 
 Protocol v2 adds camera frame records (0x03, nbe_gateway.wire): ``feed_items`` returns them as
 ``VideoFrame`` objects in order with the lines; ``feed`` keeps returning lines only.
+
+Protocol v2.2 adds samples of further PPG streams (0x04 = sid u8 + a 0x02 body, the right sensor of
+dual glasses): they come out as ``$M,<sid>,<seq>,<t_us>,<values>`` lines, the text form the board
+itself sends on a plain USB link.
 """
 from __future__ import annotations
 
@@ -27,7 +31,7 @@ from .protocol import ProtocolError, Sample, encode, parse_line
 MAGIC = b"NB"
 VERSION = 2
 HDR = struct.Struct("<2sBBIQI")  # magic, version, flags, boot, offset, crc32
-REC_TEXT, REC_SAMPLES = 0x01, 0x02
+REC_TEXT, REC_SAMPLES, REC_SAMPLES_SID = 0x01, 0x02, 0x04  # 0x04: protocol v2.2, sid u8 + a 0x02 body
 RESEND_EVERY_S = 1.0     # at most one RESEND per this long (frames already in flight all show the gap)
 GIVE_UP_RESENDS = 5      # RESENDs without progress: the node no longer has the data, accept the gap
 
@@ -57,8 +61,8 @@ def _zz(v: int) -> int:
     return (v >> 1) ^ -(v & 1)
 
 
-def decode_samples(body: bytes) -> list[str]:
-    """A samples record -> D lines."""
+def decode_samples(body: bytes, sid: int = 0) -> list[str]:
+    """A samples record -> D lines; with a sid (record 0x04, a further PPG stream) -> M lines."""
     if len(body) < 2:
         raise FrameError("short samples record")
     n = body[0] | body[1] << 8
@@ -73,7 +77,8 @@ def decode_samples(body: bytes) -> list[str]:
     for _ in range(nch):
         x, i = _uvarint(body, i)
         v.append(x)
-    out = [encode(f"D,{seq},{t}," + ",".join(map(str, v)))]
+    pre = f"M,{sid}," if sid else "D,"
+    out = [encode(f"{pre}{seq},{t}," + ",".join(map(str, v)))]
     for _ in range(n - 1):
         d, i = _uvarint(body, i)
         t += dt_nom + _zz(d)
@@ -81,7 +86,7 @@ def decode_samples(body: bytes) -> list[str]:
             d, i = _uvarint(body, i)
             v[c] += _zz(d)
         seq += 1
-        out.append(encode(f"D,{seq},{t}," + ",".join(map(str, v))))
+        out.append(encode(f"{pre}{seq},{t}," + ",".join(map(str, v))))
     if i != len(body):
         raise FrameError("samples record length mismatch")
     return out
@@ -132,6 +137,10 @@ def record_lines(kind: int, body: bytes) -> list[str]:
         return [body.decode("ascii", "replace") + "\r\n"]
     if kind == REC_SAMPLES:
         return decode_samples(body)
+    if kind == REC_SAMPLES_SID:
+        if not body:
+            raise FrameError("short samples record")
+        return decode_samples(body[1:], body[0])
     return []  # frames (see record_items) and newer record types: skip
 
 

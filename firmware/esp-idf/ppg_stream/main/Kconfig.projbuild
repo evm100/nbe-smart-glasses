@@ -242,6 +242,52 @@ menu "PPG stream (MAX30102)"
     endmenu
 
     # ------------------------------------------------------------------
+    menu "Second PPG sensor (dual-PPG glasses)"
+        config PPG_PPG2
+            bool "Second MAX30102 on its own I2C bus (protocol v2.2 stream 'ppg_r', sid 4)"
+            depends on !PPG_CAMERA
+            default n
+            help
+                Glasses with a sensor at each temple: the first sensor (Wiring menu) is the left
+                one and the board's primary stream; this one is the right one, its own stream with
+                its own seq and timestamps (docs/DUAL_PPG.md). Both use the settings of the Sensor
+                menu. Both MAX30102s have the I2C address 0x57, so this one needs the other I2C
+                controller - which the camera's SCCB uses, hence not with the camera.
+
+        config PPG_PPG2_SITE
+            string "Site of the second sensor"
+            depends on PPG_PPG2
+            default "glasses_r"
+            help
+                Sent as site= in its H line; the server uses it as the stream's role. The first
+                sensor's site is the board's site (Identity menu; glasses_l on dual glasses).
+
+        config PPG_PPG2_I2C_PORT
+            int "I2C port number"
+            depends on PPG_PPG2
+            range 0 1
+            default 1
+            help
+                Must differ from the first sensor's port.
+
+        config PPG_PPG2_I2C_SDA_GPIO
+            int "I2C SDA GPIO"
+            depends on PPG_PPG2
+            range 0 48
+            default 7
+            help
+                XIAO ESP32-S3: D8 = GPIO7.
+
+        config PPG_PPG2_I2C_SCL_GPIO
+            int "I2C SCL GPIO"
+            depends on PPG_PPG2
+            range 0 48
+            default 8
+            help
+                XIAO ESP32-S3: D9 = GPIO8.
+    endmenu
+
+    # ------------------------------------------------------------------
     menu "Link"
         choice PPG_LINK
             prompt "Data link"

@@ -41,7 +41,7 @@ static SemaphoreHandle_t s_usb;          // whole envelopes on the wire
 static SemaphoreHandle_t s_lock;         // the ring + s_srec
 static uint8_t *s_ring, *s_env;
 static size_t s_head, s_tail;            // ring positions (bytes, wrap at RING_SIZE)
-static srec_t s_srec;
+static srec_t s_srec[2];  // samples records being built: [0] stream 0, [1] the second PPG (v2.2)
 static uint8_t s_rec[SREC_MAX + 16];
 static volatile uint32_t s_dropped;      // bytes (ring full, envelope cut short)
 static volatile uint32_t s_frames_dropped;
@@ -66,7 +66,8 @@ static void append(const uint8_t *rec, size_t n)
 
 static void close_srec(void)
 {
-    if (s_srec.len) append(s_rec, srec_emit(&s_srec, s_rec));
+    for (int i = 0; i < 2; i++)
+        if (s_srec[i].len) append(s_rec, srec_emit(&s_srec[i], s_rec));
 }
 
 // Whole records from the ring into s_env + ENV_HDR_LEN, at most ENV_MAX bytes.
@@ -172,7 +173,7 @@ int link_write(const char *buf, size_t len)
     return (int)len;
 }
 
-void link_write_samples(uint32_t seq0, const int64_t *t_us, const uint32_t *ch0, const uint32_t *ch1, int n,
+void link_write_samples(uint8_t sid, uint32_t seq0, const int64_t *t_us, const uint32_t *ch0, const uint32_t *ch1, int n,
                         int64_t period_ns)
 {
     uint32_t dt_nom = (uint32_t)((period_ns + 500) / 1000);
@@ -180,9 +181,11 @@ void link_write_samples(uint32_t seq0, const int64_t *t_us, const uint32_t *ch0,
     xSemaphoreTake(s_lock, portMAX_DELAY);
     for (int k = 0; k < n; k++) {
         uint32_t v[FRAME_MAX_CH] = {ch0[k], ch1 ? ch1[k] : 0};
-        if (!srec_add(&s_srec, seq0 + (uint32_t)k, t_us[k], v, nch, dt_nom)) {
-            close_srec();
-            srec_add(&s_srec, seq0 + (uint32_t)k, t_us[k], v, nch, dt_nom);
+        // one record per stream at a time, so interleaved left/right reads don't fragment them
+        srec_t *r = &s_srec[sid ? 1 : 0];
+        if (!srec_add(r, sid, seq0 + (uint32_t)k, t_us[k], v, nch, dt_nom)) {
+            append(s_rec, srec_emit(r, s_rec));
+            srec_add(r, sid, seq0 + (uint32_t)k, t_us[k], v, nch, dt_nom);
         }
     }
     xSemaphoreGive(s_lock);

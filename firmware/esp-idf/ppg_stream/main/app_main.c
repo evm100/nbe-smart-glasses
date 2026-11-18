@@ -1,8 +1,10 @@
 // PPG serial protocol v1 streamer (see firmware/PROTOCOL.md)
 // ESP32-S3 (Seeed XIAO) + MAX30102, ESP-IDF v6.x
+// CONFIG_PPG_PPG2: a second MAX30102 on the other I2C controller (dual-PPG glasses, protocol v2.2,
+// docs/DUAL_PPG.md): sensor 0 = left = the primary stream, sensor 1 = right = stream "ppg_r" (sid 4).
 //
 // Tasks
-//   sensor_task  (core 1): FIFO reads -> D lines, H/E/S lines, start/stop handling
+//   sensor_task  (core 1): FIFO reads (every sensor) -> samples, H/E/S lines, start/stop handling
 //   cmd_task     (core 0): reads INFO / START / STOP / CAM ... / OTA <token> from the PC or the MQTT cmd topic
 //   camera_task  (core 0, camera boards): frames -> link_write_frame() (camera.c)
 //   xs_task      (core 0, CONFIG_PPG_AUX): further sensors / on-board features -> M lines (xstream.c)
@@ -43,19 +45,47 @@ static const char *TAG = "ppg";
 #endif
 
 // ---------------------------------------------------------------- state
-static max30102_t s_sensor;
-static bool s_sensor_ok;
-static i2c_master_bus_handle_t s_bus;
+#define PPG2_SID 4  // protocol v2.2 stream id of the second sensor (list of ids: xstream.h)
+#if CONFIG_PPG_PPG2
+#define N_PPG 2
+#if CONFIG_PPG_PPG2_I2C_PORT == CONFIG_PPG_I2C_PORT
+#error "the second MAX30102 needs the other I2C port (both have address 0x57)"
+#endif
+#else
+#define N_PPG 1
+#endif
+
+// One MAX30102 and everything that is per sensor. Both use s_cfg (same settings on both sides).
+typedef struct {
+    uint8_t sid;         // 0 = the board's primary stream
+    const char *stream;  // stream name (sid != 0): H line, S-line field prefix, event texts
+    const char *site;
+    int port, sda, scl;
+    i2c_master_bus_handle_t bus;
+    max30102_t dev;
+    bool ok;
+    uint32_t seq;
+    int64_t last_retry_us;
+    // statistics reported in S lines
+    uint32_t ovf_events, i2c_errors, alc_ovf_events, samples_window;
+} ppg_sensor_t;
+
+static ppg_sensor_t s_ppg[N_PPG] = {
+    {.sid = 0, .stream = NULL, .site = CONFIG_PPG_SITE, .port = CONFIG_PPG_I2C_PORT,
+     .sda = CONFIG_PPG_I2C_SDA_GPIO, .scl = CONFIG_PPG_I2C_SCL_GPIO},
+#if CONFIG_PPG_PPG2
+    {.sid = PPG2_SID, .stream = "ppg_r", .site = CONFIG_PPG_PPG2_SITE, .port = CONFIG_PPG_PPG2_I2C_PORT,
+     .sda = CONFIG_PPG_PPG2_I2C_SDA_GPIO, .scl = CONFIG_PPG_PPG2_I2C_SCL_GPIO},
+#endif
+};
 static max30102_config_t s_cfg;
 
 static atomic_bool s_req_info, s_req_start, s_req_stop;
 static bool s_streaming;
-static uint32_t s_seq;
 static int64_t s_period_ns;  // output sample period
 
-// statistics reported in S lines
-static uint32_t s_ovf_events, s_i2c_errors, s_alc_ovf_events, s_samples_window, s_loop_max_us;
-static int32_t s_temp_centi = INT32_MIN;
+static uint32_t s_loop_max_us;
+static int32_t s_temp_centi = INT32_MIN;  // the primary sensor's die temperature
 #if CONFIG_PPG_INT_GPIO >= 0
 static SemaphoreHandle_t s_int_sem;
 #endif
@@ -67,14 +97,31 @@ static void send_line(pline_t *l)
     link_write(l->start, n);
 }
 
-static void send_header(void)
+static bool any_sensor_ok(void)
+{
+    for (int i = 0; i < N_PPG; i++)
+        if (s_ppg[i].ok) return true;
+    return false;
+}
+
+// The H line of one PPG sensor: the primary stream as in protocol v1, a further one (v2.2) with
+// proto=2, sid, stream and kind=ppg.
+static void send_ppg_header(const ppg_sensor_t *p)
 {
     char buf[PROTO_MAX_LINE];
     pline_t l;
     pl_begin(&l, buf, sizeof buf);
-    pl_str(&l, "H,proto=1,dev=");
+    pl_str(&l, p->sid ? "H,proto=2,dev=" : "H,proto=1,dev=");
     pl_str(&l, CONFIG_PPG_DEVICE_ID);
-    pl_str(&l, ",fw=" FW_VERSION ",sensor=MAX30102,fs=");
+    pl_str(&l, ",fw=" FW_VERSION);
+    if (p->sid) {
+        pl_str(&l, ",sid=");
+        pl_u64(&l, p->sid);
+        pl_str(&l, ",stream=");
+        pl_str(&l, p->stream);
+        pl_str(&l, ",kind=ppg");
+    }
+    pl_str(&l, ",sensor=MAX30102,fs=");
     uint32_t mhz = max30102_output_rate_mhz(&s_cfg);
     if (mhz % 1000 == 0) {
         pl_u64(&l, mhz / 1000);
@@ -100,13 +147,22 @@ static void send_header(void)
     pl_u64(&l, s_cfg.sample_rate);
     pl_str(&l, ",range_na=");
     pl_u64(&l, s_cfg.adc_range_na);
-    pl_str(&l, ",site=" CONFIG_PPG_SITE ",board=" CONFIG_PPG_BOARD_NAME);
+    pl_str(&l, ",site=");
+    pl_str(&l, p->site);
+    pl_str(&l, ",board=" CONFIG_PPG_BOARD_NAME);
 #if CONFIG_PPG_LINK_HYBRID
-    pl_str(&l, ",link=hybrid");  // the USB gateway waits for $E,..,LINK,usb before it goes on MQTT
+    if (!p->sid) pl_str(&l, ",link=hybrid");  // the USB gateway waits for $E,..,LINK,usb before it goes on MQTT
 #endif
-    pl_str(&l, s_sensor_ok ? ",sensor_ok=1" : ",sensor_ok=0");
+    pl_str(&l, p->ok ? ",sensor_ok=1" : ",sensor_ok=0");
     send_line(&l);
+}
+
+static void send_header(void)
+{
+    for (int i = 0; i < N_PPG; i++) send_ppg_header(&s_ppg[i]);  // the primary stream first
 #if CONFIG_PPG_CAMERA
+    char buf[PROTO_MAX_LINE];
+    pline_t l;
     pl_begin(&l, buf, sizeof buf);  // protocol v2: the camera stream declares itself (sid=1)
     camera_header(&l);
     send_line(&l);
@@ -153,14 +209,33 @@ static void send_status(uint32_t window_ms)
     pl_begin(&l, buf, sizeof buf);
     pl_str(&l, "S,");
     pl_i64(&l, esp_timer_get_time());
-    pl_str(&l, ",fs_meas=");
-    pl_fixed(&l, (int64_t)s_samples_window * 10000 / (window_ms ? window_ms : 1), 1);  // Hz, 0.1 resolution
-    pl_str(&l, ",ovf=");
-    pl_u64(&l, s_ovf_events);
-    pl_str(&l, ",alc_ovf=");
-    pl_u64(&l, s_alc_ovf_events);
-    pl_str(&l, ",i2c_err=");
-    pl_u64(&l, s_i2c_errors);
+    for (int i = 0; i < N_PPG; i++) {  // primary: fs_meas=..; further sensors: <stream>_fs_meas=.. (+ _ok)
+        ppg_sensor_t *p = &s_ppg[i];
+        const char *pre = p->sid ? p->stream : NULL;
+        if (pre) {
+            pl_char(&l, ',');
+            pl_str(&l, pre);
+            pl_str(&l, p->ok ? "_ok=1" : "_ok=0");
+        }
+#define FIELD(name)            \
+    do {                       \
+        pl_char(&l, ',');      \
+        if (pre) {             \
+            pl_str(&l, pre);   \
+            pl_char(&l, '_');  \
+        }                      \
+        pl_str(&l, name "=");  \
+    } while (0)
+        FIELD("fs_meas");
+        pl_fixed(&l, (int64_t)p->samples_window * 10000 / (window_ms ? window_ms : 1), 1);  // Hz, 0.1 resolution
+        FIELD("ovf");
+        pl_u64(&l, p->ovf_events);
+        FIELD("alc_ovf");
+        pl_u64(&l, p->alc_ovf_events);
+        FIELD("i2c_err");
+        pl_u64(&l, p->i2c_errors);
+#undef FIELD
+    }
     pl_str(&l, ",tx_drop=");
     pl_u64(&l, link_dropped_bytes());
     pl_str(&l, ",loop_us_max=");
@@ -182,7 +257,7 @@ static void send_status(uint32_t window_ms)
     pl_str(&l, ",heap=");
     pl_u64(&l, esp_get_free_heap_size());
     send_line(&l);
-    s_samples_window = 0;
+    for (int i = 0; i < N_PPG; i++) s_ppg[i].samples_window = 0;
     s_loop_max_us = 0;
 }
 
@@ -268,34 +343,48 @@ static void build_config(void)
     s_period_ns = (int64_t)1000000000000LL / max30102_output_rate_mhz(&s_cfg);
 }
 
-static esp_err_t sensor_open(void)
+static esp_err_t sensor_open(ppg_sensor_t *p)
 {
-    if (!s_bus) {
+    if (!p->bus) {
         i2c_master_bus_config_t bc = {
-            .i2c_port = CONFIG_PPG_I2C_PORT,
-            .sda_io_num = CONFIG_PPG_I2C_SDA_GPIO,
-            .scl_io_num = CONFIG_PPG_I2C_SCL_GPIO,
+            .i2c_port = p->port,
+            .sda_io_num = p->sda,
+            .scl_io_num = p->scl,
             .clk_source = I2C_CLK_SRC_DEFAULT,
             .glitch_ignore_cnt = 7,
         };
 #if CONFIG_PPG_I2C_INTERNAL_PULLUPS
         bc.flags.enable_internal_pullup = 1;
 #endif
-        esp_err_t err = i2c_new_master_bus(&bc, &s_bus);
+        esp_err_t err = i2c_new_master_bus(&bc, &p->bus);
         if (err != ESP_OK) return err;
     }
-    if (s_sensor.dev) {
-        i2c_master_bus_rm_device(s_sensor.dev);
-        s_sensor.dev = NULL;
+    if (p->dev.dev) {
+        i2c_master_bus_rm_device(p->dev.dev);
+        p->dev.dev = NULL;
     }
-    return max30102_init(&s_sensor, s_bus, CONFIG_PPG_I2C_FREQ_HZ, &s_cfg);
+    return max30102_init(&p->dev, p->bus, CONFIG_PPG_I2C_FREQ_HZ, &s_cfg);
+}
+
+// A sensor's event text: as before for the primary stream, "<stream>: ..." for a further one.
+static void send_sensor_event(const ppg_sensor_t *p, const char *code, const char *text)
+{
+    if (!p->sid) {
+        send_event(code, text);
+        return;
+    }
+    char t[PROTO_MAX_LINE - 64];
+    strlcpy(t, p->stream, sizeof t);
+    strlcat(t, ": ", sizeof t);
+    strlcat(t, text, sizeof t);
+    send_event(code, t);
 }
 
 #if CONFIG_PPG_AUX
 // For auxiliary sensors on the MAX30102's I2C wires (xstream.h). NULL until sensor_task has made it.
 i2c_master_bus_handle_t app_i2c_bus(void)
 {
-    return s_bus;
+    return s_ppg[0].bus;
 }
 #endif
 
@@ -317,7 +406,7 @@ static void send_sync(void)
 
 static void note_state(void)
 {
-    link_note_state(s_streaming, s_sensor_ok, max30102_output_rate_mhz(&s_cfg));
+    link_note_state(s_streaming, any_sensor_ok(), max30102_output_rate_mhz(&s_cfg));
 }
 
 static void start_streaming(void)
@@ -327,9 +416,12 @@ static void start_streaming(void)
     static uint32_t red[MAX30102_FIFO_DEPTH], ir[MAX30102_FIFO_DEPTH];
     int n;
     uint8_t ovf;
-    if (s_sensor_ok) max30102_read_fifo(&s_sensor, red, ir, &n, &ovf);
-    s_seq = 0;
-    s_ovf_events = s_i2c_errors = s_alc_ovf_events = 0;
+    for (int i = 0; i < N_PPG; i++) {
+        ppg_sensor_t *p = &s_ppg[i];
+        if (p->ok) max30102_read_fifo(&p->dev, red, ir, &n, &ovf);
+        p->seq = 0;
+        p->ovf_events = p->i2c_errors = p->alc_ovf_events = 0;
+    }
     send_header();
     send_event("START", "");
     send_sync();
@@ -364,33 +456,35 @@ static void stop_streaming(void)
     note_state();
 }
 
-static void read_and_send(void)
+// Each sensor's samples are timed from its own FIFO count and read time: the two chips have their
+// own oscillators, so a second sensor is never merged into the first one's rows (docs/DUAL_PPG.md).
+static void read_and_send(ppg_sensor_t *p)
 {
     static uint32_t red[MAX30102_FIFO_DEPTH], ir[MAX30102_FIFO_DEPTH];
     int n = 0;
     uint8_t ovf = 0;
-    esp_err_t err = max30102_read_fifo(&s_sensor, red, ir, &n, &ovf);
+    esp_err_t err = max30102_read_fifo(&p->dev, red, ir, &n, &ovf);
     int64_t now_us = esp_timer_get_time();
     if (err != ESP_OK) {
-        if (++s_i2c_errors % 50 == 0) send_event("SENSOR_ERR", "i2c read failed repeatedly");
+        if (++p->i2c_errors % 50 == 0) send_sensor_event(p, "SENSOR_ERR", "i2c read failed repeatedly");
         return;
     }
     if (!s_streaming || n == 0) return;
     if (ovf) {
-        s_ovf_events++;
-        send_event("FIFO_OVF", "fifo overflowed - samples lost");
+        p->ovf_events++;
+        send_sensor_event(p, "FIFO_OVF", "fifo overflowed - samples lost");
     }
 
     // per-sample time, oldest first: t_k = now - (n-1-k) * period   (PROTOCOL.md timing rule 1)
     static int64_t t_us[MAX30102_FIFO_DEPTH];
     for (int k = 0; k < n; k++) t_us[k] = now_us - ((int64_t)(n - 1 - k) * s_period_ns) / 1000;
-    if (s_sensor.n_leds == 2) {
-        link_write_samples(s_seq, t_us, ir, red, n, s_period_ns);  // ch order: ir|red
+    if (p->dev.n_leds == 2) {
+        link_write_samples(p->sid, p->seq, t_us, ir, red, n, s_period_ns);  // ch order: ir|red
     } else {
-        link_write_samples(s_seq, t_us, red, NULL, n, s_period_ns);
+        link_write_samples(p->sid, p->seq, t_us, red, NULL, n, s_period_ns);
     }
-    s_seq += (uint32_t)n;
-    s_samples_window += (uint32_t)n;
+    p->seq += (uint32_t)n;
+    p->samples_window += (uint32_t)n;
 }
 
 // First sensor connection. Runs in sensor_task so the I2C driver's interrupt is allocated on the
@@ -398,50 +492,58 @@ static void read_and_send(void)
 // the 80 ms FIFO to overflow.
 static void sensor_first_open(void)
 {
-    esp_err_t err = sensor_open();
-    s_sensor_ok = (err == ESP_OK);
-    if (!s_sensor_ok) {
-        ESP_LOGW(TAG, "MAX30102 not found (%s) - will keep retrying", esp_err_to_name(err));
-    } else {
-        const char *w = max30102_timing_warning(&s_cfg);
-        if (w) {
-            ESP_LOGW(TAG, "%s", w);
-            send_event("SENSOR_ERR", w);
+    for (int i = 0; i < N_PPG; i++) {
+        ppg_sensor_t *p = &s_ppg[i];
+        esp_err_t err = sensor_open(p);
+        p->ok = (err == ESP_OK);
+        if (!p->ok) {
+            ESP_LOGW(TAG, "MAX30102 %s not found (%s) - will keep retrying", p->sid ? p->stream : "",
+                     esp_err_to_name(err));
+        } else if (i == 0) {  // same settings on every sensor: warn once
+            const char *w = max30102_timing_warning(&s_cfg);
+            if (w) {
+                ESP_LOGW(TAG, "%s", w);
+                send_event("SENSOR_ERR", w);
+            }
         }
     }
     send_header();
     note_state();
 }
 
+// Reconnect a missing sensor (once a second). A sensor that comes back mid-recording restarts the
+// stream (new H lines, START: every sensor's seq from 0), as with one sensor.
+static void sensor_retry(ppg_sensor_t *p)
+{
+    int64_t now = esp_timer_get_time();
+    if (now - p->last_retry_us <= 1000000) return;
+    p->last_retry_us = now;
+    esp_err_t err = sensor_open(p);
+    p->ok = (err == ESP_OK);
+    note_state();
+    if (p->ok) {
+        ESP_LOGI(TAG, "MAX30102 %s found", p->sid ? p->stream : "");
+        const char *w = max30102_timing_warning(&s_cfg);
+        if (w) send_sensor_event(p, "SENSOR_ERR", w);
+        if (s_streaming) start_streaming();
+    } else {
+        send_sensor_event(p, "SENSOR_ERR", "MAX30102 not found - check wiring/power");
+    }
+}
+
 static void sensor_task(void *arg)
 {
     (void)arg;
-    if (!s_bus) sensor_first_open();
+    if (!s_ppg[0].bus) sensor_first_open();
     int64_t last_status_us = esp_timer_get_time();
     int64_t last_sync_us = last_status_us;
-    int64_t last_retry_us = 0;
     bool temp_pending = false;
     (void)temp_pending;  // unused when die-temperature reporting is off
 
     for (;;) {
-        // ---- (re)connect the sensor
-        if (!s_sensor_ok) {
-            int64_t now = esp_timer_get_time();
-            if (now - last_retry_us > 1000000) {
-                last_retry_us = now;
-                esp_err_t err = sensor_open();
-                s_sensor_ok = (err == ESP_OK);
-                note_state();
-                if (s_sensor_ok) {
-                    ESP_LOGI(TAG, "MAX30102 found");
-                    const char *w = max30102_timing_warning(&s_cfg);
-                    if (w) send_event("SENSOR_ERR", w);
-                    if (s_streaming) start_streaming();
-                } else {
-                    send_event("SENSOR_ERR", "MAX30102 not found - check wiring/power");
-                }
-            }
-        }
+        // ---- (re)connect missing sensors
+        for (int i = 0; i < N_PPG; i++)
+            if (!s_ppg[i].ok) sensor_retry(&s_ppg[i]);
 
         // ---- commands from the PC (set by cmd_task)
         if (atomic_exchange(&s_req_info, false)) {
@@ -456,9 +558,9 @@ static void sensor_task(void *arg)
 #endif
         if (atomic_exchange(&s_req_start, false)) {
 #if CONFIG_PPG_CAMERA
-            bool can_start = s_sensor_ok || camera_ok();  // either stream alone is still worth recording
+            bool can_start = any_sensor_ok() || camera_ok();  // either stream alone is still worth recording
 #else
-            bool can_start = s_sensor_ok;
+            bool can_start = any_sensor_ok();  // dual glasses: one side alone is still worth recording
 #endif
 #if CONFIG_PPG_AUX
             can_start = can_start || xs_any_ok();
@@ -478,17 +580,19 @@ static void sensor_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(CONFIG_PPG_FIFO_POLL_MS));
 #endif
         int64_t t0 = esp_timer_get_time();
-        if (s_sensor_ok) {
-            read_and_send();
+        for (int i = 0; i < N_PPG; i++) {  // every sensor in the same pass (the INT pin is sensor 0's)
+            ppg_sensor_t *p = &s_ppg[i];
+            if (!p->ok) continue;
+            read_and_send(p);
 #if CONFIG_PPG_INT_GPIO >= 0
             uint8_t st1, st2;
-            if (max30102_read_int_status(&s_sensor, &st1, &st2) == ESP_OK && (st1 & MAX30102_INT_ALC_OVF)) {
-                s_alc_ovf_events++;
+            if (max30102_read_int_status(&p->dev, &st1, &st2) == ESP_OK && (st1 & MAX30102_INT_ALC_OVF)) {
+                p->alc_ovf_events++;
             }
 #endif
-            if (s_i2c_errors > 200) {  // sensor unplugged? go back to reconnecting
-                s_sensor_ok = false;
-                s_i2c_errors = 0;
+            if (p->i2c_errors > 200) {  // sensor unplugged? go back to reconnecting
+                p->ok = false;
+                p->i2c_errors = 0;
                 note_state();
             }
         }
@@ -506,24 +610,28 @@ static void sensor_task(void *arg)
         if (now - last_status_us >= (int64_t)CONFIG_PPG_STATUS_PERIOD_MS * 1000) {
             uint32_t window_ms = (uint32_t)((now - last_status_us) / 1000);
             last_status_us = now;
-            if (s_sensor_ok) {
 #if CONFIG_PPG_INT_GPIO < 0
+            for (int i = 0; i < N_PPG; i++) {
+                ppg_sensor_t *p = &s_ppg[i];
                 uint8_t st1, st2;  // ALC_OVF is latched: one read per period catches it
-                if (max30102_read_int_status(&s_sensor, &st1, &st2) == ESP_OK && (st1 & MAX30102_INT_ALC_OVF)) {
-                    s_alc_ovf_events++;
+                if (p->ok && max30102_read_int_status(&p->dev, &st1, &st2) == ESP_OK && (st1 & MAX30102_INT_ALC_OVF)) {
+                    p->alc_ovf_events++;
                 }
+            }
 #endif
 #if CONFIG_PPG_REPORT_DIE_TEMP
+            if (s_ppg[0].ok) {  // the primary sensor's
                 if (temp_pending) {
                     bool ready = false;
                     int32_t c;
-                    if (max30102_read_temp(&s_sensor, &c, &ready) == ESP_OK && ready) s_temp_centi = c;
+                    if (max30102_read_temp(&s_ppg[0].dev, &c, &ready) == ESP_OK && ready) s_temp_centi = c;
                 }
-                temp_pending = (max30102_start_temp(&s_sensor) == ESP_OK);
-#endif
+                temp_pending = (max30102_start_temp(&s_ppg[0].dev) == ESP_OK);
             }
+#endif
             if (s_streaming) send_status(window_ms);
-            else s_samples_window = 0;
+            else
+                for (int i = 0; i < N_PPG; i++) s_ppg[i].samples_window = 0;
         }
 #else
         (void)last_status_us;

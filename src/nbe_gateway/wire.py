@@ -4,6 +4,7 @@
                 0x01 text     one protocol line "$...*CS" (no CR/LF)
                 0x02 samples  compact delta-coded D samples
                 0x03 frame    sid u8 | seq u32 | t_us u64 | w u16 | h u16 | fmt u8 | exposure u16 | gain u8 | data
+                0x04 samples of stream sid (protocol v2.2, dual-PPG glasses): sid u8 | a 0x02 body
     envelope  0xA5 0x5A | len u32 | crc32 u32 (of the records) | records      USB binary link (board -> PC)
     NB frame  'N' 'B' | ver 2 | flags 0 | boot u32 | offset u64 | crc32 u32 | records    MQTT data topic
 
@@ -15,7 +16,7 @@ import struct
 import zlib
 from typing import Iterator, List, NamedTuple, Optional, Tuple, Union
 
-REC_TEXT, REC_SAMPLES, REC_FRAME = 0x01, 0x02, 0x03
+REC_TEXT, REC_SAMPLES, REC_FRAME, REC_SAMPLES_SID = 0x01, 0x02, 0x03, 0x04  # the gateway forwards all unchanged
 FMT_GRAY8, FMT_JPEG = 0, 1
 FMT_NAMES = {FMT_GRAY8: "gray8", FMT_JPEG: "jpeg"}
 

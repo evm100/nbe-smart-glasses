@@ -33,6 +33,13 @@ gcc $CF -DTEST_USB_BIN -Istubs_cam -o sim_aux_usbbin sim.c ../main/max30102.c ..
     ../main/frame.c ../main/link_usb_bin.c ../main/camera.c $XS
 gcc $CF -DTEST_HYBRID -Istubs_net -Istubs_cam -o sim_aux_hybrid sim.c ../main/max30102.c ../main/proto.c ../main/diag.c \
     ../main/frame.c ../main/link_mqtt.c ../main/usbgw.c ../main/camera.c mqtt_fake.c $XS
+# protocol v2.2, dual-PPG glasses (sdkconfig.dual): a second MAX30102 on I2C port 1, on the USB text link
+# (M lines), MQTT (0x04 records) and hybrid without camera (Wi-Fi -> USB gateway -> Wi-Fi)
+gcc $CF -DTEST_DUAL -o sim_dual $SRC
+gcc $CF -DTEST_DUAL $MQ -o sim_dual_mqtt sim.c ../main/max30102.c ../main/proto.c ../main/diag.c ../main/frame.c \
+    ../main/link_mqtt.c mqtt_fake.c
+gcc $CF -DTEST_DUAL -DTEST_HYBRID -Istubs_net -Istubs_cam -o sim_dual_hybrid sim.c ../main/max30102.c ../main/proto.c \
+    ../main/diag.c ../main/frame.c ../main/link_mqtt.c ../main/usbgw.c ../main/camera.c mqtt_fake.c
 # the copy-me sensor template is not part of any build: keep it compiling
 gcc $CF -DCONFIG_PPG_AUX=1 -DCONFIG_PPG_AUX_TEMPLATE=1 -fsyntax-only ../main/xstream_template.c
 # compile-check the Wi-Fi code and the other Kconfig variants against stub headers
@@ -80,6 +87,17 @@ grep "hybrid:" hybrid_log.txt
 rm -f frames_mqtt.bin
 ./sim_aux_hybrid 12 > out_aux_hybrid.bin 2>hybrid_log.txt || { cat hybrid_log.txt; exit 1; }
 "${PYTHON:-python3}" check_xstream.py hybrid out_aux_hybrid.bin
+./sim_dual 4 > out_dual.txt 2>/dev/null
+"${PYTHON:-python3}" check_dual.py text out_dual.txt
+./sim_dual 4 1 0 > out_dual.txt 2>/dev/null   # right sensor unplugged
+"${PYTHON:-python3}" check_dual.py text out_dual.txt --no-right
+rm -f frames_mqtt.bin
+./sim_dual_mqtt 6 > /dev/null 2>mqtt_log.txt || { cat mqtt_log.txt; exit 1; }
+"${PYTHON:-python3}" check_dual.py mqtt frames_mqtt.bin
+rm -f frames_mqtt.bin
+./sim_dual_hybrid 8 > out_dual_hybrid.bin 2>hybrid_log.txt || { cat hybrid_log.txt; exit 1; }
+"${PYTHON:-python3}" check_dual.py hybrid out_dual_hybrid.bin
 rm -f sim sim_int sim_uart sim_hr sim_slow sim_mqtt mqtt_log.txt frames_mqtt.bin out_mqtt_usb.txt \
       sim_usbbin out_usbbin.bin usbbin_log.txt sim_hybrid sim_hybrid_outage out_hybrid_usb.bin hybrid_log.txt \
-      sim_aux sim_aux_usbbin sim_aux_hybrid out_aux_usbbin.bin out_aux_hybrid.bin
+      sim_aux sim_aux_usbbin sim_aux_hybrid out_aux_usbbin.bin out_aux_hybrid.bin \
+      sim_dual sim_dual_mqtt sim_dual_hybrid out_dual.txt out_dual_hybrid.bin

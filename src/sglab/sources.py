@@ -86,7 +86,7 @@ class SimSource:
                  realtime: bool = True, dia_amp: tuple = (0.6, 0.3), duration_s: float = 600.0,
                  dc: float = 120_000, perfusion: float = 0.02, noise_frac: float = 0.03,
                  motion: tuple = (), camera: bool = False, cam_fps: float = 25.0, cam_size: int = 160,
-                 aux: bool = False, edge_features: bool = False):
+                 aux: bool = False, edge_features: bool = False, dual: bool = False, site: str = "sim"):
         from ppg.synthetic import make_recording
 
         self.port = "sim://" + dev
@@ -99,6 +99,20 @@ class SimSource:
                                noise_frac=noise_frac)
         self._ir = df["IR"].to_numpy()
         self._red = df["RED"].to_numpy()
+        self.site = site
+        # optional second PPG sensor (protocol v2.2, dual-PPG glasses): its own seq and timestamps, 1 % fast
+        # (its own oscillator), the pulse arriving 4 ms later and weaker; sent as M lines like a board's
+        # USB text link does
+        self.dual = dual
+        self.fs2 = fs * 1.01
+        self._seq2 = 0
+        if dual:
+            df2, _ = make_recording(duration_s=duration_s, fs=self.fs2, hr_bpm=hr_bpm * 1.01,
+                                    motion=[tuple(m) for m in motion], dropouts=[], jitter_ms=0, seed=seed + 1000,
+                                    dia_amp=tuple(dia_amp),
+                                    channels={"IR": (0.9 * dc, 0.8 * perfusion), "RED": (0.7 * dc, 0.4 * perfusion)},
+                                    noise_frac=noise_frac)
+            self._ir2, self._red2 = df2["IR"].to_numpy(), df2["RED"].to_numpy()
         self._out: deque[str] = deque()
         self._lock = threading.Lock()
         self._streaming = False
@@ -124,7 +138,7 @@ class SimSource:
         if self.aux:
             out.append(encode(f"{base},sid=2,stream=sweat,kind=samples,sensor=SIM-CHEM,fs=1,"
                               "ch=glucose|lactate|cortisol,unit=uM|mM|ng/mL,site=sim,sensor_ok=1"))
-            out.append(encode(f"{base},sid=4,stream=skin,kind=samples,sensor=SIM-TEMP,fs=0.5,"
+            out.append(encode(f"{base},sid=5,stream=skin,kind=samples,sensor=SIM-TEMP,fs=0.5,"
                               "ch=skin_temp,unit=degC,site=sim,sensor_ok=1"))
         if self.edge_features:
             out.append(encode(f"{base},sid=3,stream=cam_feat,kind=features,src=cam,algo=framestats@1,sensor=SIM-EYE,"
@@ -132,7 +146,7 @@ class SimSource:
         return out
 
     def _generate_aux(self, t_start_us: int, el: float) -> None:
-        for k, (sid, fs) in enumerate(((2, 1.0), (4, 0.5))):
+        for k, (sid, fs) in enumerate(((2, 1.0), (5, 0.5))):
             while self._aux_seq[k] < int(el * fs) + 1:
                 i = self._aux_seq[k]
                 ts = i / fs
@@ -142,7 +156,7 @@ class SimSource:
                     co = f"{8 + 3 * np.sin(ts / 400 + 2) + self.rng.normal(0, 0.3):.2f}" if i % 5 == 0 else ""
                     body = f"M,2,{i},{t_start_us + int(ts * 1e6)},{g:.1f},{la:.2f},{co}"
                 else:
-                    body = f"M,4,{i},{t_start_us + int(ts * 1e6)},{33.5 + 0.6 * np.sin(ts / 300) + self.rng.normal(0, 0.03):.2f}"
+                    body = f"M,5,{i},{t_start_us + int(ts * 1e6)},{33.5 + 0.6 * np.sin(ts / 300) + self.rng.normal(0, 0.03):.2f}"
                 self._push(encode(body))
                 self._aux_seq[k] += 1
 
@@ -151,7 +165,16 @@ class SimSource:
 
     def _header(self) -> str:
         return encode(f"H,proto=1,dev={self.dev},fw=sim-0.1,sensor=SIM,fs={self.fs:g},ch=ir|red,"
-                      f"adc=18,led_ma=6.4|6.4,pw_us=411,avg=1,site=sim")
+                      f"adc=18,led_ma=6.4|6.4,pw_us=411,avg=1,site={self.site}")
+
+    def _headers(self) -> list[str]:
+        out = [self._header()]
+        if self.dual:
+            out.append(encode(f"H,proto=2,dev={self.dev},fw=sim-0.1,sid=4,stream=ppg_r,kind=ppg,sensor=SIM,fs={self.fs:g},"
+                              f"ch=ir|red,adc=18,led_ma=6.4|6.4,pw_us=411,avg=1,site=glasses_r,sensor_ok=1"))
+        if self.camera:
+            out.append(self._cam_header())
+        return out + self._aux_headers()
 
     def _cam_header(self) -> str:
         n = self.cam_size
@@ -165,19 +188,13 @@ class SimSource:
     def write(self, cmd: str) -> None:
         c = cmd.strip().upper()
         if c == "INFO":
-            self._push(self._header())
-            if self.camera:
-                self._push(self._cam_header())
-            for h in self._aux_headers():
+            for h in self._headers():
                 self._push(h)
         elif c == "START":
-            self._seq = 0
+            self._seq = self._seq2 = 0
             self._cam_seq = 0
             self._aux_seq = [0, 0, 0]
-            self._push(self._header())
-            if self.camera:
-                self._push(self._cam_header())
-            for h in self._aux_headers():
+            for h in self._headers():
                 self._push(h)
             self._push(encode(f"E,{self._now_us()},START,"))
             self._t_start = time.monotonic()
@@ -198,12 +215,20 @@ class SimSource:
             now = time.monotonic()
             if now - getattr(self, "_last_status", self._t_start) >= 1.0:
                 self._last_status = now
-                self._push(encode(f"S,{self._now_us()},fs_meas={self.fs:.1f},ovf=0,alc_ovf=0,i2c_err=0,tx_drop=0,temp_c=31.25"))
+                r = f",ppg_r_ok=1,ppg_r_fs_meas={self.fs2:.1f},ppg_r_ovf=0,ppg_r_alc_ovf=0,ppg_r_i2c_err=0" if self.dual else ""
+                self._push(encode(f"S,{self._now_us()},fs_meas={self.fs:.1f},ovf=0,alc_ovf=0,i2c_err=0{r},tx_drop=0,temp_c=31.25"))
         t_start_us = self._boot_us + int((self._t_start - self._t0) * 1e6)
         if self.camera:
             self._generate_frames(t_start_us)
         if self.aux:
             self._generate_aux(t_start_us, (time.monotonic() - self._t_start) if self.realtime else (self._seq / self.fs))
+        if self.dual:
+            el = (time.monotonic() - self._t_start) if self.realtime else (self._seq / self.fs)
+            due2 = min(int(el * self.fs2) + 1, self._ir2.size)
+            while self._seq2 < due2:
+                i = self._seq2
+                self._push(encode(f"M,4,{i},{t_start_us + 4000 + int(i * 1e6 / self.fs2)},{self._ir2[i]},{self._red2[i]}"))
+                self._seq2 += 1
         while self._seq < due:
             i = self._seq
             t_us = t_start_us + int(i * 1e6 / self.fs)

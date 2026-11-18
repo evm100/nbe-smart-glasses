@@ -86,7 +86,7 @@ def models_page(request: Request, user=viewer):
     from ..dataset import subject_code
     best = []
     by_key = {f"{m['name']}/{m['run_id']}": m for m in runs}
-    for role in ("glasses", "finger", "head"):
+    for role in ("glasses", "glasses_l", "glasses_r", "finger", "head"):
         d = default_run(s, role)
         if d and d["key"] in by_key:
             m = by_key[d["key"]]
@@ -156,8 +156,9 @@ async def sweep(request: Request, user=operator):
     s = ctx.settings
     base = mdl.layer4_config(s)
     role = str(f.get("role") or base.role)
-    if role not in ("finger", "glasses", "head"):
-        raise HTTPException(400, "role: finger, glasses or head")
+    from ..processing import SITES
+    if role not in SITES:
+        raise HTTPException(400, "role: " + ", ".join(SITES))
     base = type(base).from_dict({**base.to_dict(), "role": role})
     spec = sweep_spec(s)
     try:

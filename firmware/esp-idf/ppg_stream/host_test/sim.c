@@ -19,7 +19,7 @@ int64_t esp_timer_get_time(void) { return g_now_us; }
 uint32_t esp_get_free_heap_size(void) { return 300000; }
 esp_reset_reason_t esp_reset_reason(void) { return ESP_RST_POWERON; }
 
-#if defined(TEST_USB_BIN) || defined(TEST_HYBRID)
+#if CONFIG_PPG_CAMERA  // camera builds (USB binary, hybrid; not the dual-PPG hybrid)
 #include "esp_camera.h"
 // fake OV2640: 30 frames/s, pixel (x, y) of native frame k = (k + x + 3y) & 0xFF; the firmware's
 // 15 fps cap sends every other one. The host "stops reading" for a few USB writes mid-frame
@@ -93,12 +93,14 @@ static void advance(TickType_t ms)
         last_tick = g_now_us;
         link_hybrid_test_tick();
     }
+#if CONFIG_PPG_CAMERA
     if (!g_in_cam && g_now_us >= g_next_frame_us) {
         g_in_cam = 1;
         g_next_frame_us += 33333;
         camera_test_tick();
         g_in_cam = 0;
     }
+#endif
 #endif
 #ifdef TEST_MQTT
     // stands in for the sender task; the broker is unreachable from 1.3 s to 2.9 s
@@ -163,87 +165,97 @@ esp_err_t uart_set_pin(uart_port_t n, int tx, int rx, int a, int b) { (void)n; (
 int uart_write_bytes(uart_port_t n, const void *src, size_t size) { (void)n; fwrite(src, 1, size, stdout); return (int)size; }
 int uart_read_bytes(uart_port_t n, void *b, uint32_t l, uint32_t t) { (void)n; (void)b; (void)l; (void)t; return 0; }
 
-// ---- simulated MAX30102
-static uint8_t R[256];
-static uint32_t F_red[32], F_ir[32];
-static int f_wr, f_rd, f_cnt, f_ovf;
-static int64_t next_due_us = -1;
-static uint32_t idx;  // ground-truth sample index
-static int present = 1;
-struct i2c_bus_t { int x; };
-struct i2c_dev_t { int x; };
-static struct i2c_bus_t bus_obj;
-static struct i2c_dev_t dev_obj;
+// ---- simulated MAX30102s: one per I2C port (dual-PPG builds use both). Sensor 1 (the right side of
+// dual glasses) runs 1 % fast - its own oscillator - and has its own values.
+typedef struct {
+    uint8_t R[256];
+    uint32_t F_red[32], F_ir[32];
+    int f_wr, f_rd, f_cnt, f_ovf;
+    int64_t next_due_us;
+    uint32_t idx;  // ground-truth sample index
+    int present;
+    int ppm;       // rate error in parts per million
+} simsens_t;
+static simsens_t g_s[2] = {{.next_due_us = -1, .present = 1}, {.next_due_us = -1, .present = 1, .ppm = 10000}};
+static uint32_t idx;  // ground truth of sensor 0 (printed at the end)
+struct i2c_bus_t { int port; };
+struct i2c_dev_t { int port; };
+static struct i2c_bus_t bus_obj[2] = {{0}, {1}};
+static struct i2c_dev_t dev_obj[2] = {{0}, {1}};
 
-static void sim_update(void)
+static void sim_update(simsens_t *S, int k)
 {
     static const int rates[] = {50, 100, 200, 400, 800, 1000, 1600, 3200};
-    int mode = R[0x09] & 7;
-    if (mode != 2 && mode != 3) { next_due_us = -1; return; }
-    int sr = rates[(R[0x0A] >> 2) & 7];
-    int avg = 1 << ((R[0x08] >> 5) > 5 ? 5 : (R[0x08] >> 5));
-    int64_t period = 1000000LL * avg / sr;
-    if (next_due_us < 0) next_due_us = g_now_us + period;
-    while (next_due_us <= g_now_us) {
-        if (f_cnt == 32) { f_rd = (f_rd + 1) & 31; f_cnt--; if (f_ovf < 31) f_ovf++; }
-        F_red[f_wr] = idx & 0x3FFFF;
-        F_ir[f_wr] = (idx * 3 + 1) & 0x3FFFF;
-        idx++;
-        f_wr = (f_wr + 1) & 31;
-        f_cnt++;
-        next_due_us += period;
+    int mode = S->R[0x09] & 7;
+    if (mode != 2 && mode != 3) { S->next_due_us = -1; return; }
+    int sr = rates[(S->R[0x0A] >> 2) & 7];
+    int avg = 1 << ((S->R[0x08] >> 5) > 5 ? 5 : (S->R[0x08] >> 5));
+    int64_t period = 1000000LL * avg * 1000000 / ((int64_t)sr * (1000000 + S->ppm));
+    if (S->next_due_us < 0) S->next_due_us = g_now_us + period;
+    while (S->next_due_us <= g_now_us) {
+        if (S->f_cnt == 32) { S->f_rd = (S->f_rd + 1) & 31; S->f_cnt--; if (S->f_ovf < 31) S->f_ovf++; }
+        S->F_red[S->f_wr] = k ? (S->idx * 5 + 1000) & 0x3FFFF : S->idx & 0x3FFFF;
+        S->F_ir[S->f_wr] = k ? (S->idx * 7 + 3) & 0x3FFFF : (S->idx * 3 + 1) & 0x3FFFF;
+        S->idx++;
+        S->f_wr = (S->f_wr + 1) & 31;
+        S->f_cnt++;
+        S->next_due_us += period;
     }
+    if (!k) idx = S->idx;
 }
 
-esp_err_t i2c_new_master_bus(const i2c_master_bus_config_t *c, i2c_master_bus_handle_t *r) { (void)c; *r = &bus_obj; return 0; }
+esp_err_t i2c_new_master_bus(const i2c_master_bus_config_t *c, i2c_master_bus_handle_t *r)
+{ if (c->i2c_port < 0 || c->i2c_port > 1) return ESP_FAIL; *r = &bus_obj[c->i2c_port]; return 0; }
 esp_err_t i2c_master_bus_add_device(i2c_master_bus_handle_t b, const i2c_device_config_t *c, i2c_master_dev_handle_t *r)
-{ (void)b; if (c->device_address != 0x57) return ESP_FAIL; *r = &dev_obj; return 0; }
+{ if (c->device_address != 0x57) return ESP_FAIL; *r = &dev_obj[b->port]; return 0; }
 esp_err_t i2c_master_bus_rm_device(i2c_master_dev_handle_t d) { (void)d; return 0; }
 
 esp_err_t i2c_master_transmit(i2c_master_dev_handle_t d, const uint8_t *w, size_t n, int t)
 {
-    (void)d; (void)t;
-    if (!present) return ESP_FAIL;
-    sim_update();
+    (void)t;
+    simsens_t *S = &g_s[d->port];
+    if (!S->present) return ESP_FAIL;
+    sim_update(S, d->port);
     if (n < 2) return 0;
     uint8_t reg = w[0], v = w[1];
-    if (reg == 0x09 && (v & 0x40)) { memset(R, 0, sizeof R); f_wr = f_rd = f_cnt = f_ovf = 0; next_due_us = -1; return 0; }
-    if (reg == 0x04) { f_wr = v & 31; f_cnt = (f_wr - f_rd) & 31; return 0; }
-    if (reg == 0x05) { f_ovf = v & 31; return 0; }
-    if (reg == 0x06) { f_rd = v & 31; f_cnt = (f_wr - f_rd) & 31; return 0; }
-    R[reg] = v;
-    if (reg == 0x09) next_due_us = -1;
+    if (reg == 0x09 && (v & 0x40)) { memset(S->R, 0, sizeof S->R); S->f_wr = S->f_rd = S->f_cnt = S->f_ovf = 0; S->next_due_us = -1; return 0; }
+    if (reg == 0x04) { S->f_wr = v & 31; S->f_cnt = (S->f_wr - S->f_rd) & 31; return 0; }
+    if (reg == 0x05) { S->f_ovf = v & 31; return 0; }
+    if (reg == 0x06) { S->f_rd = v & 31; S->f_cnt = (S->f_wr - S->f_rd) & 31; return 0; }
+    S->R[reg] = v;
+    if (reg == 0x09) S->next_due_us = -1;
     return 0;
 }
 
 esp_err_t i2c_master_transmit_receive(i2c_master_dev_handle_t d, const uint8_t *w, size_t wn, uint8_t *r, size_t rn, int t)
 {
-    (void)d; (void)t; (void)wn;
-    if (!present) return ESP_FAIL;
-    sim_update();
+    (void)t; (void)wn;
+    simsens_t *S = &g_s[d->port];
+    if (!S->present) return ESP_FAIL;
+    sim_update(S, d->port);
     uint8_t reg = w[0];
     if (reg == 0x07) {
-        int nleds = (R[0x09] & 7) == 3 ? 2 : 1;
+        int nleds = (S->R[0x09] & 7) == 3 ? 2 : 1;
         size_t bps = 3u * (size_t)nleds;
         for (size_t i = 0; i + bps <= rn; i += bps) {
-            uint32_t red = f_cnt ? F_red[f_rd] : 0, ir = f_cnt ? F_ir[f_rd] : 0;
-            if (f_cnt) { f_rd = (f_rd + 1) & 31; f_cnt--; }
+            uint32_t red = S->f_cnt ? S->F_red[S->f_rd] : 0, ir = S->f_cnt ? S->F_ir[S->f_rd] : 0;
+            if (S->f_cnt) { S->f_rd = (S->f_rd + 1) & 31; S->f_cnt--; }
             r[i] = (uint8_t)(red >> 16); r[i + 1] = (uint8_t)(red >> 8); r[i + 2] = (uint8_t)red;
             if (nleds == 2) { r[i + 3] = (uint8_t)(ir >> 16); r[i + 4] = (uint8_t)(ir >> 8); r[i + 5] = (uint8_t)ir; }
         }
-        f_ovf = 0;  // reading data clears the overflow counter in this model
+        S->f_ovf = 0;  // reading data clears the overflow counter in this model
         return 0;
     }
     for (size_t i = 0; i < rn; i++, reg++) {
         switch (reg) {
-        case 0x04: r[i] = (uint8_t)f_wr; break;
-        case 0x05: r[i] = (uint8_t)f_ovf; break;
-        case 0x06: r[i] = (uint8_t)f_rd; break;
+        case 0x04: r[i] = (uint8_t)S->f_wr; break;
+        case 0x05: r[i] = (uint8_t)S->f_ovf; break;
+        case 0x06: r[i] = (uint8_t)S->f_rd; break;
         case 0x1F: r[i] = 31; break;
         case 0x20: r[i] = 4; break;   // 31.25 C
         case 0x21: r[i] = 0; break;   // conversion done
         case 0xFF: r[i] = 0x15; break;
-        default: r[i] = R[reg];
+        default: r[i] = S->R[reg];
         }
     }
     return 0;
@@ -252,7 +264,8 @@ esp_err_t i2c_master_transmit_receive(i2c_master_dev_handle_t d, const uint8_t *
 int main(int argc, char **argv)
 {
     double secs = argc > 1 ? atof(argv[1]) : 3.0;
-    if (argc > 2) present = atoi(argv[2]);
+    if (argc > 2) g_s[0].present = atoi(argv[2]);
+    if (argc > 3) g_s[1].present = atoi(argv[3]);  // dual builds: the right sensor
     g_end_us = g_now_us + 100000;
     app_main();                       // boot: link, sensor init, BOOT event, header
     handle_command("INFO");
@@ -309,6 +322,6 @@ int main(int argc, char **argv)
             (unsigned long)link_dropped_bytes());
     if (g_batches < 20 || g_dropped_frames != 1 || !g_resends_asked || link_dropped_bytes()) return 1;
 #endif
-    fprintf(stderr, "simulated samples generated: %u\n", idx);
+    fprintf(stderr, "simulated samples generated: %u (sensor 1: %u)\n", idx, g_s[1].idx);
     return 0;
 }

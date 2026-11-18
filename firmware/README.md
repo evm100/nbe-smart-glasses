@@ -5,7 +5,7 @@ share it with anyone who flashes boards (they don't need the rest of the repo).
 
 | Path | What |
 |---|---|
-| `PROTOCOL.md` | PPG protocol v1: the lines every board sends (USB or MQTT) |
+| `PROTOCOL.md` | PPG protocol (v1 lines; v2 camera / USB gateway; v2.1 further sensors; v2.2 a second PPG): what every board sends (USB or MQTT) |
 | `esp-idf/ppg_stream/` | **Main firmware**: ESP-IDF v6.x project for XIAO ESP32-S3 + MAX30102, USB or Wi-Fi/MQTT link, configured in `idf.py menuconfig` |
 | `tools/nbe_node.py` | **Node provisioning tool** (Python 3.9+, no packages): registers a node on the NBE server or fetches its credentials, writes them into the ESP-IDF project, optionally builds + flashes |
 | `arduino/ppg_stream/` | Older Arduino reference sketch (SparkFun library), kept for comparison |
@@ -30,6 +30,17 @@ again (same ID) and `idf.py build flash`. `configure FNG02 --flash -p COM5` does
 
 The board then shows up on the server's **Devices** page within ~15 s, and anyone with the
 operator role can record from it in the browser.
+
+## Dual-PPG glasses (a sensor at each temple, one board)
+
+```bash
+python tools/nbe_node.py register GLS04 --site glasses_l   # the left sensor is the board's own stream
+python tools/nbe_node.py configure GLS04 --dual [--hybrid] # sdkconfig.dual: second MAX30102 on D8/D9
+```
+
+Wiring: left MAX30102 on D4 (SDA) / D5 (SCL) as usual, right MAX30102 on **D8 (SDA) / D9 (SCL)**, both on
+3.3 V and GND. No camera on these boards. The server records the right side as its own stream,
+`glasses_r` (protocol v2.2, `../docs/DUAL_PPG.md`). On the server: `deploy/evmserver/build-firmware.sh --dual GLS04`.
 
 ## USB board for a lab PC
 

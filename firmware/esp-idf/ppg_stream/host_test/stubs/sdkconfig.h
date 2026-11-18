@@ -4,7 +4,17 @@
 #pragma once
 
 #define CONFIG_PPG_DEVICE_ID "FNG01"
+#ifdef TEST_DUAL
+// dual-PPG glasses (sdkconfig.dual): a second MAX30102 on I2C port 1, no camera
+#define CONFIG_PPG_SITE "glasses_l"
+#define CONFIG_PPG_PPG2 1
+#define CONFIG_PPG_PPG2_SITE "glasses_r"
+#define CONFIG_PPG_PPG2_I2C_PORT 1
+#define CONFIG_PPG_PPG2_I2C_SDA_GPIO 7
+#define CONFIG_PPG_PPG2_I2C_SCL_GPIO 8
+#else
 #define CONFIG_PPG_SITE "finger"
+#endif
 #define CONFIG_PPG_BOARD_NAME "XIAO_ESP32S3"
 
 #define CONFIG_PPG_I2C_PORT 0
@@ -49,6 +59,7 @@
 // hybrid camera glasses: Wi-Fi + MQTT, USB gateway takeover, OV2640 (frames in the MQTT ring)
 #define CONFIG_PPG_LINK_HYBRID 1
 #define CONFIG_PPG_LINK_WIFI 1
+#ifndef TEST_DUAL  // dual-PPG glasses: hybrid without the camera
 #define CONFIG_PPG_CAMERA 1
 #define CONFIG_PPG_CAM_SIZE_240 1
 #define CONFIG_PPG_CAM_FPS 15
@@ -59,6 +70,7 @@
 #define CONFIG_PPG_CAM_GAIN 2
 #define CONFIG_PPG_CAM_VFLIP 1
 #define CONFIG_PPG_CAM_HMIRROR 1
+#endif
 #define CONFIG_PPG_MQTT_CAM_SHARE_PCT 50
 #elif defined(TEST_MQTT)
 #define CONFIG_PPG_LINK_MQTT 1

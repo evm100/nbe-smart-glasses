@@ -14,9 +14,11 @@
 esp_err_t link_init(void);
 // Thread-safe. Writes whole buffer or as much as fits; returns bytes written. Whole protocol lines.
 int link_write(const char *buf, size_t len);
-// n consecutive samples (seq0, seq0+1, ...) with their device times; ch1 = NULL for one channel.
-// USB/UART: D lines; MQTT: a compact binary record (frame.h). Never blocks on the network.
-void link_write_samples(uint32_t seq0, const int64_t *t_us, const uint32_t *ch0, const uint32_t *ch1, int n,
+// n consecutive samples (seq0, seq0+1, ...) of PPG stream `sid` with their device times; ch1 = NULL
+// for one channel. sid 0 = the board's primary PPG; other sids (protocol v2.2, the second sensor of
+// dual glasses) have their own seq. USB/UART: D lines (sid 0) or M lines; MQTT / USB binary: a compact
+// binary record (frame.h: REC_SAMPLES / REC_SAMPLES_SID). Never blocks on the network.
+void link_write_samples(uint8_t sid, uint32_t seq0, const int64_t *t_us, const uint32_t *ch0, const uint32_t *ch1, int n,
                         int64_t period_ns);
 // One camera frame (protocol v2 frame record, stream `sid`). USB binary link only (elsewhere it
 // returns false): false = not sent (no host / host too slow); its seq is then missing on the PC.

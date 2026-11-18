@@ -285,7 +285,7 @@ class TrialManager:
             if t.rec is None:
                 return []
             out, now = [], t.rec.now()
-            for i, w in enumerate(t.rec.workers):
+            for i, w in enumerate(t.rec.ppg_streams):
                 buf = list(w.live)
                 base = {"stream": w.stream_name or w.role, "role": w.role, "now": round(now, 3),
                         "next": int(buf[-1][2]) + 1 if buf else (after[i] if after and i < len(after) else 0),

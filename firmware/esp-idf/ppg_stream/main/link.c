@@ -72,7 +72,7 @@ int link_read(uint8_t *buf, size_t max, uint32_t timeout_ms)
     return n < 0 ? 0 : n;
 }
 
-void link_write_samples(uint32_t seq0, const int64_t *t_us, const uint32_t *ch0, const uint32_t *ch1, int n,
+void link_write_samples(uint8_t sid, uint32_t seq0, const int64_t *t_us, const uint32_t *ch0, const uint32_t *ch1, int n,
                         int64_t period_ns)
 {
     (void)period_ns;
@@ -85,7 +85,13 @@ void link_write_samples(uint32_t seq0, const int64_t *t_us, const uint32_t *ch0,
         }
         pline_t l;
         pl_begin(&l, &buf[used], sizeof buf - used);
-        pl_str(&l, "D,");
+        if (sid) {  // protocol v2.2: a further PPG stream travels as M lines on the text link
+            pl_str(&l, "M,");
+            pl_u64(&l, sid);
+            pl_char(&l, ',');
+        } else {
+            pl_str(&l, "D,");
+        }
         pl_u64(&l, seq0 + (uint32_t)k);
         pl_char(&l, ',');
         pl_i64(&l, t_us[k]);
