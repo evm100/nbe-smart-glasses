@@ -313,6 +313,51 @@ async def api_trial_event(request: Request, tid: str, user=operator):
         return JSONResponse({"error": str(e)}, status_code=400)
 
 
+# ---- auto-cuff (sglab.autocuff): scheduled BP readings during the trial -------------------
+def _cuffs(ctx):
+    if ctx.cuffs is None:
+        raise HTTPException(503, "auto-cuff support is not running")
+    return ctx.cuffs
+
+
+@router.get("/api/trials/{tid}/cuff")
+def api_trial_cuff(request: Request, tid: str, user=operator):
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    return _cuffs(ctx).trial_state(tid)
+
+
+@router.post("/api/trials/{tid}/cuff")
+async def api_trial_cuff_set(request: Request, tid: str, user=operator):
+    """Body: any of {"node_id": "CUF01", "enabled": true, "interval_s": 300}."""
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    body = await request.json()
+    try:
+        b = _cuffs(ctx).configure(tid, node_id=body.get("node_id"), enabled=body.get("enabled"),
+                                  interval_s=body.get("interval_s"))
+    except TrialError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    ctx.audit(request, "trial.cuff", tid, {k: body[k] for k in ("node_id", "enabled", "interval_s") if k in body})
+    return b
+
+
+@router.post("/api/trials/{tid}/cuff/{action}")
+def api_trial_cuff_action(request: Request, tid: str, action: str, user=operator):
+    """action: measure (one reading now) | abort (stop the reading in progress)."""
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    cm = _cuffs(ctx)
+    try:
+        if action == "measure":
+            return cm.measure_now(tid)
+        if action == "abort":
+            return cm.abort(tid)
+    except TrialError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    raise HTTPException(404, f"unknown action {action!r}")
+
+
 @router.post("/api/trials/{tid}/stop")
 def api_trial_stop(request: Request, tid: str, user=operator):
     ctx = C(request)

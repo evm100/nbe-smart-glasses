@@ -78,6 +78,7 @@ class TrialManager:
         self.trials: dict[str, Trial] = {}
         self.claims: dict[str, str] = {}  # port -> trial id
         self.finished: dict[str, str] = {}  # trial id -> session id (so a late page load can redirect)
+        self.cuffs = None  # autocuff.CuffManager, set by the web app when MQTT is on
 
     def _cat(self) -> Catalog:
         return Catalog(self.settings.db_path, self.settings.data_root)
@@ -152,6 +153,8 @@ class TrialManager:
         return trial
 
     def _release(self, trial: Trial, drop: bool = False) -> None:
+        if drop and self.cuffs is not None:
+            self.cuffs.trial_closed(trial.id)
         with self.lock:
             for p in trial.ports:
                 if self.claims.get(p) == trial.id:
@@ -175,6 +178,8 @@ class TrialManager:
             t.state = "stopped"
             if t.analysis is not None:
                 t.analysis.stop_flag.set()
+        if self.cuffs is not None:
+            self.cuffs.trial_stopped(tid)
         self._release(t)  # devices are free for the next trial while this one is being saved
 
     def finalize(self, tid: str, post: dict, user: str | None = None) -> str:
@@ -200,6 +205,8 @@ class TrialManager:
             finally:
                 cat.close()
             t.state = "saved"
+        if self.cuffs is not None:
+            self.cuffs.trial_closed(tid)
         with self.lock:
             self.trials.pop(tid, None)
             self.finished[tid] = sid

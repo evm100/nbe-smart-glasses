@@ -166,6 +166,26 @@ details.health > summary { cursor: pointer; font-weight: 600; margin: 28px 0 10p
 </div>
 </details>
 
+<div id="ac-section" hidden>
+<h2>Automatic cuff <span class="note">a servo presses the monitor's START button; the result comes back over Bluetooth and is logged as cuff BP</span></h2>
+<div class="card stack" style="display:grid; gap:12px">
+  <div class="row-inline">
+    <b style="width:90px">Device</b>
+    <select id="ac-node"></select>
+    <span id="ac-dev"></span>
+  </div>
+  <div class="row-inline">
+    <b style="width:90px">Every</b>
+    <input type="number" id="ac-int" min="1.5" max="60" step="0.5" style="width:80px"> <span>min</span>
+    <label style="display:inline-flex; gap:6px; align-items:center; margin-left:8px"><input type="checkbox" id="ac-on"> <b>automatic readings</b></label>
+    <button id="ac-now">Measure now</button>
+    <button id="ac-abort" hidden style="border-color:var(--bad); color:var(--bad)">Abort reading</button>
+  </div>
+  <div id="ac-status" class="note"></div>
+</div>
+</div>
+<div id="ac-none" class="note" hidden style="margin-top:10px">No automatic cuff is registered. To add one, an admin registers a node with site <code>cuff</code> (Admin → Nodes).</div>
+
 <h2>Log readings &amp; markers</h2>
 <div class="card stack" style="display:grid; gap:14px">
   <div class="row-inline">
@@ -240,6 +260,75 @@ $('stop').onclick = async () => {
   const r = await fetch(API + '/stop', {method: 'POST'});
   if (r.ok) location.reload(); else flash((await r.json()).error, true);
 };
+
+// ===================================================================== automatic cuff
+let acState = null;
+async function acPost(path, body) {
+  const r = await fetch(API + '/cuff' + path, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                               body: JSON.stringify(body || {})});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { flash(d.error || d.detail || 'auto-cuff error', true); }
+  pollCuff();
+  return r.ok;
+}
+const acMin = () => parseFloat($('ac-int').value);
+$('ac-node').onchange = () => { if ($('ac-node').value) acPost('', {node_id: $('ac-node').value, interval_s: acMin() * 60}); };
+$('ac-int').onchange = () => {
+  if (!(acMin() > 0)) return;
+  acPost('', {node_id: $('ac-node').value || undefined, interval_s: Math.round(acMin() * 60)});
+};
+$('ac-on').onchange = async () => {
+  const on = $('ac-on').checked;
+  if (!await acPost('', {node_id: $('ac-node').value || undefined, interval_s: Math.round(acMin() * 60), enabled: on}))
+    $('ac-on').checked = !on;
+};
+$('ac-now').onclick = async () => {
+  if (!acState?.binding && !await acPost('', {node_id: $('ac-node').value, interval_s: Math.round(acMin() * 60)})) return;
+  if (await acPost('/measure')) flash('auto-cuff: reading started');
+};
+$('ac-abort').onclick = async () => {
+  if (confirm('Abort the reading in progress? (the cuff deflates)')) await acPost('/abort');
+};
+const fmtDur = s => s >= 60 ? `${Math.floor(s / 60)} min ${String(Math.round(s % 60)).padStart(2, '0')} s` : `${Math.round(s)} s`;
+function renderCuff(d) {
+  acState = d;
+  const any = d.cuffs.length > 0;
+  $('ac-section').hidden = !any; $('ac-none').hidden = any;
+  if (!any) return;
+  const b = d.binding, sel = $('ac-node');
+  const opts = (b ? '' : '<option value="">– choose –</option>') + d.cuffs.map(c => {
+    const taken = c.trial && (!b || c.node_id !== b.node_id);
+    return `<option value="${esc(c.node_id)}" ${taken ? 'disabled' : ''}>${esc(c.label)}${c.online ? '' : ' (offline)'}${taken ? ' (other trial)' : ''}</option>`;
+  }).join('');
+  if (sel.dataset.opts !== opts) { sel.innerHTML = opts; sel.dataset.opts = opts; }
+  if (document.activeElement !== sel) sel.value = b ? b.node_id : (d.cuffs.length === 1 && !d.cuffs[0].trial ? d.cuffs[0].node_id : '');
+  if (document.activeElement !== $('ac-int'))
+    $('ac-int').value = ((b ? b.interval_s : d.limits.default_interval_s) / 60).toString();
+  $('ac-int').min = d.limits.min_interval_s / 60; $('ac-int').max = d.limits.max_interval_s / 60;
+  $('ac-on').checked = !!(b && b.enabled);
+  const dev = d.cuffs.find(c => c.node_id === (b ? b.node_id : sel.value));
+  $('ac-dev').innerHTML = !dev ? '' : `<span class="pill ${dev.online ? 'online' : 'offline'}">${esc(dev.online ? (dev.cuff_state || 'online') : dev.state)}</span>`
+    + (dev.monitor ? ` <span class="note">${esc(dev.monitor)}${dev.fw ? ' · ' + esc(dev.fw) : ''}</span>` : '');
+  const busy = b && b.req;
+  $('ac-now').disabled = !!busy || !dev || !dev.online;
+  $('ac-abort').hidden = !busy;
+  const parts = [];
+  if (b) {
+    if (b.phase === 'requested') parts.push('<b>pressing START…</b>');
+    else if (b.phase === 'measuring') parts.push(`<b>measuring</b> for ${fmtDur(b.measuring_for_s || 0)} (inflate, deflate, Bluetooth download)`);
+    else if (b.enabled && b.next_in_s != null) parts.push(`next reading in <b>${fmtDur(b.next_in_s)}</b>`);
+    else if (!b.enabled) parts.push('automatic readings off');
+    if (b.last_reading) { const L = b.last_reading;
+      parts.push(`last: <b>${L.sys}/${L.dia}</b>${L.hr ? ' · ' + L.hr + ' bpm' : ''}${L.t_s != null ? ' at ' + L.t_s.toFixed(0) + ' s' : ''}${L.mov ? ' · <span style="color:var(--warn)">movement flagged</span>' : ''}`); }
+    parts.push(`${b.n_ok} ok${b.n_fail ? `, <span style="color:var(--bad)">${b.n_fail} failed</span>` : ''}`);
+    if (b.last_error) parts.push(`<span style="color:var(--bad)">${esc(b.last_error)}</span>`);
+  } else parts.push('choose the cuff on this subject to start');
+  $('ac-status').innerHTML = parts.join(' · ') + `<br>Readings are spaced start to start, with at least ${d.limits.min_rest_s / 60} min of rest after each one.`;
+}
+async function pollCuff() {
+  try { const r = await fetch(API + '/cuff'); if (r.ok) renderCuff(await r.json()); } catch (e) {}
+}
+pollCuff(); setInterval(pollCuff, 2000);
 
 // shared canvas helper: sized to its CSS box, crisp on HiDPI
 function ctx2d(cv) {

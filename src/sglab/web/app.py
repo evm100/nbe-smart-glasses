@@ -70,6 +70,7 @@ class Ctx:
     workers_seen: dict = field(default_factory=dict)  # worker name -> time.time() of its last poll
     model_tasks: list = field(default_factory=list)   # Models page: dataset builds, trainings, local sweeps
     eye_jobs: object | None = None                    # eyejob.EyeJobs: eye tracking of recorded camera streams
+    cuffs: object | None = None                       # autocuff.CuffManager: scheduled auto-cuff readings
 
     def cat(self) -> Catalog:
         return Catalog(self.settings.db_path, self.settings.data_root)
@@ -190,11 +191,17 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
               token=None if auth else token, firmware=FirmwareStore(settings.firmware_dir),
               jobs=JobQueue(settings.db_path) if settings.processing_mode == "remote" else None)
 
+    from ..autocuff import CuffManager
+    ctx.cuffs = CuffManager(hub, registry, ctx.manager)
+    ctx.manager.cuffs = ctx.cuffs
+
     @asynccontextmanager
     async def lifespan(app):
         if own_hub:
             hub.start()
+        ctx.cuffs.start()
         yield
+        ctx.cuffs.stop()
         ctx.manager.shutdown()
         if own_hub:
             hub.stop()

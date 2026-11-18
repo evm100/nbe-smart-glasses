@@ -34,6 +34,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -60,6 +61,9 @@ ATTEMPT_TIMEOUT_S = float(os.environ.get("CUFF_ATTEMPT_TIMEOUT", "90"))
 MAX_EMPTY_READS = 2   # successful downloads with no new record before giving up
 POWER_OFF = os.environ.get("CUFF_POWER_OFF", "1") == "1"         # press START again after a good read
 POWER_OFF_DELAY_S = float(os.environ.get("CUFF_POWER_OFF_DELAY", "2"))  # let BLE disconnect settle
+# An abort presses START again (which stops an inflating cuff) only this soon after the first press.
+# Later the measurement may already be over, and a press would start a NEW one instead.
+ABORT_PRESS_WINDOW_S = float(os.environ.get("CUFF_ABORT_PRESS_WINDOW", "25"))
 
 STATE_FILE = DATA_DIR / "seen.json"
 LOG_CSV = DATA_DIR / "readings.csv"
@@ -69,6 +73,10 @@ log = logging.getLogger("auto-cuff")
 
 
 class MeasureError(Exception):
+    pass
+
+
+class Aborted(MeasureError):
     pass
 
 
@@ -120,21 +128,31 @@ def _clean_omblepy_outputs():
             p.unlink(missing_ok=True)
 
 
-def download_records():
-    """Run omblepy once. Returns list of dict rows, raises on failure."""
+def download_records(abort=None):
+    """Run omblepy once. Returns list of dict rows, raises on failure.
+
+    abort: optional threading.Event; setting it kills omblepy and raises Aborted."""
     _clean_omblepy_outputs()
     cmd = [sys.executable, "omblepy.py", "-d", DEVICE, "-m", MAC]
-    try:
-        proc = subprocess.run(
-            cmd, cwd=OMBLEPY_DIR, capture_output=True, text=True,
-            timeout=ATTEMPT_TIMEOUT_S,
-        )
-    except subprocess.TimeoutExpired:
-        raise MeasureError("omblepy timed out")
+    with tempfile.TemporaryFile("w+") as out:
+        proc = subprocess.Popen(cmd, cwd=OMBLEPY_DIR, stdout=out, stderr=subprocess.STDOUT, text=True)
+        deadline = time.monotonic() + ATTEMPT_TIMEOUT_S
+        while proc.poll() is None:
+            if abort is not None and abort.is_set():
+                proc.kill()
+                proc.wait()
+                raise Aborted("aborted")
+            if time.monotonic() > deadline:
+                proc.kill()
+                proc.wait()
+                raise MeasureError("omblepy timed out")
+            time.sleep(0.3)
+        out.seek(0)
+        output = out.read()
 
     csv_path = OMBLEPY_DIR / f"user{USER_SLOT}.csv"
     if proc.returncode != 0 or not csv_path.exists():
-        tail = (proc.stderr or proc.stdout).strip().splitlines()[-1:] or ["no output"]
+        tail = output.strip().splitlines()[-1:] or ["no output"]
         raise MeasureError(f"omblepy failed (rc={proc.returncode}): {tail[0]}")
 
     with csv_path.open(newline="", encoding="utf-8") as f:
@@ -188,26 +206,45 @@ def _power_off():
         log.exception("power-off press failed (reading was still saved)")
 
 
-def measure(seen):
-    t0 = time.monotonic()
-    log.info("pressing START")
+def _press():
     with ButtonPusher() as pusher:
         pusher.press()
 
+
+def measure(seen, on_phase=None, abort=None):
+    """One reading. on_phase(phase, t_unix) is told "started" right after the press (the cuff is
+    inflating), then "downloading" / "powering_off". abort: threading.Event -> raises Aborted."""
+    abort = abort or threading.Event()
+    phase = on_phase or (lambda *_: None)
+    t0 = time.monotonic()
+    log.info("pressing START")
+    _press()
+    phase("started", time.time())
+
     log.info("waiting %.0fs for the cuff cycle", INITIAL_WAIT_S)
-    time.sleep(INITIAL_WAIT_S)
+    if abort.wait(INITIAL_WAIT_S):
+        if time.monotonic() - t0 <= ABORT_PRESS_WINDOW_S:
+            log.info("abort: pressing START to stop the cuff")
+            _press()
+            raise Aborted("aborted by the operator (STOP pressed, cuff deflating)")
+        raise Aborted("aborted by the operator (too late to stop the cuff safely; it finishes on its own)")
 
     last_err = "no attempt made"
     empty_reads = 0
     attempt = 0
+    phase("downloading", time.time())
     while time.monotonic() - t0 < OVERALL_TIMEOUT_S:
+        if abort.is_set():
+            raise Aborted("aborted by the operator during the Bluetooth download")
         attempt += 1
         try:
-            rows = download_records()
+            rows = download_records(abort)
+        except Aborted:
+            raise Aborted("aborted by the operator during the Bluetooth download") from None
         except MeasureError as e:
             last_err = str(e)
             log.warning("attempt %d: %s", attempt, last_err)
-            time.sleep(3)
+            abort.wait(3)
             continue
 
         new = seen.take_new(rows)
@@ -216,6 +253,7 @@ def measure(seen):
             _append_log(new, received_at)
             entries = [_to_entry(r, received_at) for r in new]
             log.info("new reading(s): %s", entries)
+            phase("powering_off", time.time())
             _power_off()
             return entries
 
@@ -224,7 +262,7 @@ def measure(seen):
         log.warning("attempt %d: %s", attempt, last_err)
         if empty_reads >= MAX_EMPTY_READS:
             break
-        time.sleep(5)
+        abort.wait(5)
 
     raise MeasureError(last_err)
 
