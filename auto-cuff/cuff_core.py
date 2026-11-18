@@ -218,6 +218,9 @@ def _reset_press(t0):
     remaining = t0 + NO_DATA_TIMEOUT_S - time.monotonic()
     if remaining > 0:
         time.sleep(remaining)  # not abortable: pressing early could hit a cuff still measuring
+    # Same settle time as the power-off press: omblepy was usually just killed mid-connection, and
+    # the BLE teardown (radio + servo on the same supply) made an immediate press misbehave.
+    time.sleep(POWER_OFF_DELAY_S)
     try:
         log.info("no new record %.0fs after the press: pressing START to switch the monitor off",
                  time.monotonic() - t0)
