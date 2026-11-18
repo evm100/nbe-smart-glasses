@@ -95,7 +95,7 @@ def tls_context(cfg):
 class CuffNode:
     def __init__(self, cfg):
         import paho.mqtt.client as mqtt
-        import cuff_server as cs  # servo + omblepy; imported here so --check works off the Pi
+        import cuff_core as cs  # servo + omblepy; imported here so --check works off the Pi
 
         self.cs = cs
         self.cfg = cfg

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-auto-cuff: trigger an Omron BP7250 (HEM-7150T) reading over HTTP and get the
-new record back as JSON.
+auto-cuff core: take one Omron BP7250 (HEM-7150T) reading and return the new record.
 
 Flow for one measurement:
     1. Servo presses START (servo_cuff.ButtonPusher)
@@ -9,22 +8,27 @@ Flow for one measurement:
     3. Run omblepy repeatedly until the monitor (which advertises for a while
        after a reading) is reachable and the records download
     4. Compare against records already seen -> return only the new one(s)
+    5. Press START again to switch the monitor off
+
+If no new record has been downloaded NO_DATA_TIMEOUT_S (1.4 min) after the first
+press, the reading is given up and START is pressed anyway. A cuff error (E on the
+display) stores no record and leaves the monitor on; without this press the NEXT
+reading's press would only switch it off instead of starting a measurement.
+
+cuff_node.py (the MQTT node the server talks to) calls measure(). Settings are
+environment variables (CUFF_*, below), e.g. in /etc/default/auto-cuff.
 
 Layout expected:
     auto-cuff/
         .venv/
         servo_cuff.py
-        cuff_server.py      <- this file
+        cuff_core.py        <- this file
+        cuff_node.py
         omblepy/            <- omblepy checkout (omblepy.py, deviceSpecific/)
         data/               <- created automatically (seen.json, readings.csv)
 
-HTTP API (default port 8080):
-    GET  /health                -> {"ok": true, "busy": false}
-    POST /measure               -> blocks ~1-2 min, returns the new reading
-    GET  /readings?limit=20     -> most recent logged readings
-
-Test without the server:
-    .venv/bin/python cuff_server.py --once
+Bench test without the server (one reading, printed as JSON):
+    .venv/bin/python cuff_core.py --once
 """
 
 import argparse
@@ -38,9 +42,7 @@ import tempfile
 import threading
 import time
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
 BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
@@ -52,11 +54,10 @@ DATA_DIR = Path(os.environ.get("CUFF_DATA_DIR", BASE / "data"))
 MAC = os.environ.get("CUFF_MAC", "28:FF:B2:31:CA:D5")
 DEVICE = os.environ.get("CUFF_DEVICE", "HEM-7150T")
 USER_SLOT = int(os.environ.get("CUFF_USER", "1"))           # omblepy writes user<N>.csv
-HOST = os.environ.get("CUFF_HOST", "0.0.0.0")
-PORT = int(os.environ.get("CUFF_PORT", "8080"))
-TOKEN = os.environ.get("CUFF_TOKEN", "")                     # optional bearer token
 INITIAL_WAIT_S = float(os.environ.get("CUFF_INITIAL_WAIT", "35"))  # cuff cycle before first read
-OVERALL_TIMEOUT_S = float(os.environ.get("CUFF_TIMEOUT", "240"))   # give up after this
+# No new record this long after the first press -> give up and press START to switch the monitor
+# off (it stays on after a cuff error). Counted from the press, so it includes INITIAL_WAIT_S.
+NO_DATA_TIMEOUT_S = float(os.environ.get("CUFF_NO_DATA_TIMEOUT", "84"))  # 1.4 min
 ATTEMPT_TIMEOUT_S = float(os.environ.get("CUFF_ATTEMPT_TIMEOUT", "90"))
 MAX_EMPTY_READS = 2   # successful downloads with no new record before giving up
 POWER_OFF = os.environ.get("CUFF_POWER_OFF", "1") == "1"         # press START again after a good read
@@ -128,21 +129,25 @@ def _clean_omblepy_outputs():
             p.unlink(missing_ok=True)
 
 
-def download_records(abort=None):
+def download_records(abort=None, deadline=None):
     """Run omblepy once. Returns list of dict rows, raises on failure.
 
-    abort: optional threading.Event; setting it kills omblepy and raises Aborted."""
+    abort: optional threading.Event; setting it kills omblepy and raises Aborted.
+    deadline: optional time.monotonic() value; omblepy is killed then even if its own
+    ATTEMPT_TIMEOUT_S has not run out."""
     _clean_omblepy_outputs()
     cmd = [sys.executable, "omblepy.py", "-d", DEVICE, "-m", MAC]
     with tempfile.TemporaryFile("w+") as out:
         proc = subprocess.Popen(cmd, cwd=OMBLEPY_DIR, stdout=out, stderr=subprocess.STDOUT, text=True)
-        deadline = time.monotonic() + ATTEMPT_TIMEOUT_S
+        attempt_deadline = time.monotonic() + ATTEMPT_TIMEOUT_S
+        if deadline is not None:
+            attempt_deadline = min(attempt_deadline, deadline)
         while proc.poll() is None:
             if abort is not None and abort.is_set():
                 proc.kill()
                 proc.wait()
                 raise Aborted("aborted")
-            if time.monotonic() > deadline:
+            if time.monotonic() > attempt_deadline:
                 proc.kill()
                 proc.wait()
                 raise MeasureError("omblepy timed out")
@@ -164,7 +169,6 @@ def download_records(abort=None):
 # --------------------------------------------------------------------------
 # Measurement
 # --------------------------------------------------------------------------
-_busy = threading.Lock()
 
 
 def _append_log(rows, received_at):
@@ -200,10 +204,28 @@ def _power_off():
     try:
         time.sleep(POWER_OFF_DELAY_S)
         log.info("pressing START to power off")
-        with ButtonPusher() as pusher:
-            pusher.press()
+        _press()
     except Exception:
         log.exception("power-off press failed (reading was still saved)")
+
+
+def _reset_press(t0):
+    """No new record: wait until NO_DATA_TIMEOUT_S after the first press (the cuff has finished
+    or errored by then and the monitor is still on), then press START to switch it off.
+
+    Returns a note for the error message. Always pressed, even with CUFF_POWER_OFF=0: a monitor
+    left on would turn the next reading's press into a power-off."""
+    remaining = t0 + NO_DATA_TIMEOUT_S - time.monotonic()
+    if remaining > 0:
+        time.sleep(remaining)  # not abortable: pressing early could hit a cuff still measuring
+    try:
+        log.info("no new record %.0fs after the press: pressing START to switch the monitor off",
+                 time.monotonic() - t0)
+        _press()
+        return "pressed START to switch the monitor off"
+    except Exception as e:
+        log.exception("reset press failed")
+        return f"the press to switch the monitor off FAILED ({type(e).__name__}: {e}); check the monitor"
 
 
 def _press():
@@ -211,40 +233,24 @@ def _press():
         pusher.press()
 
 
-def measure(seen, on_phase=None, abort=None):
-    """One reading. on_phase(phase, t_unix) is told "started" right after the press (the cuff is
-    inflating), then "downloading" / "powering_off". abort: threading.Event -> raises Aborted."""
-    abort = abort or threading.Event()
-    phase = on_phase or (lambda *_: None)
-    t0 = time.monotonic()
-    log.info("pressing START")
-    _press()
-    phase("started", time.time())
-
-    log.info("waiting %.0fs for the cuff cycle", INITIAL_WAIT_S)
-    if abort.wait(INITIAL_WAIT_S):
-        if time.monotonic() - t0 <= ABORT_PRESS_WINDOW_S:
-            log.info("abort: pressing START to stop the cuff")
-            _press()
-            raise Aborted("aborted by the operator (STOP pressed, cuff deflating)")
-        raise Aborted("aborted by the operator (too late to stop the cuff safely; it finishes on its own)")
-
+def _download_new(seen, abort, deadline):
+    """Download until a new record shows up. Returns its entries; raises MeasureError when the
+    deadline passes (or the monitor answers twice with nothing new), Aborted on abort."""
     last_err = "no attempt made"
     empty_reads = 0
     attempt = 0
-    phase("downloading", time.time())
-    while time.monotonic() - t0 < OVERALL_TIMEOUT_S:
+    while time.monotonic() < deadline:
         if abort.is_set():
             raise Aborted("aborted by the operator during the Bluetooth download")
         attempt += 1
         try:
-            rows = download_records(abort)
+            rows = download_records(abort, deadline)
         except Aborted:
             raise Aborted("aborted by the operator during the Bluetooth download") from None
         except MeasureError as e:
             last_err = str(e)
             log.warning("attempt %d: %s", attempt, last_err)
-            abort.wait(3)
+            abort.wait(min(3, max(0, deadline - time.monotonic())))
             continue
 
         new = seen.take_new(rows)
@@ -253,8 +259,6 @@ def measure(seen, on_phase=None, abort=None):
             _append_log(new, received_at)
             entries = [_to_entry(r, received_at) for r in new]
             log.info("new reading(s): %s", entries)
-            phase("powering_off", time.time())
-            _power_off()
             return entries
 
         empty_reads += 1
@@ -262,99 +266,68 @@ def measure(seen, on_phase=None, abort=None):
         log.warning("attempt %d: %s", attempt, last_err)
         if empty_reads >= MAX_EMPTY_READS:
             break
-        abort.wait(5)
+        abort.wait(min(5, max(0, deadline - time.monotonic())))
 
-    raise MeasureError(last_err)
-
-
-def recent_readings(limit):
-    if not LOG_CSV.exists():
-        return []
-    with LOG_CSV.open(newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))[-limit:]
+    if abort.is_set():
+        raise Aborted("aborted by the operator during the Bluetooth download")
+    raise MeasureError(f"no new reading within {NO_DATA_TIMEOUT_S:.0f} s of the press ({last_err})")
 
 
-# --------------------------------------------------------------------------
-# HTTP server
-# --------------------------------------------------------------------------
-def make_handler(seen):
-    class Handler(BaseHTTPRequestHandler):
-        def _send(self, code, payload):
-            body = json.dumps(payload).encode()
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+def measure(seen, on_phase=None, abort=None):
+    """One reading. on_phase(phase, t_unix) is told "started" right after the press (the cuff is
+    inflating), then "downloading" / "powering_off". abort: threading.Event -> raises Aborted.
 
-        def _authorized(self):
-            if not TOKEN:
-                return True
-            if self.headers.get("Authorization", "") == f"Bearer {TOKEN}":
-                return True
-            self._send(401, {"ok": False, "error": "unauthorized"})
-            return False
+    Whatever goes wrong after the press, the monitor is switched off before this returns: by the
+    STOP press of an early abort, the power-off press after a good read, or the reset press at
+    NO_DATA_TIMEOUT_S."""
+    abort = abort or threading.Event()
+    phase = on_phase or (lambda *_: None)
+    t0 = time.monotonic()
+    deadline = t0 + NO_DATA_TIMEOUT_S
+    log.info("pressing START")
+    _press()
+    phase("started", time.time())
 
-        def do_GET(self):
-            if not self._authorized():
-                return
-            url = urlparse(self.path)
-            if url.path == "/health":
-                self._send(200, {"ok": True, "busy": _busy.locked()})
-            elif url.path == "/readings":
-                limit = int(parse_qs(url.query).get("limit", ["20"])[0])
-                self._send(200, {"ok": True, "readings": recent_readings(limit)})
-            else:
-                self._send(404, {"ok": False, "error": "not found"})
+    log.info("waiting %.0fs for the cuff cycle", INITIAL_WAIT_S)
+    if abort.wait(INITIAL_WAIT_S) and time.monotonic() - t0 <= ABORT_PRESS_WINDOW_S:
+        log.info("abort: pressing START to stop the cuff")
+        _press()  # this press stops and deflates the cuff; no reset press after it
+        raise Aborted("aborted by the operator (STOP pressed, cuff deflating)")
 
-        def do_POST(self):
-            if not self._authorized():
-                return
-            if urlparse(self.path).path != "/measure":
-                self._send(404, {"ok": False, "error": "not found"})
-                return
-            if not _busy.acquire(blocking=False):
-                self._send(409, {"ok": False, "error": "measurement already running"})
-                return
-            try:
-                entries = measure(seen)
-                self._send(200, {"ok": True, "reading": entries[-1], "new_records": entries})
-            except MeasureError as e:
-                self._send(504, {"ok": False, "error": str(e)})
-            except Exception as e:  # servo/GPIO or anything unexpected
-                log.exception("measurement crashed")
-                self._send(500, {"ok": False, "error": repr(e)})
-            finally:
-                _busy.release()
+    try:
+        if abort.is_set():
+            raise Aborted("aborted by the operator (too late to stop the cuff; it finished on its own)")
+        phase("downloading", time.time())
+        entries = _download_new(seen, abort, deadline)
+    except Exception as e:  # Aborted, MeasureError, or anything unexpected (disk, omblepy crash, ...)
+        failure = e
+    else:
+        phase("powering_off", time.time())
+        _power_off()
+        return entries
 
-        def log_message(self, fmt, *args):
-            log.info("%s %s", self.address_string(), fmt % args)
-
-    return Handler
+    phase("powering_off", time.time())
+    note = _reset_press(t0)
+    if isinstance(failure, MeasureError):  # Aborted included
+        raise type(failure)(f"{failure}; {note}") from None
+    raise MeasureError(f"{type(failure).__name__}: {failure}; {note}") from failure
 
 
 def main():
-    parser = argparse.ArgumentParser(description="auto-cuff BP service")
+    parser = argparse.ArgumentParser(description="auto-cuff: take one reading (bench test)")
     parser.add_argument("--once", action="store_true", help="take one reading, print it, exit")
     args = parser.parse_args()
+    if not args.once:
+        parser.error("this module only does --once; the service is cuff_node.py")
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not (OMBLEPY_DIR / "omblepy.py").exists():
         sys.exit(f"omblepy.py not found in {OMBLEPY_DIR}")
-
-    seen = SeenStore(STATE_FILE)
-
-    if args.once:
-        try:
-            print(json.dumps(measure(seen), indent=2))
-        except MeasureError as e:
-            sys.exit(f"failed: {e}")
-        return
-
-    server = ThreadingHTTPServer((HOST, PORT), make_handler(seen))
-    log.info("listening on %s:%d (device %s, mac %s)", HOST, PORT, DEVICE, MAC)
-    server.serve_forever()
+    try:
+        print(json.dumps(measure(SeenStore(STATE_FILE)), indent=2))
+    except MeasureError as e:
+        sys.exit(f"failed: {e}")
 
 
 if __name__ == "__main__":

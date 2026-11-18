@@ -31,7 +31,7 @@ MAX_INTERVAL_S = 3600.0
 DEFAULT_INTERVAL_S = 300.0
 MIN_REST_S = 60.0         # at least this long between the end of one reading and the next press
 ACK_TIMEOUT_S = 20.0      # MEASURE sent, no "started" back -> give up on this one
-RESULT_TIMEOUT_S = 330.0  # "started", no result -> give up (the device's own timeout is 240 s)
+RESULT_TIMEOUT_S = 180.0  # "started", no result -> give up (the device gives up 84 s after its press)
 MAX_CLOCK_SKEW_S = 600.0  # device timestamps further off than this are ignored (arrival time used)
 TICK_S = 1.0
 

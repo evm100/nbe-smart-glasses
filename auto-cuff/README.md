@@ -8,8 +8,8 @@ same as a typed one.
 
 ```
 cuff_node.py      MQTT node: what runs in production (systemd)
-cuff_server.py    measurement logic (servo + omblepy + duplicate filter); also a standalone HTTP
-                  server / --once test that doesn't need the NBE server
+cuff_core.py      measurement logic (servo + omblepy + duplicate filter); `--once` takes one
+                  reading without the NBE server (bench test)
 servo_cuff.py     SG90 on GPIO18
 PROTOCOL.md       the MQTT contract. An ESP32 replacement must speak the same one
 systemd/          auto-cuff.service (installed by install-service.sh)
@@ -19,7 +19,7 @@ data/             seen.json (records already downloaded), readings.csv (local lo
 
 ## Setup on the Pi (Zero 2 W, Pi OS Trixie)
 
-1. **Pair the monitor once** (already done if `cuff_server.py --once` works):
+1. **Pair the monitor once** (already done if `cuff_core.py --once` works):
    `cd omblepy && ../.venv/bin/python omblepy.py -p -d HEM-7150T`
 2. **Venv:** `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
 3. **Register the node** on the server: Admin → Nodes → register `CUF01`, **site `cuff`**.
@@ -28,7 +28,7 @@ data/             seen.json (records already downloaded), readings.csv (local lo
    (gives `node/sdkconfig.nbe` + `node/main/certs/client.{crt,key}`)
 4. **Check:** `.venv/bin/python cuff_node.py --check` prints the broker and node ID and does a TLS handshake.
 5. **Service:** `sudo ./install-service.sh`, then follow it with `journalctl -u auto-cuff -f`.
-   Overrides (monitor MAC, timings: see the top of `cuff_server.py`) go in `/etc/default/auto-cuff`,
+   Overrides (monitor MAC, timings: see the top of `cuff_core.py`) go in `/etc/default/auto-cuff`,
    e.g. `CUFF_MAC=28:FF:B2:31:CA:D5`.
 6. The Pi's clock must be right (NTP; `timedatectl` should say *synchronized: yes*). The server uses
    it to place the events in time.
@@ -46,6 +46,16 @@ On the live page of a running trial, under **Automatic cuff**:
   new readings (a reading already running finishes and is logged).
 - **Measure now**: one reading, on or off.
 - **Abort reading**: within ~25 s of the press the Pi presses START again, which stops and deflates
-  the cuff. After that it only stops waiting, because another press could start a new measurement.
+  the cuff. After that the cuff finishes on its own and the monitor is switched off at the 1.4 min mark
+  (below).
 
-Failures show on the page and are logged as markers in the session.
+**Cuff errors.** If no new record has been downloaded 1.4 min (84 s, `CUFF_NO_DATA_TIMEOUT`) after
+the press, the Pi gives up and presses START to switch the monitor off. A cuff error (E on the
+display) stores no record and leaves the monitor on, so without this press the next scheduled press
+would only switch it off. Failures show on the page and are logged as markers in the session.
+
+## ESP32 instead of the Pi
+
+`firmware/esp-idf/omron_bench/` is a bench test of the Bluetooth part on a XIAO ESP32-S3 (omblepy's
+protocol ported to NimBLE, plus the servo). Its README has the test plan. If it works, an ESP32
+node speaking `PROTOCOL.md` can replace the Pi, with no server changes.

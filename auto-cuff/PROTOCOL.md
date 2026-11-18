@@ -38,11 +38,14 @@ trial's live page.
 ## Commands
 
 - `MEASURE <req>`: press START, wait for the cuff, download the new record over Bluetooth, press START
-  again to switch the monitor off. `<req>` is an opaque ID to copy into every data message for this
+  again to switch the monitor off. **No new record 84 s (1.4 min) after the first press → give up,
+  press START to switch the monitor off, and send `failed`.** A cuff error (E on the display) stores no
+  record and leaves the monitor on; without that press the next reading's press would only switch it
+  off. Never press earlier than 84 s after the first press, or the press could hit a cuff still measuring. `<req>` is an opaque ID to copy into every data message for this
   reading. If already measuring, answer `{"type": "failed", "req": <req>, "error": "already measuring"}`.
 - `ABORT`: stop the reading in progress. Press START again only if the cuff is still inflating
-  (the Pi: within 25 s of the first press). Later a press could start a *new* measurement, so just stop
-  waiting and let the cuff finish on its own. Then send `aborted`.
+  (the Pi: within 25 s of the first press). Later, stop downloading, let the cuff finish on its own and
+  switch the monitor off at the 84 s mark as above. Then send `aborted`.
 - `INFO`: publish the status now.
 - Ignore anything else.
 
@@ -70,7 +73,7 @@ trial's live page.
 
 - The scheduler runs on the server. Readings are spaced start to start at the operator's interval
   (1.5-60 min), with at least 60 s of rest after each reading ends.
-- No `started` within 20 s of `MEASURE` → failed ("no answer"). No result within 5.5 min of
+- No `started` within 20 s of `MEASURE` → failed ("no answer"). No result within 3 min of
   `started` → failed.
 - When the trial stops, no new readings start. A reading already running is still logged until the
   trial is saved.

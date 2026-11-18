@@ -12,7 +12,7 @@ WorkingDirectory=@DIR@
 ExecStart=@DIR@/.venv/bin/python @DIR@/cuff_node.py
 Restart=always
 RestartSec=5
-# Optional overrides (see cuff_server.py): monitor MAC, model, timings
+# Optional overrides (see cuff_core.py): monitor MAC, model, timings
 EnvironmentFile=-/etc/default/auto-cuff
 Environment=PYTHONUNBUFFERED=1
 

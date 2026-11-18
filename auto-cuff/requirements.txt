@@ -1,1 +1,3 @@
-bleak, terminaltables, gpiozero, lgpio, paho-mqtt>=2.0
+bleak
+terminaltables
+paho-mqtt>=2.0

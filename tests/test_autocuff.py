@@ -177,9 +177,9 @@ def test_no_answer_and_abort(lab, monkeypatch):
 
 
 # ---------------------------------------------------------------- the Pi's node, against the real hub
-def fake_cuff_server(results):
-    """Stand-in for auto-cuff/cuff_server.py (no servo, no Bluetooth)."""
-    m = types.ModuleType("cuff_server")
+def fake_cuff_core(results):
+    """Stand-in for auto-cuff/cuff_core.py (no servo, no Bluetooth)."""
+    m = types.ModuleType("cuff_core")
 
     class MeasureError(Exception):
         pass
@@ -215,11 +215,11 @@ def test_pi_node_speaks_the_servers_protocol(lab, tmp_path, monkeypatch):
         sys.path.pop(0)
     results = [{"received_at": "2026-11-17T14:04:00+00:00", "device_time": "2026-11-17 14:03:22",
                 "sys": 117, "dia": 75, "bpm": 71, "mov": 0, "ihb": 0}]
-    fake_cs = fake_cuff_server(results)
+    fake_cs = fake_cuff_core(results)
     (tmp_path / "omb").mkdir()
     (tmp_path / "omb" / "omblepy.py").write_text("")
     fake_cs.OMBLEPY_DIR, fake_cs.DATA_DIR = tmp_path / "omb", tmp_path / "data"
-    monkeypatch.setitem(sys.modules, "cuff_server", fake_cs)
+    monkeypatch.setitem(sys.modules, "cuff_core", fake_cs)
 
     # credentials as the server hands them out (credentials.zip)
     from sglab import provision
@@ -263,3 +263,93 @@ def test_pi_node_speaks_the_servers_protocol(lab, tmp_path, monkeypatch):
     assert hub.node_state("CUF01")["cuff_state"] == "idle"
     assert threading.active_count() >= 1
     lab.c.post(f"/api/trials/{tid}/stop", headers=H)
+
+
+# ---------------------------------------------------------------- cuff_core.measure (servo + omblepy faked)
+@pytest.fixture
+def core(tmp_path, monkeypatch):
+    """The real cuff_core with the servo and omblepy replaced; times shrunk so a test takes ~1 s."""
+    servo = types.ModuleType("servo_cuff")
+    servo.ButtonPusher = object
+    monkeypatch.setitem(sys.modules, "servo_cuff", servo)
+    monkeypatch.syspath_prepend(str(REPO / "auto-cuff"))
+    sys.modules.pop("cuff_core", None)
+    import cuff_core as cc
+    monkeypatch.setitem(sys.modules, "cuff_core", cc)
+    presses = []
+    monkeypatch.setattr(cc, "_press", lambda: presses.append(time.monotonic()))
+    monkeypatch.setattr(cc, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cc, "LOG_CSV", tmp_path / "readings.csv")
+    monkeypatch.setattr(cc, "INITIAL_WAIT_S", 0.2)
+    monkeypatch.setattr(cc, "NO_DATA_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(cc, "ABORT_PRESS_WINDOW_S", 0.1)
+    monkeypatch.setattr(cc, "POWER_OFF_DELAY_S", 0.0)
+    seen = cc.SeenStore(tmp_path / "seen.json")
+    seen.take_new([{"datetime": "2026-11-17 13:00:00", "sys": "120", "dia": "80", "bpm": "70"}])  # history
+    return types.SimpleNamespace(cc=cc, presses=presses, seen=seen)
+
+
+OLD_ROW = {"datetime": "2026-11-17 13:00:00", "sys": "120", "dia": "80", "bpm": "70", "mov": "0", "ihb": "0"}
+NEW_ROW = {"datetime": "2026-11-17 14:00:00", "sys": "118", "dia": "76", "bpm": "68", "mov": "0", "ihb": "0"}
+
+
+def test_cuff_error_switches_the_monitor_off_at_the_no_data_timeout(core, monkeypatch):
+    """Cuff error: the monitor stores nothing new and stays on. After NO_DATA_TIMEOUT_S the Pi
+    presses START so it is off, and the next reading's press starts a measurement."""
+    def unreachable(abort=None, deadline=None):
+        time.sleep(0.1)
+        raise core.cc.MeasureError("omblepy failed (rc=1): device not found")
+    monkeypatch.setattr(core.cc, "download_records", unreachable)
+    t0 = time.monotonic()
+    with pytest.raises(core.cc.MeasureError) as ei:
+        core.cc.measure(core.seen)
+    assert len(core.presses) == 2                      # start + switch-off
+    assert core.presses[1] - t0 >= 1.0                 # not before the timeout
+    assert time.monotonic() - t0 < 2.0                 # and not much after
+    assert "no new reading" in str(ei.value) and "switch the monitor off" in str(ei.value)
+    assert not isinstance(ei.value, core.cc.Aborted)
+
+    # the monitor answers but has nothing new: same switch-off press, still not before the timeout
+    core.presses.clear()
+    monkeypatch.setattr(core.cc, "download_records", lambda abort=None, deadline=None: [OLD_ROW])
+    t0 = time.monotonic()
+    with pytest.raises(core.cc.MeasureError, match="no new record"):
+        core.cc.measure(core.seen)
+    assert len(core.presses) == 2 and core.presses[1] - t0 >= 1.0
+
+
+def test_omblepy_attempt_is_cut_at_the_no_data_timeout(core, monkeypatch):
+    got = []
+    def slow(abort=None, deadline=None):
+        got.append(deadline)
+        time.sleep(max(0, deadline - time.monotonic()))
+        raise core.cc.MeasureError("omblepy timed out")
+    monkeypatch.setattr(core.cc, "download_records", slow)
+    t0 = time.monotonic()
+    with pytest.raises(core.cc.MeasureError):
+        core.cc.measure(core.seen)
+    assert got and got[0] == pytest.approx(t0 + 1.0, abs=0.05)
+
+
+def test_good_reading_is_switched_off_right_away(core, monkeypatch):
+    monkeypatch.setattr(core.cc, "download_records", lambda abort=None, deadline=None: [OLD_ROW, NEW_ROW])
+    t0 = time.monotonic()
+    entries = core.cc.measure(core.seen)
+    assert [e["sys"] for e in entries] == [118]
+    assert len(core.presses) == 2 and core.presses[1] - t0 < 0.8   # no waiting for the timeout
+
+
+def test_abort_early_stops_the_cuff_late_abort_still_switches_off(core, monkeypatch):
+    monkeypatch.setattr(core.cc, "download_records", lambda abort=None, deadline=None: [OLD_ROW])
+    ab = threading.Event()
+    ab.set()  # before the press window closes: one STOP press, nothing after
+    with pytest.raises(core.cc.Aborted, match="STOP pressed"):
+        core.cc.measure(core.seen, abort=ab)
+    assert len(core.presses) == 2
+
+    core.presses.clear()
+    monkeypatch.setattr(core.cc, "ABORT_PRESS_WINDOW_S", 0.0)  # too late to stop: switched off at the timeout
+    t0 = time.monotonic()
+    with pytest.raises(core.cc.Aborted, match="switch the monitor off"):
+        core.cc.measure(core.seen, abort=ab)
+    assert len(core.presses) == 2 and core.presses[1] - t0 >= 1.0

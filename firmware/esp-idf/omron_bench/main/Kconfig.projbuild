@@ -1,0 +1,14 @@
+menu "Omron bench"
+    config BENCH_OMRON_MAC
+        string "Monitor Bluetooth MAC (default; change at runtime with `mac`)"
+        default "28:FF:B2:31:CA:D5"
+    config BENCH_SERVO_GPIO
+        int "Servo signal GPIO (XIAO ESP32-S3: D0 = GPIO1)"
+        default 1
+    config BENCH_PRESS_US
+        int "Servo pulse width while pressing (us; 2400 = the Pi's 180 degrees)"
+        default 2400
+    config BENCH_PRESS_MS
+        int "Press duration (ms)"
+        default 150
+endmenu
