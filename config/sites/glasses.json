@@ -1,5 +1,8 @@
 {
   "layer1": {
+    "artifacts": {
+      "min_dc": 10000
+    },
     "quality": {
       "amp_ratio_range": [
         0.5415,

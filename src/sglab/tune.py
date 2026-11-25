@@ -53,7 +53,8 @@ from ppg.quality import label_quality, quality_metrics
 from ppg.tuning import (feature_jitter, median_wave, pool_agreement, pool_jitter, reference_agreement,
                         shape_error)
 
-from .processing import (_first_sample_dev_s, _first_sample_session_time, _prepared_csv, pipeline_configs, site_overrides,
+from .processing import (_first_sample_dev_s, _first_sample_session_time, _prepared_csv, pipeline_configs, site_family,
+                         site_overrides,
                          stream_configs, stream_layer1)
 
 from .timebase import run_clock, session_clocks
@@ -170,16 +171,25 @@ def find_pairs(data: Path, site: str, include: list[str] | None = None, skip_bad
             continue
         by_role = {st.get("role"): st for st in doc.get("streams", [])
                    if st.get("file") and (sj.parent / st["file"]).exists()}
-        if REF_ROLE in by_role and site in by_role:
-            pairs.append(Pair(sid, sj.parent, by_role[REF_ROLE], by_role[site], t0_unix))
+        if REF_ROLE not in by_role:
+            continue
+        # --site glasses also takes the sides of dual glasses (glasses_l / glasses_r), which use
+        # glasses.json too: one pair per stream, keyed "<session>:<role>" when the role isn't the site
+        for role in sorted(r for r in by_role if r and (r == site or (r != REF_ROLE and site_family(r) == site))):
+            key = sid if role == site else f"{sid}:{role}"
+            pairs.append(Pair(key, sj.parent, by_role[REF_ROLE], by_role[role], t0_unix))
     return pairs
 
 
 def split_pairs(pairs: list[Pair], holdout_every: int) -> tuple[list[Pair], list[Pair]]:
-    if holdout_every <= 1 or len(pairs) < 2:
+    """Every holdout_every-th *session* is held out, all its streams together (both glasses sides
+    see the same heartbeats, so splitting them would leak)."""
+    sessions = sorted({p.session_id.split(":")[0] for p in pairs})
+    if holdout_every <= 1 or len(sessions) < 2:
         return pairs, []
-    tune = [p for i, p in enumerate(pairs) if i % holdout_every != holdout_every - 1]
-    hold = [p for i, p in enumerate(pairs) if i % holdout_every == holdout_every - 1]
+    held = {s for i, s in enumerate(sessions) if i % holdout_every == holdout_every - 1}
+    tune = [p for p in pairs if p.session_id.split(":")[0] not in held]
+    hold = [p for p in pairs if p.session_id.split(":")[0] in held]
     return tune, hold
 
 
@@ -677,7 +687,11 @@ def apply(study_dir: Path, root: Path, trial: int | None = None) -> tuple[Path, 
             raise ValueError(f"trial {trial} did not finish")
         overlay = trial_overlay(meta, {k: _round(v) for k, v in t.params.items()})
     path = root / "config" / "sites" / f"{meta['site']}.json"
-    cur = json.loads(path.read_text()) if path.exists() else {}
+    # a side of dual glasses without its own file starts from the one it fell back to (glasses.json),
+    # so its new file keeps every other setting it was tuned against
+    fam = path.with_name(f"{site_family(meta['site'])}.json")
+    src = path if path.exists() else fam
+    cur = json.loads(src.read_text()) if src.exists() else {}
     new = deep_merge(cur, overlay)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(new, indent=2, default=_jsonable) + "\n")

@@ -117,3 +117,27 @@ def test_tune_end_to_end(root, tmp_path):
     path, new = tune.apply(out, root)
     assert path == root / "config" / "sites" / "glasses.json" and "layer1" in new
     assert site_overrides(load_settings(root))["glasses"] == json.loads(path.read_text())
+
+
+def test_glasses_site_pools_dual_sides_and_holds_out_whole_sessions(tmp_path):
+    from sglab import tune
+
+    data = tmp_path / "data"
+    for i in range(4):
+        _session(data, f"2026010{i}_S001_rest_T0{i}", seed=i)
+    # two sessions recorded with dual glasses: the glasses stream becomes glasses_l plus a glasses_r copy
+    for i in (1, 3):
+        sj = data / f"2026010{i}_S001_rest_T0{i}" / "session.json"
+        doc = json.loads(sj.read_text())
+        g = doc["streams"][1]
+        doc["streams"][1] = {**g, "role": "glasses_l"}
+        doc["streams"].append({**g, "stream": "glasses_r_GLS01", "role": "glasses_r"})
+        sj.write_text(json.dumps(doc))
+    pairs = tune.find_pairs(data, "glasses")
+    keys = [p.session_id for p in pairs]
+    assert len(pairs) == 6 and "20260101_S001_rest_T01:glasses_l" in keys and "20260100_S001_rest_T00" in keys
+    assert {p.tgt["role"] for p in pairs} == {"glasses", "glasses_l", "glasses_r"}
+    tune_p, hold_p = tune.split_pairs(pairs, 2)
+    held = {p.session_id.split(":")[0] for p in hold_p}
+    assert held == {"20260101_S001_rest_T01", "20260103_S001_rest_T03"} and len(hold_p) == 4 and len(tune_p) == 2
+    assert tune.find_pairs(data, "glasses_l") and all(p.tgt["role"] == "glasses_l" for p in tune.find_pairs(data, "glasses_l"))
