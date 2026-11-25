@@ -241,6 +241,23 @@ def api_trial_video(request: Request, tid: str, stream: str, after: int = -1, us
     return Response(p[1], media_type=p[2], headers=headers)
 
 
+@router.post("/api/trials/{tid}/video/{stream}/settings")
+async def api_trial_video_settings(request: Request, tid: str, stream: str, user=operator):
+    """{"exposure": 0-1200, "gain": 0-30, "aec": bool, "win": 0 | frame size-600, "fps": 1-60}, any
+    subset: sends the board its CAM command. The new values show in the stream's `settings` once the
+    board's fresh H line arrives (usually well under a second)."""
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    body = await request.json()
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "expected a JSON object"}, status_code=400)
+    try:
+        cmd = ctx.manager.camera_settings(tid, stream, body)
+    except TrialError as err:
+        return JSONResponse({"error": str(err)}, status_code=400)
+    return {"ok": True, "command": cmd}
+
+
 @router.get("/api/trials/{tid}/eye/{stream}")
 def api_trial_eye(request: Request, tid: str, stream: str, after: int = -1, user=operator):
     """Live eye tracking of a camera stream: summary (blinks/min, PERCLOS, gaze shifts...) and every

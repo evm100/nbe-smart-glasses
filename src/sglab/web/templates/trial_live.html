@@ -49,6 +49,17 @@ details.mini select { width: 100%; margin-top: 6px; font-size: 12px; }
 .cam-view img { image-rendering: pixelated; background: var(--grid); }
 .cam-view.flash { box-shadow: 0 0 0 3px #22d3ee; border-radius: 6px; }
 .cam-side { display: grid; gap: 10px; min-width: 0; }
+.cam-ctl { margin-top: 10px; width: var(--disp, 320px); max-width: 100%; min-width: 260px; border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; display: grid; gap: 6px; font-size: 13px; }
+.cam-ctl .row { display: grid; grid-template-columns: 92px minmax(0, 1fr) 62px; gap: 8px; align-items: center; }
+.cam-ctl .row.off { opacity: .45; }
+.cam-ctl input[type=range] { width: 100%; }
+.cam-ctl input[type=number] { width: 100%; font-variant-numeric: tabular-nums; }
+.cam-ctl label.chk { display: inline-flex; gap: 5px; align-items: center; }
+.cam-ctl .ctl-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
+.cam-ctl .ctl-foot { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.cam-ctl .ctl-state { font-size: 12px; color: var(--text-2); }
+.cam-ctl .ctl-state.dirty { color: var(--warn); }
 .cam .stats { font-variant-numeric: tabular-nums; }
 .eye-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px; }
 .eye-stats div { background: var(--grid); border-radius: 8px; padding: 6px 8px; }
@@ -553,7 +564,18 @@ function showCameras(list) {
           <button class="recal" title="Re-learn where the eye is (~2 s). Use after the glasses moved.">Re-find eye</button></span></h3>
         <div class="cam-wrap">
           <div><div class="cam-view"><img alt="waiting for the first frame"><canvas class="ov"></canvas></div>
-            <div class="note stats" style="margin-top:6px"></div></div>
+            <div class="note stats" style="margin-top:6px"></div>
+            <div class="cam-ctl">
+              <div class="ctl-head"><span>Camera settings</span>
+                <label class="chk" title="Let the sensor choose exposure and gain. Brightness then hunts, which the eye tracker reads as blinks — keep it off for recordings."><input type="checkbox" class="k-aec"> auto exposure</label></div>
+              <div class="row k-exp-row"><span>Exposure</span><input type="range" class="k-exp-r" min="0" max="1200" step="10"><input type="number" class="k-exp" min="0" max="1200" step="10"></div>
+              <div class="row k-gain-row"><span>Gain</span><input type="range" class="k-gain-r" min="0" max="30" step="1"><input type="number" class="k-gain" min="0" max="30" step="1"></div>
+              <div class="row k-win-row" title="Sensor window: a smaller square shows less of the scene, bigger (zoomed in). The frame size stays the same."><span>Field of view</span><input type="range" class="k-win-r" step="4"><input type="number" class="k-win" step="4"></div>
+              <div class="k-win-extra" style="display:flex; justify-content:space-between; gap:8px"><span class="note">← narrower (zoom in) · wider →</span>
+                <label class="chk note" title="The board's stock framing, no sensor window."><input type="checkbox" class="k-stock"> stock framing</label></div>
+              <div class="ctl-foot"><span class="ctl-state">matches the board</span>
+                <span class="btnrow"><button type="button" class="k-revert" disabled>Revert</button><button type="button" class="primary k-apply" disabled>Apply</button></span></div>
+            </div></div>
           <div class="cam-side">
             <div class="eye-stats">
               <div><span>Blinks</span><b class="e-blinks">–</b></div>
@@ -591,6 +613,7 @@ function showCameras(list) {
         c.overlay = b.dataset.o === '1'; card.querySelectorAll('.ovl button').forEach(x => x.classList.toggle('on', x === b)); drawOverlay(c); });
       card.querySelector('.recal').onclick = async () => { await fetch(`${API}/eye/${encodeURIComponent(v.stream)}/recalibrate`, {method: 'POST'}); flash('finding the eye again…'); };
       if (!v.tracking) card.querySelector('.cam-side').innerHTML = '<div class="note">Eye tracking runs on grayscale streams only.</div>';
+      initCamCtl(v.stream, c, v.settings || {});
       pollCam(v.stream, c);
       if (v.tracking) pollEye(v.stream, c);
     }
@@ -599,7 +622,79 @@ function showCameras(list) {
     const exp = v.exposure == null ? '' : v.exposure === 65535 ? ' · auto exposure' : ` · exposure ${v.exposure} gain ${v.gain}`;
     const warn = v.fs && v.frames > 10 && v.fps < 0.8 * v.fs ? ' style="color:var(--warn)"' : '';
     c.stats.innerHTML = `${cam}${v.w}×${v.h} ${esc(v.fmt)} · <span${warn}>${v.fps.toFixed(1)} fps</span> · ${v.frames} frames · ${v.dropped} dropped · ${mb} MB${exp}`;
+    if (c.ctl && v.settings) c.ctl.sync(v.settings);
   }
+}
+
+// operator camera controls: exposure / gain / auto exposure / sensor window (FOV). The form follows
+// what the board reports (its H line) until the operator edits it; Apply sends one CAM command and
+// the form shows "waiting for the board" until the new H line confirms it.
+function initCamCtl(name, c, s0) {
+  const box = c.card.querySelector('.cam-ctl'), q = k => box.querySelector(k);
+  const st = q('.ctl-state'), apply = q('.k-apply'), revert = q('.k-revert');
+  const pairs = {exp: [q('.k-exp-r'), q('.k-exp')], gain: [q('.k-gain-r'), q('.k-gain')], win: [q('.k-win-r'), q('.k-win')]};
+  const aec = q('.k-aec'), stock = q('.k-stock');
+  let board = s0, dirty = false, pending = null;  // pending: the values we asked for, until the board reports them
+  box.style.setProperty('--disp', c.view.style.getPropertyValue('--disp'));  // as wide as the image
+  if (!s0.win_ok) { q('.k-win-row').hidden = true; q('.k-win-extra').hidden = true; }
+  for (const el of pairs.win) { el.min = s0.win_min || 240; el.max = s0.win_max || 600; }
+  const want = () => ({aec: aec.checked, exposure: +pairs.exp[1].value, gain: +pairs.gain[1].value,
+                       win: stock.checked ? 0 : +pairs.win[1].value});
+  const shade = () => {
+    q('.k-exp-row').classList.toggle('off', aec.checked); q('.k-gain-row').classList.toggle('off', aec.checked);
+    q('.k-win-row').classList.toggle('off', stock.checked);
+    for (const k of ['exp', 'gain']) pairs[k].forEach(e => e.disabled = aec.checked);
+    pairs.win.forEach(e => e.disabled = stock.checked);
+  };
+  const fill = s => {
+    aec.checked = !!s.aec;
+    for (const e of pairs.exp) e.value = s.exposure ?? 300;
+    for (const e of pairs.gain) e.value = s.gain ?? 0;
+    stock.checked = !s.win;
+    for (const e of pairs.win) e.value = s.win || Math.min(s.win_max || 600, Math.max(s.win_min || 240, 400));
+    shade();
+  };
+  const show = (txt, cls) => { st.textContent = txt; st.className = 'ctl-state' + (cls ? ' ' + cls : ''); };
+  const touched = () => { dirty = true; apply.disabled = revert.disabled = false; show('not applied yet', 'dirty'); };
+  for (const [r, n] of Object.values(pairs)) {
+    r.oninput = () => { n.value = r.value; touched(); };
+    n.oninput = () => { r.value = n.value; touched(); };
+  }
+  aec.onchange = () => { shade(); touched(); };
+  stock.onchange = () => { shade(); touched(); };
+  revert.onclick = () => { dirty = false; fill(board); apply.disabled = revert.disabled = true; show('matches the board'); };
+  apply.onclick = async () => {
+    const w = want(), b = board, body = {};
+    if (w.aec !== !!b.aec) body.aec = w.aec;
+    if (!w.aec && (w.exposure !== b.exposure || w.aec !== !!b.aec)) body.exposure = w.exposure;
+    if (!w.aec && (w.gain !== b.gain || w.aec !== !!b.aec)) body.gain = w.gain;
+    if (b.win_ok && w.win !== (b.win || 0)) body.win = w.win;
+    if (!Object.keys(body).length) { revert.onclick(); return; }
+    apply.disabled = true; show('sending…');
+    try {
+      const r = await fetch(`${API}/video/${encodeURIComponent(name)}/settings`, {method: 'POST',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || j.detail || r.statusText);
+      dirty = false; revert.disabled = true; pending = {...body, t: Date.now()};
+      if ('win' in body) pending.win = body.win & ~3;
+      show('waiting for the board…');
+      flash(`camera: ${j.command}`);
+      if ('win' in body && c.tracking)  // the eye moved in the image: let the tracker find it again
+        setTimeout(() => fetch(`${API}/eye/${encodeURIComponent(name)}/recalibrate`, {method: 'POST'}), 1500);
+    } catch (e) { apply.disabled = false; show('not applied: ' + e.message, 'dirty'); flash('camera: ' + e.message, true); }
+  };
+  c.ctl = {sync(s) {
+    board = s;
+    if (pending) {
+      const ok = ['aec', 'exposure', 'gain', 'win'].every(k => !(k in pending) || (k === 'aec' ? !!s.aec === pending.aec : (s[k] || 0) === pending[k]));
+      if (ok) { pending = null; show('matches the board'); }
+      else if (Date.now() - pending.t > 5000) { pending = null; show('the board did not confirm — older firmware or link down?', 'dirty'); }
+      else return;
+    }
+    if (!dirty) fill(s);
+  }};
+  fill(s0);
 }
 async function pollCam(name, c) {
   // one request in flight per camera: on a slow link the preview skips frames instead of queueing them

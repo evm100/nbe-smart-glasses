@@ -112,6 +112,7 @@ class SimSource:
         self.camera, self.cam_fps, self.cam_size = camera, cam_fps, cam_size
         self._eye = None
         self._cam_seq = 0
+        self._cam = {"aec": False, "exposure": 300, "gain": 2, "win": 0}  # changed by "CAM ..." like the firmware
         # optional fake further sensors (protocol v2.1): a 1 Hz sweat-chemistry patch (glucose, lactate,
         # cortisol - clearly synthetic) and a skin thermometer; edge_features adds the frame statistics a
         # camera board can compute itself (firmware CONFIG_PPG_CAMERA_EDGE_FEATURES)
@@ -155,8 +156,33 @@ class SimSource:
 
     def _cam_header(self) -> str:
         n = self.cam_size
+        k = self._cam
+        win = f",win={k['win']},clkdiv=0" if k["win"] else ""
+        exp = ",aec=1" if k["aec"] else f",aec=0,exposure={k['exposure']},gain={k['gain']}"
         return encode(f"H,proto=2,dev={self.dev},fw=sim-0.1,sid=1,stream=cam,kind=video,sensor=SIM-EYE,ch=frame,"
-                      f"fs={self.cam_fps:g},w={n},h={n},fmt=gray8,aec=0,exposure=300,gain=2,site=sim,sensor_ok=1")
+                      f"fs={self.cam_fps:g},w={n},h={n},fmt=gray8{win}{exp},site=sim,sensor_ok=1")
+
+    def _cam_command(self, args: str) -> bool:
+        """firmware camera_command(): EXP= / GAIN= (fixed exposure), AEC=, WIN=; True = changed."""
+        changed = False
+        for part in args.split():
+            key, _, val = part.partition("=")
+            try:
+                v = int(val)
+            except ValueError:
+                continue
+            if key == "EXP" and 0 <= v <= 1200:
+                self._cam.update(exposure=v, aec=False)
+            elif key == "GAIN" and 0 <= v <= 30:
+                self._cam.update(gain=v, aec=False)
+            elif key == "AEC":
+                self._cam["aec"] = v != 0
+            elif key == "WIN" and (v == 0 or self.cam_size <= v <= 600):
+                self._cam["win"] = v & ~3
+            else:  # (FPS= not simulated: the frame clock assumes a fixed rate)
+                continue
+            changed = True
+        return changed
 
     def _push(self, line) -> None:
         with self._lock:
@@ -182,6 +208,9 @@ class SimSource:
             self._push(encode(f"E,{self._now_us()},START,"))
             self._t_start = time.monotonic()
             self._streaming = True
+        elif c.startswith("CAM ") and self.camera:
+            if self._cam_command(c[4:]):
+                self._push(self._cam_header())  # the firmware answers with fresh H lines
         elif c == "STOP":
             self._streaming = False
             self._push(encode(f"E,{self._now_us()},STOP,"))

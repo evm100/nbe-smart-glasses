@@ -284,6 +284,65 @@ class TrialManager:
                     return vw.preview(after, wait_s)
         raise TrialError(f"no camera stream {stream!r} in trial {tid}")
 
+    def camera_settings(self, tid: str, stream: str, req: dict) -> str:
+        """Change a camera while recording: {"exposure", "gain", "aec", "win", "fps"} (any subset)
+        -> the board's "CAM ..." command (protocol v2). The board answers with fresh H lines, so the
+        recording keeps the new settings; the change is also logged as an event. Returns the command."""
+        t = self.get(tid)
+        with t.lock:
+            if t.state != "recording" or t.rec is None:
+                raise TrialError("not recording")
+            owner = next(((w, vw) for w in t.rec.workers for vw in list(w.video.values()) if vw.name == stream), None)
+            if owner is None:
+                raise TrialError(f"no camera stream {stream!r} in trial {tid}")
+            w, vw = owner
+            cur = vw.camera_settings()
+
+            def num(k, lo, hi):
+                try:
+                    v = int(req[k])
+                except (TypeError, ValueError):
+                    raise TrialError(f"{k} must be a whole number") from None
+                if isinstance(req[k], bool) or not lo <= v <= hi:
+                    raise TrialError(f"{k} must be {lo}-{hi}")
+                return v
+
+            parts, label = [], []
+            if req.get("aec") is True:
+                parts.append("AEC=1")
+                label.append("auto exposure")
+            else:  # EXP / GAIN switch the board to fixed exposure by themselves
+                if req.get("exposure") is not None:
+                    v = num("exposure", 0, 1200)
+                    parts.append(f"EXP={v}")
+                    label.append(f"exposure {v}")
+                if req.get("gain") is not None:
+                    v = num("gain", 0, 30)
+                    parts.append(f"GAIN={v}")
+                    label.append(f"gain {v}")
+                if req.get("aec") is False and not parts:
+                    parts.append("AEC=0")
+                    label.append("fixed exposure")
+            if req.get("win") is not None:
+                if not cur["win_ok"]:
+                    raise TrialError("the window (FOV) can only be changed on grayscale streams")
+                v = num("win", 0, cur["win_max"])
+                if v and v < cur["win_min"]:
+                    raise TrialError(f"window must be 0 (full view) or {cur['win_min']}-{cur['win_max']}")
+                v &= ~3  # the OV2640 window registers count in 4s (the board rounds the same way)
+                parts.append(f"WIN={v}")
+                label.append("full view" if v == 0 else f"window {v}")
+            if req.get("fps") is not None:
+                v = num("fps", 1, 60)
+                parts.append(f"FPS={v}")
+                label.append(f"{v} fps cap")
+            if not parts:
+                raise TrialError("nothing to change")
+            cmd = "CAM " + " ".join(parts)
+            w.src.write(cmd)
+            t.rec.add_event("camera", label=f"camera {stream}: " + ", ".join(label), stream=stream, command=cmd)
+            return cmd
+
     def live(self, tid: str, seconds: float = 8.0, max_points: int = 800, after: list[int] | None = None) -> list[dict]:
         """Last few seconds of each stream's first channel for the live plot: decimated to
         max_points, or with `after` (each stream's `next` from the previous call) every newer point."""

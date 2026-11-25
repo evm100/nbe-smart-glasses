@@ -125,3 +125,55 @@ def test_sim_camera_trial_tracks_the_eye(tmp_path):
     assert fr.status_code == 200 and fr.headers["content-type"] == "image/png" and "X-Eye" in fr.headers
     assert abs(float(fr.headers["X-Frame-T"]) - 4.0) < 0.2
     assert c.get(f"/sessions/{sid}").status_code == 200
+
+
+def test_operator_camera_settings(tmp_path):
+    """Live page camera controls: the API sends the board one CAM command, the board's fresh H line
+    shows up in the stream's settings, bad values are refused, and the change is logged as an event."""
+    import shutil
+    import time
+    from pathlib import Path
+
+    import pytest
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from sglab.settings import load_settings
+    from sglab.web.app import create_app
+
+    repo = Path(__file__).resolve().parents[1]
+    shutil.copytree(repo / "config", tmp_path / "config")
+    (tmp_path / "config" / "server.toml").unlink(missing_ok=True)
+    c = TestClient(create_app(load_settings(tmp_path)))
+    r = c.post("/trial/start", data={"devices": ["sim_cam"], "subject_id": "__new__", "new_subject_id": "S061",
+                                     "protocol": "rest", "trial": "1", "posture": "sitting", "operator": "EV"},
+               follow_redirects=False)
+    api = "/api/trials/" + r.headers["location"].rsplit("/", 1)[1]
+
+    def cam():
+        return c.get(api).json()["streams"][0]["video"][0]
+
+    for _ in range(50):
+        if c.get(api).json().get("streams") and c.get(api).json()["streams"][0]["video"]:
+            break
+        time.sleep(0.1)
+    v = cam()
+    assert v["settings"] == {"aec": False, "exposure": 300, "gain": 2, "fps": 25, "win": 0,
+                             "win_ok": True, "win_min": 160, "win_max": 600}
+    url = f"{api}/video/{v['stream']}/settings"
+    r = c.post(url, json={"exposure": 450, "gain": 5, "win": 322})
+    assert r.status_code == 200 and r.json()["command"] == "CAM EXP=450 GAIN=5 WIN=320"
+    for _ in range(30):
+        if cam()["settings"]["exposure"] == 450:
+            break
+        time.sleep(0.1)
+    s = cam()["settings"]
+    assert (s["exposure"], s["gain"], s["win"], s["aec"]) == (450, 5, 320, False)
+    assert c.post(url, json={"aec": True}).json()["command"] == "CAM AEC=1"
+    for bad in ({"gain": 31}, {"exposure": -1}, {"win": 100}, {"win": 601}, {"exposure": "x"}, {}):
+        r = c.post(url, json=bad)
+        assert r.status_code == 400 and r.json()["error"], bad
+    assert c.post(f"{api}/video/nope/settings", json={"gain": 1}).status_code == 400
+    evs = [e for e in c.get(api).json()["events"] if e["kind"] == "camera"]
+    assert [e["command"] for e in evs] == ["CAM EXP=450 GAIN=5 WIN=320", "CAM AEC=1"]
+    c.post(api + "/stop")

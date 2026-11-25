@@ -262,7 +262,22 @@ class VideoWriter:
                 "dropped": st["n_dropped_seq"], "bytes": st["bytes"],
                 "sensor_ok": self.header.get("sensor_ok") != "0",
                 "exposure": self.latest.exposure if self.latest else None,
-                "gain": self.latest.gain if self.latest else None, "tracking": self.tracker is not None}
+                "gain": self.latest.gain if self.latest else None, "tracking": self.tracker is not None,
+                "settings": self.camera_settings()}
+
+    def camera_settings(self) -> dict:
+        """What the board's latest H line says the camera is set to (changes after a CAM command)."""
+        h = self.header
+
+        def num(k):
+            try:
+                return int(float(h[k]))
+            except (KeyError, TypeError, ValueError):
+                return None
+        return {"aec": h.get("aec") == "1", "exposure": num("exposure"), "gain": num("gain"),
+                "fps": num("fs"), "win": num("win") or 0,
+                # the sensor window (FOV) is gray8 only: a square of win x win SVGA px, frame size .. 600
+                "win_ok": self.fmt == FMT_GRAY8, "win_min": max(self.w, self.h), "win_max": 600}
 
     def summary(self) -> dict:
         st = self.stats
