@@ -160,7 +160,7 @@ def test_operator_camera_settings(tmp_path):
     v = cam()
     assert v["settings"] == {"aec": False, "exposure": 300, "gain": 2, "fps": 25, "win": 0,
                              "win_ok": True, "win_min": 160, "win_max": 600,
-                             "mode": None, "fps_sensor": None, "line_us": None, "exp_max": None, "ir": None}
+                             "mode": None, "fps_sensor": None, "line_us": None, "exp_max": None, "ir": 100}
     url = f"{api}/video/{v['stream']}/settings"
     r = c.post(url, json={"exposure": 450, "gain": 5, "win": 322})
     assert r.status_code == 200 and r.json()["command"] == "CAM EXP=450 GAIN=5 WIN=320"
@@ -179,6 +179,11 @@ def test_operator_camera_settings(tmp_path):
     assert [e["command"] for e in evs] == ["CAM EXP=450 GAIN=5 WIN=320", "CAM AEC=1"]
     # IR illuminator and fps cap (0 = no cap) pass through as they are
     assert c.post(url, json={"ir": 40, "fps": 0}).json()["command"] == "CAM FPS=0 IR=40"
+    for _ in range(30):  # the sim answers with a fresh H line, like the firmware
+        if cam()["settings"]["ir"] == 40:
+            break
+        time.sleep(0.1)
+    assert cam()["settings"]["ir"] == 40
     assert c.post(url, json={"mode": "cif", "win": 200}).json()["command"] == "CAM MODE=CIF WIN=200"
     for bad in ({"ir": 101}, {"ir": -1}, {"fps": 121}, {"mode": "uxga"}, {"mode": "cif", "win": 300}):
         assert c.post(url, json=bad).status_code == 400, bad

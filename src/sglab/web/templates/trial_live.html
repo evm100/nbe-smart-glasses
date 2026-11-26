@@ -60,6 +60,9 @@ details.mini select { width: 100%; margin-top: 6px; font-size: 12px; }
 .cam-ctl .ctl-foot { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .cam-ctl .ctl-state { font-size: 12px; color: var(--text-2); }
 .cam-ctl .ctl-state.dirty { color: var(--warn); }
+.cam-ctl .k-ir-row { border-top: 1px solid var(--border); padding-top: 6px; }
+.cam-ctl .k-ir { padding: 2px 8px; }
+.cam-ctl .k-ir.on { background: #be123c; border-color: #be123c; color: #fff; }
 .cam .stats { font-variant-numeric: tabular-nums; }
 .eye-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px; }
 .eye-stats div { background: var(--grid); border-radius: 8px; padding: 6px 8px; }
@@ -649,6 +652,9 @@ function showCameras(list) {
               <div class="row k-win-row" title="Sensor window: a smaller square shows less of the scene, bigger (zoomed in). The frame size stays the same."><span>Field of view</span><input type="range" class="k-win-r" step="4"><input type="number" class="k-win" step="4"></div>
               <div class="k-win-extra" style="display:flex; justify-content:space-between; gap:8px"><span class="note">← narrower (zoom in) · wider →</span>
                 <label class="chk note" title="The board's stock framing, no sensor window."><input type="checkbox" class="k-stock"> stock framing</label></div>
+              <div class="row k-ir-row" title="IR illuminator (D0): on/off and brightness (PWM, % of full). Applies right away; it is only lit while recording."><span><button type="button" class="k-ir" aria-pressed="false">IR off</button></span>
+                <input type="range" class="k-ir-r" min="1" max="100" step="1" value="100"><input type="number" class="k-ir-n" min="1" max="100" step="1" value="100"></div>
+              <div class="note k-ir-none" hidden>No IR LED in this board's firmware (CONFIG_PPG_CAM_IR_GPIO).</div>
               <div class="ctl-foot"><span class="ctl-state">matches the board</span>
                 <span class="btnrow"><button type="button" class="k-revert" disabled>Revert</button><button type="button" class="primary k-apply" disabled>Apply</button></span></div>
             </div></div>
@@ -768,6 +774,7 @@ function initCamCtl(name, c, s0) {
   };
   c.ctl = {sync(s) {
     board = s;
+    if (box._irSync) box._irSync(s);
     if (pending) {
       const ok = ['aec', 'exposure', 'gain', 'win'].every(k => !(k in pending) || (k === 'aec' ? !!s.aec === pending.aec : (s[k] || 0) === pending[k]));
       if (ok) { pending = null; show('matches the board'); }
@@ -777,6 +784,43 @@ function initCamCtl(name, c, s0) {
     if (!dirty) fill(s);
   }};
   fill(s0);
+  initIr(name, box, s0);
+}
+// IR LED: its own control, sent at once (button = on/off, slider on release). Off is "CAM IR=0", so
+// the brightness to switch back on with is kept here (and per stream in localStorage).
+function initIr(name, box, s0) {
+  const q = k => box.querySelector(k), btn = q('.k-ir'), r = q('.k-ir-r'), n = q('.k-ir-n'), row = q('.k-ir-row');
+  const key = 'irLevel:' + name;
+  if (s0.ir == null) { row.classList.add('off'); [btn, r, n].forEach(e => e.disabled = true); q('.k-ir-none').hidden = false; return; }
+  let level = +localStorage.getItem(key) || (s0.ir > 0 ? s0.ir : 100), on = s0.ir > 0, busy = false;
+  const paint = () => {
+    btn.textContent = on ? 'IR on' : 'IR off'; btn.classList.toggle('on', on); btn.setAttribute('aria-pressed', on);
+    if (document.activeElement !== r && document.activeElement !== n) r.value = n.value = level;
+  };
+  const send = async ir => {
+    busy = true;
+    try {
+      const res = await fetch(`${API}/video/${encodeURIComponent(name)}/settings`, {method: 'POST',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ir})});
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || j.detail || res.statusText);
+      flash(`camera: ${j.command}`);
+    } catch (e) { flash('IR LED: ' + e.message, true); }
+    setTimeout(() => { busy = false; }, 1500);  // let the board's fresh H line arrive before following it again
+  };
+  const setLevel = v => {
+    level = Math.max(1, Math.min(100, Math.round(+v) || 1)); localStorage.setItem(key, level); paint();
+    if (on) send(level);
+  };
+  btn.onclick = () => { on = !on; paint(); send(on ? level : 0); };
+  r.oninput = () => { n.value = r.value; };
+  r.onchange = () => setLevel(r.value);
+  n.onchange = () => setLevel(n.value);
+  box._irSync = s => {
+    if (busy || s.ir == null) return;
+    on = s.ir > 0; if (on) level = s.ir; paint();
+  };
+  paint();
 }
 async function pollCam(name, c) {
   // one request in flight per camera: on a slow link the preview skips frames instead of queueing them

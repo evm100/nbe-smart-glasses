@@ -155,7 +155,7 @@ absolute maximum ratings.
  3V3 ──[R]──►|── LED (anode → cathode)
                  │
                  D
- GPIO4 (D3) ─[100 Ω]─ G   N-MOSFET, logic level (AO3400A / DMG2302U / SI2302)
+ GPIO1 (D0) ─[100 Ω]─ G   N-MOSFET, logic level (AO3400A / DMG2302U / SI2302)
                  │ S
  100 kΩ G→GND    GND
 ```
@@ -166,7 +166,8 @@ absolute maximum ratings.
 - The 100 kΩ pull-down keeps the LED off during reset and boot.
 - For a quick prototype at 10 mA or less, you can drive the LED directly from the GPIO through about
   150–180 Ω.
-- Firmware: set `CONFIG_PPG_CAM_IR_GPIO=4` (commented out in `sdkconfig.camera`). The LED is on from
+- Firmware: `CONFIG_PPG_CAM_IR_GPIO=1` (D0, set in `sdkconfig.camera`). The live view's camera settings
+  have an IR LED switch and brightness slider (`CAM IR=0` = off). The LED is on from
   START to STOP only. `CAM IR=0..100` sets its brightness with 312 kHz PWM (period 3.2 µs, far below
   one 59.5 µs line, so no rolling-shutter bands). 100 = plain DC, which is preferred.
 - Keep the light **steady**, without frame sync or low-frequency PWM. The OV2640 has a rolling shutter
