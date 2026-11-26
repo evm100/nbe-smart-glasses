@@ -3,20 +3,21 @@
 Pages
     GET /board            the board: composer, filters (?kind= &state=open|done|all &q= &session= &device= &page=)
     GET /board/{id}       one post with its whole thread (also reachable as /board#post-{id})
-    GET /board/{id}/download   the post as a Markdown file
+    GET /board/{id}/download   the post as a Markdown file (an HTML page: the .html file)
+    GET /board/{id}/page       an HTML page post on its own, sandboxed (see sglab.web.htmldoc); ?theme=light|dark
     GET /board/feedback   what people said about the pages of this site (the menu's "Feedback" button)
 
 JSON API (errors are {"error": "..."} like the rest of the server)
     GET    /api/board                 list; filters kind, state (open|done), session, device, q, limit, offset
     GET    /api/board/summary         counts + the 5 most recent posts (nav badge, home page)
     GET    /api/board/{id}            one post
-    POST   /api/board                 {kind, title, body, session_id?, device?, tags?, author?}  -> 201, the post
-    PATCH  /api/board/{id}            any of {kind, title, body, session_id, device, tags, state, pinned} -> the post
+    POST   /api/board                 {kind, title, body, format?, session_id?, device?, tags?, author?}  -> 201, the post
+    PATCH  /api/board/{id}            any of {kind, title, body, format, session_id, device, tags, state, pinned} -> the post
     DELETE /api/board/{id}
     POST   /api/board/{id}/replies    {body, author?}  -> 201, the post (with the new reply)
     DELETE /api/board/replies/{rid}   -> the post
     POST   /api/board/{id}/react      {reaction, on?, author?, guest?}  -> the post (on omitted = toggle)
-    POST   /api/board/preview         {body} -> {"html": ...}   (the composer's Preview)
+    POST   /api/board/preview         {body, format?} -> {"html": ...} (Markdown) | {"srcdoc": ...} (an HTML page)
     POST   /api/feedback              {page, page_title?, part?, mood?, text?, signed?, author?} -> 201 {id, token, ...}
     PATCH  /api/feedback/{id}         {token, mood?, text?, part?, signed?, author?}  (only the sender, with the token)
     GET    /api/feedback              {"summary": [...per page area...], "items": [...newest first...]}
@@ -35,6 +36,7 @@ POST =
      "kind": "question",            # announcement | note | question | request | issue | status
      "kind_label": "Question",
      "title": "...", "body": "... Markdown (plain text is fine) ...",
+     "format": "md",                # md | html (body is a whole page, shown sandboxed from /board/{id}/page)
      "excerpt": "first ~240 characters as plain text", "minutes": 3,   # reading time
      "author": "olga",              # username (accounts) or the typed name (single-user mode)
      "author_name": "Olga",         # name to show
@@ -76,7 +78,7 @@ from markupsafe import Markup, escape
 
 from ..auth import has_role
 from ..board import KINDS, MOODS, REACTIONS, STATEFUL, BoardError, BoardStore
-from . import md
+from . import htmldoc, md
 from .security import require
 
 router = APIRouter()
@@ -169,8 +171,10 @@ def decorate(ctx, user: dict, p: dict, me: set[str] | None = None) -> dict:
     p["kind_label"] = info[0]
     p["state_label"] = info[5][0 if p["state"] == "open" else 1] if info[5] else None
     p["can"] = _can(ctx, user, p)
-    p["excerpt"] = md.excerpt(p.get("body"))
-    p["minutes"] = md.reading_minutes(p.get("body"))
+    p["format"] = p.get("format") or "md"
+    fmt = htmldoc if p["format"] == "html" else md
+    p["excerpt"] = fmt.excerpt(p.get("body"))
+    p["minutes"] = fmt.reading_minutes(p.get("body"))
     me = _me(ctx, user) if me is None else me
     given = p.pop("reactions", None) or {}
     p["reactions"] = [{"key": k, "emoji": e, "label": lab, "n": len(given.get(k, [])),
@@ -265,7 +269,8 @@ def _page_ctx(ctx, user: dict) -> dict:
                        "ph_title": KIND_INFO[k][3], "ph_body": KIND_INFO[k][4],
                        "done_button": KIND_INFO[k][5][2] if KIND_INFO[k][5] else None} for k in KIND_ORDER],
             "can_post": can_post(user), "post_role": POST_ROLE, "ask_name": not ctx.auth,
-            "session_options": sessions, "device_options": devices, "rich": rich, "ago": ago}
+            "session_options": sessions, "device_options": devices, "rich": rich, "ago": ago,
+            "frame_sandbox": htmldoc.FRAME_SANDBOX}
 
 
 @router.get("/board", response_class=HTMLResponse)
@@ -315,10 +320,24 @@ def feedback_page(request: Request, area: str | None = None, user=viewer):
         "moods": MOODS, "ago": ago, "can_delete": has_role(user, "admin")})
 
 
+@router.get("/board/{pid}/page")
+def board_html_page(request: Request, pid: int, user=viewer):
+    """An HTML page post, sandboxed and cut off from the network (sglab.web.htmldoc)."""
+    p = _post_or_404(C(request), pid)
+    if p.get("format") != "html":
+        raise HTTPException(404, "This post is not an HTML page.")
+    return HTMLResponse(htmldoc.page(p["body"]), headers={
+        "Content-Security-Policy": htmldoc.CSP, "X-Frame-Options": "SAMEORIGIN", "Cache-Control": "private, no-cache"})
+
+
 @router.get("/board/{pid}/download")
 def board_download(request: Request, pid: int, user=viewer):
     p = _post_or_404(C(request), pid)
     slug = re.sub(r"[^\w\-]+", "_", p["title"]).strip("_")[:80] or f"post_{pid}"
+    if p.get("format") == "html":  # an attachment: saved, never shown on this site's origin
+        return Response(p["body"], media_type="text/html; charset=utf-8", headers={
+            "Content-Disposition": f"attachment; filename=\"{slug}.html\"; filename*=UTF-8''{quote(slug)}.html",
+            "Content-Security-Policy": htmldoc.CSP})
     text = p["body"] if md.first_heading(p["body"])[0] else f"# {p['title']}\n\n{p['body']}"
     return Response(text.rstrip() + "\n", media_type="text/markdown; charset=utf-8", headers={
         "Content-Disposition": f"attachment; filename=\"{slug}.md\"; filename*=UTF-8''{quote(slug)}.md"})
@@ -366,7 +385,7 @@ async def api_create(request: Request, user=Depends(require(POST_ROLE))):
     try:
         p = store(ctx).create(author, str(data.get("kind") or "note"), data.get("title"), data.get("body"),
                               author_name=name, session_id=_session_id(ctx, data.get("session_id")),
-                              device=data.get("device"), tags=data.get("tags"))
+                              device=data.get("device"), tags=data.get("tags"), format=str(data.get("format") or "md"))
     except BoardError as e:
         raise HTTPException(400, str(e)) from None
     ctx.audit(request, "board.post", str(p["id"]), {"kind": p["kind"], "title": p["title"]})
@@ -380,7 +399,7 @@ async def api_patch(request: Request, pid: int, user=viewer):
     ctx, data, b = C(request), await _json(request), store(C(request))
     p = _post_or_404(ctx, pid)
     can = _can(ctx, user, p)
-    text = {k: data[k] for k in ("kind", "title", "body", "session_id", "device", "tags") if k in data}
+    text = {k: data[k] for k in ("kind", "title", "body", "format", "session_id", "device", "tags") if k in data}
     if text and not can["edit"]:
         raise HTTPException(403, "Only the person who wrote this post (or an admin) can change it.")
     if "pinned" in data and not can["pin"]:
@@ -467,6 +486,8 @@ async def api_react(request: Request, pid: int, user=viewer):
 @router.post("/api/board/preview")
 async def api_preview(request: Request, user=viewer):
     data = await _json(request)
+    if data.get("format") == "html":
+        return {"srcdoc": htmldoc.page(str(data.get("body") or "")[:3_000_000], preview=True)}
     return {"html": str(md.render(str(data.get("body") or "")[:200_000]))}
 
 

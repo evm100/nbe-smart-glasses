@@ -11,6 +11,7 @@
 .k-doc .sign::before { content: "¶ "; }
 .sign::before { color: var(--k); font-weight: 700; }
 .board { max-width: 860px; }
+.board.wide { max-width: 1180px; }   /* one HTML page post: give its design room */
 .board [hidden] { display: none !important; }   /* our display: rules must not un-hide things */
 .board textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border);
   border-radius: 6px; padding: 7px 9px; width: 100%; resize: vertical; display: block; }
@@ -53,6 +54,12 @@
 .post .excerpt:hover { color: var(--text); }
 .post .body { margin-top: 10px; }
 .post.k-doc .body { font-size: 15px; line-height: 1.6; }
+/* HTML page posts: their own sandboxed frame, as tall as the page (it reports its height) */
+.docframe { display: block; width: 100%; height: 480px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.htmldoc .note { margin-top: 6px; }
+.fmtbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 6px 10px; border-radius: 6px; background: var(--grid); font-size: 13px; }
+.md-preview.page { padding: 0; border: 0; max-height: none; }
+.md-preview.page .docframe { height: 560px; }
 .react-row { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
 .react-row .toggle { margin-left: auto; font-size: 13px; }
 .rx { padding: 2px 8px; border-radius: 999px; font-size: 13px; line-height: 20px; background: transparent;
@@ -123,7 +130,7 @@
 {% macro post_card(p, full=False) %}
 {% set kd = kinds | selectattr('key', 'equalto', p.kind) | first %}
 <article class="card post k-{{ p.kind }}{{ ' done' if p.state == 'done' and p.state_label }}{{ ' open' if full }}" id="post-{{ p.id }}" data-id="{{ p.id }}"
-         data-kind="{{ p.kind }}" data-title="{{ p.title }}" data-session="{{ p.session_id or '' }}"
+         data-kind="{{ p.kind }}" data-format="{{ p.format }}" data-title="{{ p.title }}" data-session="{{ p.session_id or '' }}"
          data-device="{{ p.device or '' }}" data-tags="{{ p.tags | join(', ') }}">
   <div class="view">
     <div class="post-head">
@@ -138,7 +145,12 @@
       {%- if p.state == 'done' and p.state_label and p.closed_by %} · {{ p.state_label }} by {{ p.closed_by }}{% endif %}</div>
     {% if not full and p.excerpt %}<div class="excerpt if-closed" data-act="toggle">{{ p.excerpt }}</div>{% endif %}
     <div class="if-open">
-    {% if p.body %}<div class="body md">{{ rich(p.body) }}</div>{% endif %}
+    {% if p.body and p.format == 'html' %}
+    <div class="body htmldoc">
+      <iframe class="docframe" title="{{ p.title }}" sandbox="{{ frame_sandbox }}" data-src="{{ p.url }}/page" referrerpolicy="no-referrer"></iframe>
+      <div class="note">An HTML page, shown in a sandbox (it can't reach the network or this site). <a href="{{ p.url }}/page" target="_blank" rel="noopener">Open it on its own ↗</a></div>
+    </div>
+    {% elif p.body %}<div class="body md">{{ rich(p.body) }}</div>{% endif %}
     {% if p.session_id or p.device or p.tags %}
     <div class="links">
       {% if p.session_id %}<a class="pill" href="/sessions/{{ p.session_id | urlencode }}" title="Open this recording">Recording: {{ p.session_id }}</a>{% endif %}
@@ -180,9 +192,9 @@
         title="{{ 'Stop keeping this post at the top' if p.pinned else 'Keep this post at the top of the board' }}">{{ 'Unpin' if p.pinned else 'Pin to top' }}</button>{% endif %}
       {% if p.can.edit %}<button type="button" data-act="edit">Edit</button>{% endif %}
       {% if p.can.delete %}<button type="button" data-act="delete">Delete</button>{% endif %}
-      {% if p.body %}<a class="note" href="{{ p.url }}/download" title="Save this post as a Markdown file">Download .md</a>{% endif %}
+      {% if p.body %}<a class="note" href="{{ p.url }}/download" title="Save this post as a file">Download .{{ 'html' if p.format == 'html' else 'md' }}</a>{% endif %}
     </div>
-    {% elif p.body %}<div class="acts"><a class="note" href="{{ p.url }}/download" title="Save this post as a Markdown file">Download .md</a></div>
+    {% elif p.body %}<div class="acts"><a class="note" href="{{ p.url }}/download" title="Save this post as a file">Download .{{ 'html' if p.format == 'html' else 'md' }}</a></div>
     {% endif %}
     </div>
   </div>
@@ -192,7 +204,7 @@
 {% endmacro %}
 
 {% block content %}
-<div class="board">
+<div class="board{{ ' wide' if single and single.format == 'html' }}">
 {% if single %}
 <p><a href="/board">← All posts</a></p>
 {% else %}
@@ -220,11 +232,15 @@
     <div class="note" id="kind-hint" style="margin-top:6px">{{ kinds[0].hint }}</div>
   </div>
   <input type="text" name="title" maxlength="200" aria-label="Title" placeholder="{{ kinds[0].ph_title }}">
+  <input type="hidden" name="format" value="md">
+  <div class="fmtbar" id="fmtbar" hidden><b>HTML page</b>
+    <span class="note">Shown as designed, in a sandbox with no network access – keep styles, scripts, SVG and images inside the file.</span>
+    <button type="button" class="link" id="fmt-md">Treat as Markdown instead</button></div>
   <textarea name="body" rows="3" maxlength="200000" aria-label="Details" placeholder="{{ kinds[0].ph_body }}"></textarea>
   <div class="md md-preview" id="preview" hidden></div>
   <div class="attach">
-    <button type="button" class="link" id="pick-md">Add a .md file</button>
-    <input type="file" id="md-file" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden>
+    <button type="button" class="link" id="pick-md">Add a .md or .html file</button>
+    <input type="file" id="md-file" accept=".md,.markdown,.txt,.html,.htm,text/markdown,text/plain,text/html" hidden>
     <span>or drop one anywhere on this page ·</span>
     <button type="button" class="link" id="preview-btn">Preview</button>
     <span class="note">Markdown works everywhere: **bold**, lists, # headings, tables.</span>
@@ -401,6 +417,7 @@ async function refresh() {
     if (open.has(id)) p.classList.add('open');
     if (d && details.has(id)) d.open = true;
   }
+  loadFrames($('#live'));
   dress();
 }
 // ---- reactions: one click, no page reload. Without accounts the browser is "who" (typed name, else a random id)
@@ -429,8 +446,22 @@ function drawReactions(card, p) {
   }
   markMine();
 }
+// ---- HTML page posts: frames load when their post is opened, in the site's theme, and take the page's height
+function siteTheme() { const t = document.documentElement.getAttribute('data-theme'); return t === 'light' || t === 'dark' ? t : ''; }
+function loadFrames(root) {
+  for (const f of $$('iframe.docframe[data-src]', root)) {
+    if (!f.closest('.post.open')) continue;
+    const t = siteTheme();
+    f.src = f.dataset.src + (t ? '?theme=' + t : ''); f.removeAttribute('data-src');
+  }
+}
+window.addEventListener('message', ev => {
+  const h = ev.data && +ev.data.sglabDocHeight; if (!h) return;
+  for (const f of $$('iframe.docframe')) if (f.contentWindow === ev.source) f.style.height = Math.min(Math.max(h, 80), 40000) + 'px';
+});
 function toggle(card, on) {
   card.classList.toggle('open', on);
+  if (on) loadFrames(card);
   if (on && card.getBoundingClientRect().top < 0) card.scrollIntoView({block: 'start'});
 }
 
@@ -441,6 +472,7 @@ function openEdit(card) {
   const E = f.elements;   // (form.title would be the tooltip attribute, so always go through .elements)
   card.classList.add('open');
   E.kind.value = card.dataset.kind; E.title.value = card.dataset.title; E.body.value = $('.raw', card).value;
+  if (card.dataset.format === 'html') { E.body.maxLength = 3000000; E.body.rows = 16; E.body.style.fontFamily = 'ui-monospace, monospace'; }
   E.session_id.value = card.dataset.session; E.device.value = card.dataset.device; E.tags.value = card.dataset.tags;
   $('.view', card).hidden = true; card.insertBefore(f, $('.msg', card)); E.title.focus();
 }
@@ -503,6 +535,7 @@ document.addEventListener('submit', async ev => {
     } else {
       const data = {kind: E.kind.value, title: E.title.value, body: E.body.value, session_id: E.session_id.value,
                     device: E.device.value, tags: E.tags.value};
+      if (!card) data.format = E.format.value;
       if (!data.title.trim() && !data.body.trim()) { E.title.focus(); throw new Error('Write a title or some text first.'); }
       if (card) {   // edit
         btn.disabled = true;
@@ -511,7 +544,7 @@ document.addEventListener('submit', async ev => {
         const name = who(true);
         btn.disabled = true;
         const p = await api('POST', '/api/board', {...data, ...name});
-        E.title.value = ''; E.body.value = ''; E.tags.value = ''; mem.set('board-draft', '');
+        E.title.value = ''; E.body.value = ''; E.tags.value = ''; mem.set('board-draft', ''); composer.resetFormat();
         $('#preview').hidden = true; $('#preview-btn').textContent = 'Preview';
         // make sure the new post is visible: drop filters that would hide it
         const u = new URL(location.href), kind = u.searchParams.get('kind');
@@ -535,24 +568,57 @@ if (composer) {
     const k = KINDS.find(x => x.key === E.kind.value) || KINDS[0];
     $('#kind-hint').textContent = k.hint; E.title.placeholder = k.ph_title; E.body.placeholder = k.ph_body;
   };
+  // md (Markdown / plain text) or html (a whole page: a dropped .html file, or pasted text that starts like one)
+  function setFormat(f) {
+    E.format.value = f; $('#fmtbar').hidden = f !== 'html';
+    E.body.maxLength = f === 'html' ? 3000000 : 200000;
+    E.body.style.fontFamily = f === 'html' ? 'ui-monospace, monospace' : '';
+    $('#preview').classList.toggle('page', f === 'html');
+  }
+  composer.resetFormat = () => { delete E.format.dataset.forced; setFormat('md'); };
+  const looksHtml = t => /^\s*(<!doctype html|<html[\s>])/i.test(t);
+  $('#fmt-md').addEventListener('click', () => { E.format.dataset.forced = '1'; setFormat('md'); saveDraft(); if (!$('#preview').hidden) showPreview(); });
   try {
     const d = JSON.parse(mem.get('board-draft') || '{}');
     if (d.kind && KINDS.some(x => x.key === d.kind)) E.kind.value = d.kind;
     E.title.value = d.title || ''; E.body.value = d.body || '';
+    if (d.format === 'html') setFormat('html');
   } catch (e) {}
   setKind();
   composer.addEventListener('change', setKind);
   const saveDraft = () => {
-    const d = {kind: E.kind.value, title: E.title.value, body: E.body.value};
+    const d = {kind: E.kind.value, title: E.title.value, body: E.body.value, format: E.format.value};
+    if (d.body.length > 400000) d.body = '';   // a big page doesn't fit the browser's draft storage; the file is still there
     mem.set('board-draft', d.title || d.body ? JSON.stringify(d) : '');
   };
-  composer.addEventListener('input', () => { saveDraft(); if (!$('#preview').hidden) showPreview(); });
+  composer.addEventListener('input', ev => {
+    if (ev.target === E.body && E.format.value === 'md' && !E.format.dataset.forced && looksHtml(E.body.value)) {
+      setFormat('html'); if (E.kind.value === 'note') { E.kind.value = 'doc'; setKind(); }
+    }
+    saveDraft(); if (!$('#preview').hidden) showPreview();
+  });
 
   // Markdown preview, rendered by the server exactly as the post will look
   let pv = 0;
   async function showPreview() {
     const n = ++pv, box = $('#preview');
     try {
+      if (E.format.value === 'html') {   // the page as it will look, in the same sandbox (no network)
+        clearTimeout(showPreview.t);
+        await new Promise(ok => { showPreview.t = setTimeout(ok, 600); });   // typing in a big page: don't redraw per key
+        if (n !== pv) return;
+        const d = await api('POST', '/api/board/preview', {body: E.body.value, format: 'html'});
+        if (n !== pv) return;
+        let f = $('iframe', box);
+        if (!f) {
+          box.innerHTML = '';
+          f = box.appendChild(Object.assign(document.createElement('iframe'), {className: 'docframe', title: 'Preview'}));
+          f.setAttribute('sandbox', {{ frame_sandbox | tojson }});
+          f.addEventListener('load', () => { const t = siteTheme(); if (t) f.contentWindow.postMessage({sglabTheme: t}, '*'); });
+        }
+        f.srcdoc = d.srcdoc;
+        return;
+      }
       const d = await api('POST', '/api/board/preview', {body: E.body.value});
       if (n === pv) box.innerHTML = d.html || '<span class="note">Nothing to preview yet.</span>';
     } catch (e) { box.textContent = e.message; }
@@ -563,12 +629,29 @@ if (composer) {
     if (on) showPreview();
   });
 
-  // a .md file: picked, or dropped anywhere on the page -> title from its first "# heading", text from the rest
+  // a .md file: picked, or dropped anywhere on the page -> title from its first "# heading", text from the rest.
+  // An .html file becomes an HTML page post, titled by its <title>.
   async function loadFile(file) {
     if (!file) return;
-    if (file.size > 400000) { say(composer, 'That file is too big for one post (limit about 200,000 characters).', true); return; }
+    const isHtml = /\.html?$/i.test(file.name) || file.type === 'text/html';
+    if (file.size > (isHtml ? 3000000 : 400000)) {
+      say(composer, isHtml ? 'That page is too big for one post (limit about 3 MB – shrink or drop embedded images).'
+                           : 'That file is too big for one post (limit about 200,000 characters).', true); return;
+    }
     const text = (await file.text()).replace(/^﻿/, '');
     if (E.body.value.trim() && !confirm('Replace the text you already wrote with ' + file.name + '?')) return;
+    if (isHtml) {
+      const doc = new DOMParser().parseFromString(text, 'text/html');   // inert: nothing in it runs or loads
+      const h = (doc.title || (doc.querySelector('h1') || {}).textContent || file.name.replace(/\.html?$/i, '')).replace(/\s+/g, ' ').trim();
+      E.title.value = h.slice(0, 200); E.body.value = text; setFormat('html');
+      if (E.kind.value === 'note') { E.kind.value = 'doc'; setKind(); }
+      saveDraft();
+      $('#preview').hidden = false; $('#preview-btn').textContent = 'Hide preview'; showPreview();
+      say(composer, 'Loaded ' + file.name + ' as an HTML page – check the title and the preview, then post.');
+      composer.scrollIntoView({block: 'start', behavior: 'smooth'});
+      return;
+    }
+    setFormat('md');
     const m = /^\s*#\s+(.+?)\s*#*\s*(?:\n|$)/.exec(text);
     const title = m ? m[1].trim() : file.name.replace(/\.(md|markdown|txt)$/i, '').replace(/_+/g, ' ').trim();
     E.title.value = title.slice(0, 200);
@@ -603,14 +686,16 @@ document.addEventListener('keydown', ev => {
 });
 
 dress();
+loadFrames(document);
 // a link to #post-N that is not on this page (filtered out, or on an older page): open the post itself
 const anchor = /^#post-(\d+)$/.exec(location.hash);
 if (anchor && !document.getElementById('post-' + anchor[1])) location.replace('/board/' + anchor[1]);
-else if (anchor) document.getElementById('post-' + anchor[1]).classList.add('open');
+else if (anchor) { const c = document.getElementById('post-' + anchor[1]); c.classList.add('open'); loadFrames(c); }
 // pick up other people's posts once a minute, unless you are in the middle of writing here
 setInterval(() => {
   const a = document.activeElement;
   if (document.hidden || $('.edit-form') || (a && a.closest && a.closest('#live') && a.matches('textarea, input'))) return;
+  if ($('.post.open iframe.docframe')) return;   // reloading would restart an open page (and lose its scroll)
   refresh().catch(() => {});
 }, 60000);
 </script>

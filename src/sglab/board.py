@@ -13,6 +13,8 @@ A post has a kind:
   status        work in progress           (open -> done = finished)
 Announcements, notes and write-ups have no open/done meaning; their state stays 'open'.
 Bodies and replies are Markdown (plain text is valid Markdown); rendering is the web layer's job.
+A post's body can instead be a whole HTML page (format 'html', e.g. a designed plan with SVG charts):
+the web layer shows it in a sandboxed frame with no network access, never inline in the board.
 
 A post can point at a recording (session_id) and/or a device (node id / device name)
 and carry free tags. Replies form one flat thread under the post. Anybody who can read
@@ -41,6 +43,8 @@ STATEFUL = ("question", "request", "issue", "status")  # kinds where open/done m
 COUNTED = ("question", "request", "issue")             # open ones of these = "needs attention"
 STATES = ("open", "done")
 MAX_TITLE, MAX_BODY, MAX_REPLY, MAX_NAME, MAX_TAGS = 200, 200_000, 20_000, 80, 8
+MAX_HTML = 3_000_000   # an HTML page carries its own CSS / SVG / inline images
+FORMATS = ("md", "html")
 # key -> (emoji, what it means); the order is the order of the buttons
 REACTIONS = {"up": ("👍", "agree / useful"), "down": ("👎", "disagree / not useful"), "love": ("❤️", "love it"),
              "idea": ("💡", "learned something"), "seen": ("👀", "read it"), "confused": ("😕", "confusing")}
@@ -57,6 +61,7 @@ CREATE TABLE IF NOT EXISTS board_posts (
     kind        TEXT NOT NULL,
     title       TEXT NOT NULL,
     body        TEXT NOT NULL DEFAULT '',
+    format      TEXT NOT NULL DEFAULT 'md',   -- md (Markdown / plain text) | html (a whole page)
     session_id  TEXT,
     device      TEXT,
     tags        TEXT NOT NULL DEFAULT '',   -- comma separated, lower case
@@ -145,6 +150,8 @@ class BoardStore:
         with self._con() as con:
             con.execute("PRAGMA journal_mode=WAL")
             con.executescript(SCHEMA)
+            if "format" not in {r[1] for r in con.execute("PRAGMA table_info(board_posts)")}:  # boards made before HTML pages
+                con.execute("ALTER TABLE board_posts ADD COLUMN format TEXT NOT NULL DEFAULT 'md'")
 
     @contextmanager
     def _con(self):
@@ -187,49 +194,60 @@ class BoardStore:
 
     # ---- posts -----------------------------------------------------------------
     @staticmethod
-    def _fields(kind, title, body) -> tuple[str, str, str]:
+    def _fields(kind, title, body, fmt="md") -> tuple[str, str, str, str]:
         if kind not in KINDS:
             raise BoardError(f"kind must be one of: {', '.join(KINDS)}")
-        title, body = _text(title, MAX_TITLE, "the title"), _text(body, MAX_BODY, "the text")
+        if fmt not in FORMATS:
+            raise BoardError(f"format must be one of: {', '.join(FORMATS)}")
+        title = _text(title, MAX_TITLE, "the title")
+        body = _text(body, MAX_HTML if fmt == "html" else MAX_BODY, "the page" if fmt == "html" else "the text")
+        if fmt == "html":
+            if not title:  # a page's <title> (or first <h1>) names the post
+                m = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S) or re.search(r"<h1[^>]*>(.*?)</h1>", body, re.I | re.S)
+                title = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", m.group(1))).strip()[:MAX_TITLE] if m else ""
+            if not title:
+                raise BoardError("give the page a title")
+            return kind, title, body, fmt
         if not title and body:  # quick note without a title: use its first line
             first = body.split("\n", 1)[0].strip()
             title = first if len(first) <= 80 else first[:77].rstrip() + "..."
         if not title:
             raise BoardError("write a title or some text first")
-        return kind, title, body
+        return kind, title, body, fmt
 
     def create(self, author: str, kind: str, title: str, body: str = "", *, author_name: str | None = None,
-               session_id: str | None = None, device: str | None = None, tags=None, pinned: bool = False) -> dict:
+               session_id: str | None = None, device: str | None = None, tags=None, pinned: bool = False,
+               format: str = "md") -> dict:
         author = _text(author, MAX_NAME, "the name")
         if not author:
             raise BoardError("who is writing? (name missing)")
-        kind, title, body = self._fields(kind, title, body)
+        kind, title, body, fmt = self._fields(kind, title, body, format or "md")
         now = _now()
         with self._con() as con:
             pid = con.execute(
-                "INSERT INTO board_posts (created_at, updated_at, author, author_name, kind, title, body,"
-                " session_id, device, tags, pinned) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (now, now, author, _text(author_name, MAX_NAME, "the name") or author, kind, title, body,
+                "INSERT INTO board_posts (created_at, updated_at, author, author_name, kind, title, body, format,"
+                " session_id, device, tags, pinned) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (now, now, author, _text(author_name, MAX_NAME, "the name") or author, kind, title, body, fmt,
                  _text(session_id, 120, "the session") or None, _text(device, 120, "the device") or None,
                  ",".join(clean_tags(tags)), 1 if pinned else 0)).lastrowid
         return self.get(pid)
 
     def edit(self, post_id: int, **changes) -> dict:
-        """Change any of kind / title / body / session_id / device / tags (only the ones given)."""
+        """Change any of kind / title / body / format / session_id / device / tags (only the ones given)."""
         cur = self.get(post_id)
         if cur is None:
             raise KeyError(post_id)
-        unknown = set(changes) - {"kind", "title", "body", "session_id", "device", "tags"}
+        unknown = set(changes) - {"kind", "title", "body", "format", "session_id", "device", "tags"}
         if unknown:
             raise BoardError(f"cannot change: {', '.join(sorted(unknown))}")
-        kind, title, body = self._fields(changes.get("kind", cur["kind"]), changes.get("title", cur["title"]),
-                                         changes.get("body", cur["body"]))
+        kind, title, body, fmt = self._fields(changes.get("kind", cur["kind"]), changes.get("title", cur["title"]),
+                                              changes.get("body", cur["body"]), changes.get("format") or cur["format"])
         sid = _text(changes["session_id"], 120, "the session") or None if "session_id" in changes else cur["session_id"]
         dev = _text(changes["device"], 120, "the device") or None if "device" in changes else cur["device"]
         tags = clean_tags(changes["tags"]) if "tags" in changes else cur["tags"]
         with self._con() as con:
-            con.execute("UPDATE board_posts SET kind=?, title=?, body=?, session_id=?, device=?, tags=?, updated_at=?"
-                        " WHERE id=?", (kind, title, body, sid, dev, ",".join(tags), _now(), post_id))
+            con.execute("UPDATE board_posts SET kind=?, title=?, body=?, format=?, session_id=?, device=?, tags=?,"
+                        " updated_at=? WHERE id=?", (kind, title, body, fmt, sid, dev, ",".join(tags), _now(), post_id))
             if kind not in STATEFUL:  # a question turned into a note has nothing left to be "done"
                 con.execute("UPDATE board_posts SET state='open', closed_by=NULL, closed_at=NULL WHERE id=?", (post_id,))
         return self.get(post_id)

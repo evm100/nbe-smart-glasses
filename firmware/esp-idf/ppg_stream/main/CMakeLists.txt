@@ -35,7 +35,7 @@ endif()
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "."
-    REQUIRES esp_driver_i2c esp_driver_gpio esp_driver_uart esp_driver_usb_serial_jtag esp_timer
+    REQUIRES esp_driver_i2c esp_driver_gpio esp_driver_ledc esp_driver_uart esp_driver_usb_serial_jtag esp_timer
              esp_wifi esp_netif esp_event nvs_flash mbedtls wpa_supplicant
              esp_https_ota esp_http_client app_update esp_app_format
     # espressif/mqtt and espressif/esp32-camera come from idf_component.yml (manifest

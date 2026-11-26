@@ -138,7 +138,7 @@ body.fb-pointing, body.fb-pointing * { cursor: crosshair !important; }
   <a class="brand" href="/home" style="color:inherit; text-decoration:none">NBE · lab</a>
   <nav>
     {% if is_operator %}<a href="/trial/new"><b>New trial</b></a>{% endif %}
-    <a href="/">Sessions</a><a href="/devices">Devices</a><a href="/subjects">Subjects</a><a href="/models">Models</a>
+    <a href="/">Sessions</a><a href="/devices">Devices</a><a href="/subjects">Subjects</a><a href="/models">Models</a>{% if is_operator %}<a href="/labeling">Labeling</a>{% endif %}
     <a href="/platform">Platform</a><a href="/board">Board<span id="nav-board" class="badge" hidden></span></a><a href="/help">Help</a>
     {% if is_admin %}<span class="sep"></span><a href="/admin/nodes">Nodes</a>{% if auth_enabled %}<a href="/admin/users">Users</a><a href="/admin/audit">Audit</a>{% endif %}{% endif %}
   </nav>

@@ -8,24 +8,35 @@ CONFIG_PPG_BOARD_NAME="XIAO-ESP32S3-Sense"
 CONFIG_PPG_LINK_USB_BIN=y
 CONFIG_PPG_TX_BUFFER_BYTES=32768
 CONFIG_PPG_CAMERA=y
-CONFIG_PPG_CAM_SIZE_240=y
-# no cap: every frame the sensor makes (~25 fps). The cap can only skip whole sensor frames, so 15
-# would give 12.5 fps. Run time: "CAM FPS=n".
+# Eye video for blink analysis (2026-11, see docs/EYE_CAMERA.md): ~50 fps, the same field of view as
+# before. The sensor stays in CIF mode (half the lines of SVGA, so twice the frame rate at the same
+# clock) and only its middle 160x160 CIF pixels (= 640 sensor px across, what SVGA WIN=480 + the 160
+# crop showed) are scaled to the 128x128 frame; the middle 112x112 of that is sent (12.5 kB/frame,
+# ~630 kB/s at 50 fps - the byte rate the 160x160 crop had at ~25 fps, ~75 % of the ~0.85 MB/s USB
+# Serial/JTAG measured on GLS03).
+# Before: SVGA WIN=480 on 240x240, crop 160 (25.6 kB), ~22-25 fps.
+# Run time: "CAM MODE=CIF WIN=n" (n = 128..296 CIF px: smaller = finer pixels, narrower view),
+# "CAM MODE=SVGA WIN=n" for the old mode (n = 128..600 SVGA px, ~25 fps at CLK=1).
+CONFIG_PPG_CAM_SIZE_128=y
+# no cap: every frame the sensor makes (~25 fps at CIF/CLK 3). The cap only skips whole sensor
+# frames: 25 gives exactly every other one (use it on a slow Wi-Fi). Run time: "CAM FPS=n".
 CONFIG_PPG_CAM_FPS=0
-# Sensor zoom: the sensor runs in SVGA mode (2x finer than the stock CIF framing) and only the middle
-# 376x376 SVGA pixels are scaled to the 240x240 frame (was 252; 376 = 1.5x the field of view, tested on
-# GLS03 with "CAM WIN=378", which the driver rounds down to a multiple of 4). 252 was on paper the
-# stock framing's 100x100 middle at 2.4x the resolution, but on GLS03 it showed MORE than that, so
-# the frame is cropped below.
-# "CAM WIN=n" at run time: smaller = finer pixels + smaller view (min 240), larger = the opposite.
-# SVGA has twice the lines of CIF, so clkdiv 1 (twice the driver's CIF sensor clock) keeps the sensor at
-# ~25 fps; clkdiv 3 halves it to ~12.5 (which worked, with some driver overruns). "CAM CLK=n".
-CONFIG_PPG_CAM_WINDOW=480
-CONFIG_PPG_CAM_WIN_CLKDIV=1
-# only the 160x160 middle of the zoomed frame is sent: narrower view, same pixel detail, 25.6 kB/frame
-# = ~640 kB/s at 25 fps. USB Serial/JTAG measured ~0.85 MB/s (57.6 kB frames took 67 ms), so 25 fps
-# needs frames under ~34 kB (crop <= ~180). The whole 240x240 frame managed ~12.5 fps.
-CONFIG_PPG_CAM_CROP=160
+CONFIG_PPG_CAM_WINDOW=160
+CONFIG_PPG_CAM_WIN_CIF=y
+# sensor clock = 2 x 20 MHz / (CLKDIV + 1) = 10 MHz: 25 fps in CIF, line = 119 us.
+# Measured 2026-11-25 on a spare XIAO S3 Sense (docs/EYE_CAMERA.md section 0): CLK=3 24.9 fps, <2 % lost;
+# CLK=2 ~33 fps but 3-5 % lost in ~90 ms gaps; CLK=1 (50 fps nominal) fails: the board can't take
+# that pixel clock (EV-VSYNC-OVF / FB-OVF). Run time: "CAM CLK=n". Retest on GLS03.
+CONFIG_PPG_CAM_WIN_CLKDIV=3
+CONFIG_PPG_CAM_CROP=112
+# exposure in sensor lines (119 us each at CLKDIV 3); the sensor clamps it at one frame (336 lines =
+# 40 ms at 25 fps), so the old 700 is no longer meaningful. 320 = 38 ms, about the brightest a frame
+# allows. With the IR LED fitted, go down to ~50-85 lines (6-10 ms) for sharper eyelids.
+CONFIG_PPG_CAM_EXPOSURE=320
+# one queued frame of slack between the driver and the camera task (2 = the latest only)
+CONFIG_PPG_CAM_FB_COUNT=3
+# IR illuminator (docs/EYE_CAMERA.md): uncomment once the LED + MOSFET are fitted on D3
+# CONFIG_PPG_CAM_IR_GPIO=4
 # PPG sensor settings: the Kconfig defaults (tuned for the glasses), same as the Wi-Fi nodes
 # SCCB (camera control) on I2C port 1; the MAX30102 keeps port 0 (CONFIG_PPG_I2C_PORT)
 CONFIG_SCCB_HARDWARE_I2C_DRIVER_NEW=y

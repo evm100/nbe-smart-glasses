@@ -6,7 +6,7 @@
 #include <sys/time.h>
 #include "esp_err.h"
 typedef enum { PIXFORMAT_GRAYSCALE, PIXFORMAT_JPEG } pixformat_t;
-typedef enum { FRAMESIZE_96X96, FRAMESIZE_QQVGA, FRAMESIZE_240X240, FRAMESIZE_QVGA, FRAMESIZE_VGA } framesize_t;
+typedef enum { FRAMESIZE_96X96, FRAMESIZE_QQVGA, FRAMESIZE_128X128, FRAMESIZE_240X240, FRAMESIZE_QVGA, FRAMESIZE_VGA } framesize_t;
 typedef enum { CAMERA_FB_IN_PSRAM } camera_fb_location_t;
 typedef enum { CAMERA_GRAB_LATEST } camera_grab_mode_t;
 typedef enum { LEDC_TIMER_0 } ledc_timer_t;

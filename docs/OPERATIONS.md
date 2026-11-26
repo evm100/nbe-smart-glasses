@@ -93,6 +93,7 @@ single-user mode with `--token`, send `x-sglab-token: <token>`.
 | `GET /api/sessions/{id}/hr`, `…/epochs?stream=…` | viewer | beat HR, epoch features |
 | `GET /api/devices` | viewer | devices with live state + active trials |
 | `GET /api/trials`, `GET /api/trials/{id}`, `…/live` | operator | active trials, one trial's state, live waveforms |
+| `POST /api/trials/{id}/video/{stream}/settings` `{"exposure", "gain", "aec", "win", "fps"}` | operator | change a camera while recording (the board's `CAM …` command; logged as a `camera` event). The live page's *Camera settings* panel under each feed uses it |
 | `POST /api/trials/{id}/event` `{"kind":"bp","sys_mmhg":120,"dia_mmhg":80}` | operator | log an event |
 | `POST /api/trials/{id}/stop` | operator | stop |
 | `GET /api/nodes`, `POST /api/nodes`, `PATCH /api/nodes/{id}` | admin | node registry |

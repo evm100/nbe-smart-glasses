@@ -575,6 +575,8 @@ menu "PPG stream (MAX30102)"
                 cam_drop in the S line / live page when changing this.
             config PPG_CAM_SIZE_96
                 bool "96 x 96"
+            config PPG_CAM_SIZE_128
+                bool "128 x 128"
             config PPG_CAM_SIZE_QQVGA
                 bool "160 x 120"
             config PPG_CAM_SIZE_240
@@ -611,7 +613,7 @@ menu "PPG stream (MAX30102)"
                 the frame's width or height.
 
         config PPG_CAM_WINDOW
-            int "Sensor zoom: SVGA-mode window side (0 = stock framing)"
+            int "Sensor zoom: window side in SVGA px (CIF px with PPG_CAM_WIN_CIF, max 296; 0 = stock framing)"
             depends on PPG_CAMERA && !PPG_CAM_JPEG
             range 0 600
             default 0
@@ -624,6 +626,17 @@ menu "PPG stream (MAX30102)"
                 only scales down) and a multiple of 4. On paper 250 = the view of the 100x100
                 middle of the stock 240x240 framing (the real view came out wider: check it). Run time: "CAM WIN=n" (0 = stock).
 
+        config PPG_CAM_WIN_CIF
+            bool "Sensor zoom: window in CIF mode (2x the frame rate of SVGA mode, coarser pixels)"
+            depends on PPG_CAMERA && !PPG_CAM_JPEG
+            default n
+            help
+                n: the window is counted in SVGA pixels (2 sensor px each, max 600). y: the sensor
+                stays in CIF mode (4 sensor px per pixel, window max 296) which has half the lines
+                per frame, so at the same clock it runs twice as fast: CLKDIV 1 -> ~50 fps nominal
+                (100 fps at CLKDIV 0, above the datasheet's clock). WIN=160 in CIF = 640 sensor px
+                across, the view of SVGA WIN=480 + a 160 crop. Run time: "CAM MODE=CIF" / "CAM MODE=SVGA".
+
         config PPG_CAM_WIN_CLKDIV
             int "Sensor zoom: sensor clock divider (CLKRC)"
             depends on PPG_CAMERA && !PPG_CAM_JPEG
@@ -632,16 +645,47 @@ menu "PPG stream (MAX30102)"
             help
                 Only with the sensor zoom. Sensor clock = 2 x XCLK / (n + 1). SVGA has twice
                 the lines of CIF (the stock 240x240, divider 3, ~25 fps), so 1 keeps ~25 fps and
-                3 halves it. Run time:
-                "CAM CLK=n".
+                3 halves it. In CIF mode, 1 (50 fps nominal) failed and 2 lost 3-5 % of frames on
+                the hardware tested so far (docs/EYE_CAMERA.md section 0): sdkconfig.camera uses 3.
+                Run time: "CAM CLK=n".
 
         config PPG_CAM_FPS
             int "Frame rate cap (frames/s, 0 = as fast as the sensor and USB allow)"
             depends on PPG_CAMERA
-            range 0 60
+            range 0 120
             default 0
             help
                 Can be changed at run time: "CAM FPS=10".
+
+        config PPG_CAM_FB_COUNT
+            int "Camera frame buffers (PSRAM)"
+            depends on PPG_CAMERA
+            range 2 6
+            default 3
+            help
+                The driver queues (count - 1) finished frames for the camera task. 2 = only the
+                latest one: a single slow link write makes the sensor's next frame replace it
+                (cam_miss in the S line). 3 gives one frame of slack. Cost: one frame each.
+
+
+        config PPG_CAM_IR_GPIO
+            int "IR illuminator GPIO (-1 = none)"
+            depends on PPG_CAMERA
+            range -1 48
+            default -1
+            help
+                Gate of the IR LED's low-side MOSFET (docs/EYE_CAMERA.md). On while the camera
+                streams (START..STOP), off otherwise. XIAO suggestion: D3 = GPIO4 (D0-D2 may be the
+                MAX30102 INT / marker button; GPIO3 is a strapping pin).
+
+        config PPG_CAM_IR_DUTY
+            int "IR illuminator brightness (% of DC, 312 kHz PWM below 100)"
+            depends on PPG_CAMERA && PPG_CAM_IR_GPIO >= 0
+            range 0 100
+            default 100
+            help
+                100 = steady DC (preferred). The LED current itself is set by its resistor; the
+                eye-safety limit is on that current (docs/EYE_CAMERA.md). Run time: "CAM IR=n".
 
         config PPG_CAM_AUTO_EXPOSURE
             bool "Automatic exposure and gain"
@@ -652,7 +696,7 @@ menu "PPG stream (MAX30102)"
                 motion. Fixed values below; run-time "CAM EXP=300 GAIN=2" / "CAM AEC=1".
 
         config PPG_CAM_EXPOSURE
-            int "Fixed exposure (aec_value, 0-1200)"
+            int "Fixed exposure (aec_value in sensor lines, 0-1200; one frame = 336 lines CIF / 672 SVGA)"
             depends on PPG_CAMERA
             range 0 1200
             default 700

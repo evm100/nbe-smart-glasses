@@ -185,6 +185,44 @@ def test_feedback_store(store):
     assert store.delete_feedback(a["id"]) and not store.delete_feedback(a["id"])
 
 
+def test_html_pages_store_and_migration(store, tmp_path):
+    page = "<!doctype html><html><head><title>Eye  tracking\nplan</title></head><body><h1>x</h1></body></html>"
+    p = store.create("ev", "doc", "", page, format="html")
+    assert p["format"] == "html" and p["title"] == "Eye tracking plan" and p["body"] == page
+    assert store.create("ev", "doc", "", "<h1>From <i>h1</i></h1>", format="html")["title"] == "From h1"
+    assert store.create("ev", "note", "md", "x")["format"] == "md"
+    big = "<p>" + "a" * 1_000_000 + "</p>"
+    assert store.create("ev", "doc", "big", big, format="html")["body"] == big     # pages may be larger than Markdown
+    for bad in (dict(body=big), dict(body="<p>no title</p>", format="html"), dict(body="x", format="pdf")):
+        with pytest.raises(BoardError):
+            store.create("ev", "doc", bad.pop("title", ""), **bad)
+    assert store.edit(p["id"], title="Renamed")["format"] == "html"                # editing keeps the format
+    assert store.edit(p["id"], format="md", body="now **md**")["format"] == "md"
+
+    import sqlite3                                                                   # a board from before HTML pages
+    db = tmp_path / "old.sqlite"
+    con = sqlite3.connect(db)
+    con.executescript(board_mod.SCHEMA.replace("    format      TEXT NOT NULL DEFAULT 'md',   -- md (Markdown / plain text) | html (a whole page)\n", ""))
+    con.execute("INSERT INTO board_posts (created_at, updated_at, author, kind, title) VALUES ('t','t','ev','note','old')")
+    con.commit(); con.close()
+    assert "format" not in {r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(board_posts)")}
+    assert BoardStore(db).list()[0]["format"] == "md"
+
+
+def test_htmldoc_helpers():
+    from sglab.web import htmldoc
+    page = ("<html><head><meta name='description' content='Plan &amp; methods'><style>p{}</style></head>"
+            "<body><p>Hi <b>there</b></p><svg><text>label</text></svg><script>var x</script></body></html>")
+    out = htmldoc.page(page)
+    assert out.count("sglabDocHeight") == 1 and out.index("sglabDocHeight") < out.index("</body>")
+    assert htmldoc.page("<p>no body tag</p>").endswith("</script>")
+    pv = htmldoc.page(page, preview=True)
+    assert pv.index('http-equiv="Content-Security-Policy"') < pv.index("<style>") and "default-src 'none'" in pv
+    assert htmldoc.text(page) == "Hi there" and htmldoc.excerpt(page) == "Plan & methods"
+    assert htmldoc.excerpt("<p>" + "word " * 100 + "</p>", 20).endswith("…")
+    assert "sandbox allow-scripts" in htmldoc.CSP and "allow-same-origin" not in htmldoc.CSP
+
+
 def test_markdown_render_and_excerpt():
     from sglab.web.md import excerpt, first_heading, render
     h = str(render("# T\n\n| a | b |\n|---|---|\n| **1** | [x](https://e.org) |\n\n- one\n- two\n\n<i>raw</i> "
@@ -457,7 +495,7 @@ def test_markdown_docs_collapse_and_download(server):
     assert u["vic"].get("/board/999/download").status_code == 404
     pv = u["vic"].post("/api/board/preview", json={"body": "**hi** <b>x</b>"}).json()["html"]
     assert "<strong>hi</strong>" in pv and "<b>" not in pv
-    assert "Add a .md file" in u["olga"].get("/board").text
+    assert "Add a .md or .html file" in u["olga"].get("/board").text
 
 
 def test_api_reactions(server):
@@ -525,3 +563,38 @@ def test_single_user_reactions(local):
     assert 'data-who="guest:abc123' in c.get("/board").text
     f = c.post("/api/feedback", json={"page": "/", "mood": 4, "signed": True, "author": "EV"}).json()
     assert f["who_name"] == "EV"
+
+
+def test_html_page_posts(server):
+    app, u = server
+    page = ("<!doctype html><html><head><title>Eye tracking plan</title>"
+            "<meta name=\"description\" content=\"Where the eye analysis goes next.\"></head>"
+            "<body><h1>Plan</h1><script>document.title = 'x'</script></body></html>")
+    p = post(u["olga"], kind="doc", title="", body=page, format="html")
+    assert p["format"] == "html" and p["title"] == "Eye tracking plan" and p["excerpt"] == "Where the eye analysis goes next."
+    lst = u["vic"].get("/board").text
+    assert 'class="docframe"' in lst and f'data-src="/board/{p["id"]}/page"' in lst
+    assert "<script>document.title" not in lst and "&lt;script&gt;document.title" in u["olga"].get("/board").text  # only the escaped edit copy
+    single = u["vic"].get(f"/board/{p['id']}").text
+    assert 'class="board wide"' in single and 'sandbox="allow-scripts allow-popups' in single
+
+    r = u["vic"].get(f"/board/{p['id']}/page")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
+    csp = r.headers["content-security-policy"]
+    assert csp.startswith("sandbox allow-scripts") and "default-src 'none'" in csp and "frame-ancestors 'self'" in csp
+    assert r.headers["x-frame-options"] == "SAMEORIGIN" and "<script>document.title = 'x'</script>" in r.text
+    assert "sglabDocHeight" in r.text
+    assert TestClient(app).get(f"/board/{p['id']}/page", follow_redirects=False).status_code in (303, 401)  # login needed
+    md_post = post(u["olga"], title="plain", body="text")
+    assert u["vic"].get(f"/board/{md_post['id']}/page").status_code == 404
+    assert u["vic"].get(f"/board/{md_post['id']}").headers["x-frame-options"] == "DENY"   # the board itself never framed
+
+    d = u["vic"].get(f"/board/{p['id']}/download")
+    assert d.headers["content-type"].startswith("text/html") and "attachment" in d.headers["content-disposition"]
+    assert 'filename="Eye_tracking_plan.html"' in d.headers["content-disposition"] and d.text == page
+
+    e = u["olga"].patch(f"/api/board/{p['id']}", json={"title": "Eye tracking plan v2"}).json()
+    assert e["format"] == "html" and e["title"] == "Eye tracking plan v2"
+    assert u["olga"].post("/api/board", json={"kind": "doc", "title": "t", "body": "x", "format": "pdf"}).status_code == 400
+    pv = u["vic"].post("/api/board/preview", json={"body": page, "format": "html"}).json()
+    assert "srcdoc" in pv and "default-src 'none'" in pv["srcdoc"] and "sglabDocHeight" in pv["srcdoc"]

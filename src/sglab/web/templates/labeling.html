@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Eye labeling · NBE lab{% endblock %}
+{% block head %}
+<style>
+.lbl { max-width: 980px; display: grid; gap: 14px; }
+.lbl table { width: 100%; }
+.lbl td, .lbl th { vertical-align: top; }
+.who { display: flex; flex-wrap: wrap; gap: 6px; }
+.who span { display: inline-flex; gap: 6px; align-items: center; padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; font-size: 12.5px; }
+.bar { position: relative; width: 70px; height: 6px; background: var(--grid); border-radius: 3px; overflow: hidden; }
+.bar i { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--text-2); }
+.legend b { color: var(--text); }
+</style>
+{% endblock %}
+{% block content %}
+<div class="lbl">
+  <div>
+    <h1>Eye labeling</h1>
+    <div class="sub">People mark how open the eye is in each camera frame. These labels teach and test the blink detector.
+      Everyone labels separately; where two people labeled the same recording, we can see how well they agree.</div>
+  </div>
+  <div class="card legend">
+    {% for k, v in levels.items() %}<span><b>{{ k }}</b> {{ v }}</span>{% endfor %}
+    <span>· open a recording, then use the number keys</span>
+  </div>
+
+  <h2 style="margin:8px 0 0">In progress</h2>
+  {% if rows %}
+  <div class="card" style="padding:0; overflow-x:auto">
+  <table>
+    <thead><tr><th>Recording</th><th>Camera</th><th class="num">Frames</th><th>Labeled by</th><th></th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td><a href="/sessions/{{ r.session_id | urlencode }}">{{ r.session_id }}</a></td>
+        <td>{{ r.stream }}</td>
+        <td class="num">{{ r.n_frames }}</td>
+        <td><div class="who">{% for t in r.tracks %}<span title="{{ t.n_labeled }} of {{ t.n_frames }} frames{% if t.blind %}, guesses hidden{% endif %}{% if t.source != 'human' %}, {{ t.source }}{% endif %}">
+          {{ t.labeler_name }}{% if t.source != 'human' %} ({{ t.source }}){% endif %}
+          <span class="bar" style="border:0;padding:0"><i style="width:{{ (100 * t.n_labeled / (t.n_frames or 1)) | round(0) }}%"></i></span>
+          {{ (100 * t.n_labeled / (t.n_frames or 1)) | round(0) | int }} %</span>{% endfor %}</div></td>
+        <td><a href="/sessions/{{ r.session_id | urlencode }}/label?stream={{ r.stream | urlencode }}">{{ 'Label' if can_label else 'Open' }} →</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="card note">Nobody has labeled anything yet. Pick a recording below to start.</div>
+  {% endif %}
+
+  <h2 style="margin:8px 0 0">Not labeled yet</h2>
+  {% if todo %}
+  <div class="card" style="padding:0; overflow-x:auto">
+  <table>
+    <thead><tr><th>Recording</th><th>Camera</th><th>Subject</th><th>Recorded</th><th></th></tr></thead>
+    <tbody>
+    {% for r in todo %}
+      <tr><td><a href="/sessions/{{ r.session_id | urlencode }}">{{ r.session_id }}</a></td><td>{{ r.stream }}</td>
+        <td>{{ r.subject_id or '–' }}</td><td class="note">{{ (r.started or '')[:16].replace('T', ' ') }}</td>
+        <td><a href="/sessions/{{ r.session_id | urlencode }}/label?stream={{ r.stream | urlencode }}">{{ 'Start labeling' if can_label else 'Open' }} →</a></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="card note">No other recordings with an eye camera.</div>
+  {% endif %}
+</div>
+{% endblock %}

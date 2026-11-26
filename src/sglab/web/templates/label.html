@@ -1,0 +1,688 @@
+{% extends "base.html" %}
+{% block title %}Label eye · {{ s.session_id }} · NBE lab{% endblock %}
+{% block head %}
+<style>
+.lab { display: grid; gap: 12px; }
+.lab [hidden] { display: none !important; }
+.lab-top { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; }
+.lab-top label { display: flex; gap: 6px; align-items: center; color: var(--text-2); font-size: 13px; }
+.lab-top .grow { flex: 1; }
+.lab-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; align-items: start; }
+@media (max-width: 900px) { .lab-grid { grid-template-columns: minmax(0, 1fr); } }
+.viewer { display: grid; gap: 8px; justify-items: center; }
+.framebox { position: relative; width: min(100%, 520px); background: #000; border-radius: 6px; overflow: hidden; line-height: 0; }
+.framebox canvas, .film canvas { width: 100%; image-rendering: pixelated; image-rendering: crisp-edges; display: block; }
+.framebox svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.framebox.boxing { cursor: crosshair; }
+.framebox .loading { position: absolute; inset: auto 8px 8px auto; line-height: 1.3; font-size: 12px; color: #fff; background: rgba(0,0,0,.55); padding: 2px 6px; border-radius: 4px; }
+.film { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); gap: 4px; width: min(100%, 520px); }
+.film div { display: grid; gap: 2px; cursor: pointer; }
+.film div.cur { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 2px; }
+.film i { height: 5px; border-radius: 2px; background: var(--grid); }
+.side { display: grid; gap: 12px; }
+.now { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; }
+.now dt { color: var(--text-2); } .now dd { margin: 0; font-variant-numeric: tabular-nums; }
+.now .big { font-size: 18px; font-weight: 650; }
+.levels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.levels button { display: grid; gap: 2px; justify-items: center; padding: 8px 4px; font-size: 13px; }
+.levels button kbd { font: 600 12px ui-monospace, monospace; color: var(--text-2); }
+.levels button.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.levels .sw { width: 28px; height: 8px; border-radius: 2px; }
+.acts { display: grid; gap: 6px; }
+.acts button { text-align: left; display: flex; justify-content: space-between; gap: 8px; }
+.acts kbd, .keys kbd { font: 12px ui-monospace, monospace; color: var(--text-2); }
+.keys { font-size: 12.5px; color: var(--text-2); display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; }
+.keys dd { margin: 0; }
+.tl { display: grid; gap: 6px; }
+.tl canvas { width: 100%; display: block; border-radius: 4px; background: var(--surface); border: 1px solid var(--border); }
+#tl-zoom { height: 128px; cursor: text; } #tl-all { height: 22px; cursor: pointer; }
+.progress-txt b { font-variant-numeric: tabular-nums; }
+.status { font-size: 13px; color: var(--text-2); } .status.err { color: var(--bad); }
+.blindnote { font-size: 12px; color: var(--text-2); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="lab" id="lab">
+  <p style="margin:0"><a href="/sessions/{{ s.session_id | urlencode }}">← {{ s.session_id }}</a> · <a href="/labeling">All labeling</a></p>
+  <div>
+    <h1>Label eye frames</h1>
+    <div class="sub" id="sub">For each frame, say how open the eye is. Your labels are saved as you go and are only yours: others label separately, so we can compare.</div>
+  </div>
+
+  <div class="lab-top card">
+    {% if ask_name %}<label>Your name <input type="text" id="who" maxlength="80" placeholder="e.g. EV" style="width:120px"></label>{% endif %}
+    {% if videos | length > 1 %}<label>Camera <select id="stream">{% for v in videos %}<option{{ ' selected' if v == stream }}>{{ v }}</option>{% endfor %}</select></label>{% endif %}
+    <span class="progress-txt" id="progress">Loading…</span>
+    <span class="grow"></span>
+    <label title="Hide the computer's guesses while you label. Use this for a share of sessions: it shows how much the guesses sway people.">
+      <input type="checkbox" id="blind"> Hide guesses</label>
+    <label>Compare with <select id="compare"><option value="">nobody</option></select></label>
+    <span class="status" id="status" role="status"></span>
+  </div>
+  {% if not can_label %}<div class="warn">You can look, but labeling needs an <b>{{ label_role }}</b> account.</div>{% endif %}
+
+  <div class="lab-grid">
+    <div class="viewer card">
+      <div class="framebox" id="framebox">
+        <canvas id="frame" width="160" height="160" aria-label="Current camera frame"></canvas>
+        <svg id="overlay" viewBox="0 0 160 160" preserveAspectRatio="none" aria-hidden="true">
+          <rect id="box" fill="none" stroke="#ffd24a" stroke-width="1" vector-effect="non-scaling-stroke" hidden/>
+        </svg>
+        <span class="loading" id="loading" hidden>loading frames…</span>
+      </div>
+      <div class="film" id="film"></div>
+    </div>
+
+    <div class="side">
+      <div class="card">
+        <dl class="now">
+          <dt>Frame</dt><dd><span class="big" id="n-frame">–</span> <span class="note" id="n-time"></span></dd>
+          <dt>You</dt><dd id="n-mine">–</dd>
+          <dt id="n-guess-l">Guess</dt><dd id="n-guess">–</dd>
+          <dt id="n-other-l" hidden>Other</dt><dd id="n-other" hidden>–</dd>
+          <dt id="n-step-l" hidden>Step</dt><dd id="n-step" hidden>–</dd>
+        </dl>
+      </div>
+      <div class="card">
+        <div class="levels" id="levels"></div>
+        <div class="note" style="margin-top:8px">Press a number to label this frame and move on. Drag across the timeline first to label a whole stretch.</div>
+      </div>
+      <div class="card acts">
+        <button type="button" data-a="next"><span>Next place to check</span><kbd>N</kbd></button>
+        <button type="button" data-a="accept"><span>Accept guesses up to there</span><kbd>A</kbd></button>
+        <button type="button" data-a="play"><span>Play / pause</span><kbd>Space</kbd></button>
+        <button type="button" data-a="undo"><span>Undo</span><kbd>Z</kbd></button>
+        <button type="button" data-a="boxmode"><span id="box-txt">Draw the eye box</span><kbd>B</kbd></button>
+        <button type="button" data-a="contrast"><span>Stretch contrast</span><kbd>C</kbd></button>
+      </div>
+      <details class="card"><summary>All keys</summary>
+        <dl class="keys">
+          <dt><kbd>← →</kbd></dt><dd>one frame (with Shift: 10)</dd>
+          <dt><kbd>1</kbd>–<kbd>5</kbd></dt><dd>closed … open, then next frame</dd>
+          <dt><kbd>0</kbd></dt><dd>eye not visible</dd>
+          <dt><kbd>Del</kbd></dt><dd>remove the label</dd>
+          <dt><kbd>N</kbd> / <kbd>Shift N</kbd></dt><dd>next / previous place to check</dd>
+          <dt><kbd>U</kbd></dt><dd>next unlabeled frame</dd>
+          <dt><kbd>A</kbd></dt><dd>accept the guesses from here to the next place to check (or the selection)</dd>
+          <dt><kbd>Space</kbd></dt><dd>play (Shift: quarter speed)</dd>
+          <dt><kbd>Esc</kbd></dt><dd>clear the selection</dd>
+          <dt><kbd>Z</kbd></dt><dd>undo</dd>
+          <dt><kbd>B</kbd></dt><dd>draw the eye box (drag on the picture)</dd>
+          <dt><kbd>C</kbd></dt><dd>stretch contrast</dd>
+          <dt>wheel</dt><dd>on the timeline: zoom in / out</dd>
+        </dl>
+      </details>
+    </div>
+  </div>
+
+  <div class="tl card">
+    <canvas id="tl-zoom" aria-label="Timeline around the current frame: cues, guesses, your labels"></canvas>
+    <canvas id="tl-all" aria-label="The whole recording"></canvas>
+    <div class="note" id="tl-note">Click to go to a frame · drag to select a stretch, then press a number · scroll to zoom.
+      Rows: <b>cues</b> (from a cued session: ticks = beeps, grey band = a step that must not count as a blink) · <b>guess</b> (the computer's first guess) · <b>you</b> · the person you compare with.</div>
+  </div>
+</div>
+
+<script>
+const SID = {{ s.session_id | tojson }}, CAN_LABEL = {{ 'true' if can_label else 'false' }}, ASK_NAME = {{ 'true' if ask_name else 'false' }};
+const LEVELS = {{ levels | tojson }};
+let STREAM = {{ stream | tojson }};
+const $ = id => document.getElementById(id);
+const mem = { get(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } },
+              set(k, v) { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (e) {} } };
+const U = 255;   // unlabeled
+
+// ------------------------------------------------------------------ state
+const S = {
+  n: 0, w: 160, h: 160, fps: 25, t: [], cur: 0,
+  mine: null, guess: null, open: null, other: null, otherName: '', cands: [], cues: [],
+  crop: null, sel: null, span: 300, blind: false, contrast: false, playing: false, boxing: false,
+  undo: [], pending: [], saving: false, nLabeled: 0,
+};
+let chunkN = 256;
+const chunks = new Map();     // chunk index -> Uint8Array (or a Promise while loading)
+
+function who() { const i = $('who'); return i ? i.value.trim() : ''; }
+function qs(extra) {
+  const p = new URLSearchParams({stream: STREAM, ...(extra || {})});
+  if (ASK_NAME && who()) p.set('author', who());
+  return p.toString();
+}
+async function api(method, url, body) {
+  let r;
+  try { r = await fetch(url, {method, headers: {'Content-Type': 'application/json'}, body: body ? JSON.stringify(body) : undefined, keepalive: method !== 'GET' && JSON.stringify(body || '').length < 60000}); }
+  catch (e) { throw new Error('Could not reach the server. Your labels are kept here and sent when it is back.'); }
+  if (r.status === 401) throw new Error('You have been logged out. Log in in another tab; your labels are kept here meanwhile.');
+  let d = null; try { d = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error(d && d.error ? d.error : 'Error ' + r.status);
+  return d;
+}
+function status(text, bad) { const el = $('status'); el.textContent = text || ''; el.classList.toggle('err', !!bad); }
+
+// colours: one hue, stronger = more closed; "not visible" = grey. Bar height also shows openness.
+let C = {};
+function readColors() {
+  const cs = getComputedStyle(document.documentElement), v = n => cs.getPropertyValue(n).trim();
+  C = {accent: v('--accent'), text: v('--text'), text2: v('--text-2'), muted: v('--muted'), grid: v('--grid'),
+       border: v('--border'), surface: v('--surface'), warn: v('--warn'), s4: v('--s4'), s2: v('--s2')};
+}
+function levelColor(l) {
+  if (l === U) return null;
+  if (l === 0) return C.muted;
+  const a = [0, 1, .78, .58, .4, .2][l];
+  return withAlpha(C.accent, a);
+}
+function withAlpha(col, a) {
+  const m = /^#([0-9a-f]{6})$/i.exec(col);
+  if (!m) return col;
+  const n = parseInt(m[1], 16);
+  return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
+}
+
+// ------------------------------------------------------------------ loading
+async function loadAll() {
+  status('Loading…');
+  const times = await api('GET', `/api/sessions/${encodeURIComponent(SID)}/video/${encodeURIComponent(STREAM)}/times`);
+  S.n = times.n; S.w = times.w; S.h = times.h; S.fps = times.fps || 25; S.t = times.t;
+  chunkN = Math.max(16, Math.min(512, Math.floor(6e6 / (S.w * S.h))));
+  chunks.clear();
+  $('frame').width = S.w; $('frame').height = S.h; $('overlay').setAttribute('viewBox', `0 0 ${S.w} ${S.h}`);
+  buildFilm();
+  S.span = Math.min(S.n, Math.max(60, Math.round(S.fps * 12)));
+  await loadLabels();
+  loadPrefill();
+  loadCues();
+  const saved = +mem.get('label-pos:' + SID + ':' + STREAM);
+  go(Number.isFinite(saved) && saved < S.n ? saved : 0);
+  status('');
+}
+
+async function loadLabels() {
+  const d = await api('GET', `/api/sessions/${encodeURIComponent(SID)}/eye/labels?` + qs());
+  S.mine = new Uint8Array(S.n).fill(U);
+  if (d.mine) for (let i = 0; i < Math.min(S.n, d.mine.levels.length); i++) { const c = d.mine.levels[i]; if (c !== '.') S.mine[i] = +c; }
+  S.nLabeled = d.mine ? d.mine.n_labeled : 0;
+  S.crop = d.crop; drawBox();
+  const blind = $('blind');
+  blind.checked = S.blind = !!(d.mine && d.mine.blind);
+  blind.disabled = !CAN_LABEL || (S.nLabeled > 0 && !S.blind);   // decide before you start
+  blind.parentElement.title = blind.disabled && S.nLabeled ? 'Decided when you started labeling this stream.' : blind.parentElement.title;
+  const cmp = $('compare'), keep = cmp.value;
+  cmp.innerHTML = '<option value="">nobody</option>' + d.tracks.filter(t => t.labeler !== d.me && t.source === 'human')
+    .map(t => `<option value="${esc(t.labeler)}">${esc(t.labeler_name)} · ${pct(t.n_labeled)}</option>`).join('');
+  if ([...cmp.options].some(o => o.value === keep)) cmp.value = keep;
+  S.tracks = d.tracks; S.me = d.me;
+  progress();
+}
+async function loadOther() {
+  const name = $('compare').value;
+  S.other = null; S.otherName = '';
+  $('n-other-l').hidden = $('n-other').hidden = !name;
+  if (!name) { redraw(); return; }
+  const d = await api('GET', `/api/sessions/${encodeURIComponent(SID)}/eye/labels?` + qs({labeler: name}));
+  if (!d.other) return;
+  S.other = new Uint8Array(S.n).fill(U);
+  for (let i = 0; i < Math.min(S.n, d.other.levels.length); i++) { const c = d.other.levels[i]; if (c !== '.') S.other[i] = +c; }
+  S.otherName = d.other.labeler_name;
+  $('n-other-l').textContent = S.otherName;
+  if (S.me) {
+    try {
+      const a = await api('GET', `/api/sessions/${encodeURIComponent(SID)}/eye/agreement?` + new URLSearchParams({stream: STREAM, a: S.me, b: name}));
+      if (a.n_both) status(`You and ${S.otherName} agree on ${Math.round(a.exact * 100)} % of the ${a.n_both} frames you both labeled (${Math.round(a.within_one * 100)} % within one step).`);
+    } catch (e) {}
+  }
+  redraw();
+}
+async function loadPrefill() {
+  $('n-guess').textContent = 'working it out…';
+  try {
+    const d = await api('GET', `/api/sessions/${encodeURIComponent(SID)}/eye/prefill?` + new URLSearchParams({stream: STREAM}));
+    S.guess = Uint8Array.from(d.level, c => +c);
+    S.open = d.open;
+    S.cands = d.candidates.map(c => [c[0], c[1]]);
+    mergeCands();
+  } catch (e) { $('n-guess').textContent = 'not available (' + e.message + ')'; }
+  redraw();
+}
+async function loadCues() {
+  // a cued session's log (sglab.cues, docs/CUED_SESSIONS.md): the beeps and the protocol's steps.
+  // Recordings without one simply have no cue row.
+  try {
+    const r = await fetch(`/api/sessions/${encodeURIComponent(SID)}/cues?` + new URLSearchParams({stream: STREAM}));
+    if (!r.ok) return;
+    const d = await r.json();
+    S.cues = []; S.steps = [];
+    for (const run of d.runs || []) {
+      for (const e of run.entries || []) {
+        if (e.kind !== 'cue' || e.cancelled || !Number.isFinite(+e.t_s)) continue;
+        S.cues.push({t: +e.t_s, i: Number.isInteger(e.frame_i) ? e.frame_i : frameAt(+e.t_s), action: String(e.action || ''),
+                     text: String(e.text || ''), gaze: e.gaze || null});
+      }
+      for (const st of run.steps || []) {
+        if (!Number.isFinite(+st.t_start)) continue;
+        const t1 = Number.isFinite(+st.t_end) ? +st.t_end : +st.t_start;
+        S.steps.push({i0: frameAt(+st.t_start), i1: frameAt(t1), label: String(st.label || st.step_id || ''),
+                      negative: !!st.negative, status: st.status});
+      }
+    }
+    mergeCands();
+    redraw();
+  } catch (e) {}
+}
+function stepAt(i) { return (S.steps || []).find(st => i >= st.i0 && i <= st.i1) || null; }
+function mergeCands() {
+  // places to check: the guess's dips, plus the wearer's reaction after every blink cue (a beep is
+  // followed by a blink ~150-400 ms later; a long blink holds ~1 s), merged
+  const extra = S.cues.filter(c => /blink/i.test(c.action + ' ' + c.text)).map(c => {
+    const long = /long|hold/i.test(c.action + ' ' + c.text);
+    return [c.i - 1, c.i + Math.round(S.fps * (long ? 1.9 : 1.0))];
+  });
+  const all = [...(S.cands || []), ...extra].map(([a, b]) => [Math.max(0, a), Math.min(S.n - 1, b)]).sort((x, y) => x[0] - y[0]);
+  const out = [];
+  for (const c of all) { const l = out[out.length - 1]; if (l && c[0] <= l[1] + 1) l[1] = Math.max(l[1], c[1]); else out.push([...c]); }
+  S.checks = out;
+}
+function frameAt(t) {
+  let lo = 0, hi = S.t.length - 1;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (S.t[m] < t) lo = m + 1; else hi = m; }
+  return lo > 0 && Math.abs(S.t[lo - 1] - t) < Math.abs(S.t[lo] - t) ? lo - 1 : lo;
+}
+
+function chunk(ci) {
+  let c = chunks.get(ci);
+  if (c) return c;
+  const p = fetch(`/api/sessions/${encodeURIComponent(SID)}/video/${encodeURIComponent(STREAM)}/chunk?i0=${ci * chunkN}&n=${chunkN}`)
+    .then(r => { if (!r.ok) throw new Error('frames ' + r.status); return r.arrayBuffer(); })
+    .then(b => { const a = new Uint8Array(b); chunks.set(ci, a); trimCache(ci); return a; })
+    .catch(e => { chunks.delete(ci); throw e; });
+  chunks.set(ci, p);
+  return p;
+}
+function trimCache(keep) {
+  if (chunks.size <= 14) return;
+  for (const k of [...chunks.keys()].sort((a, b) => Math.abs(b - keep) - Math.abs(a - keep)).slice(0, chunks.size - 14)) chunks.delete(k);
+}
+function frameBytes(i) {   // the frame now, or null (and its chunk starts loading)
+  const ci = Math.floor(i / chunkN), c = chunks.get(ci);
+  if (c instanceof Uint8Array) { const sz = S.w * S.h, o = (i - ci * chunkN) * sz; return c.subarray(o, o + sz); }
+  if (!c) chunk(ci).then(() => draw(), () => {});
+  return null;
+}
+
+// ------------------------------------------------------------------ drawing
+const film = [];
+function buildFilm() {
+  const el = $('film'); el.innerHTML = ''; film.length = 0;
+  for (let k = -4; k <= 4; k++) {
+    const d = document.createElement('div'), cv = document.createElement('canvas'), bar = document.createElement('i');
+    cv.width = S.w; cv.height = S.h; d.append(cv, bar); d.className = k ? '' : 'cur'; d.title = k ? (k > 0 ? '+' : '') + k + ' frames' : 'this frame';
+    d.onclick = () => go(S.cur + k);
+    el.append(d); film.push({k, cv, bar});
+  }
+}
+function paint(cv, px) {
+  const ctx = cv.getContext('2d');
+  if (!px) { ctx.fillStyle = '#111'; ctx.fillRect(0, 0, cv.width, cv.height); return; }
+  let lo = 0, hi = 255;
+  if (S.contrast) {
+    const hist = new Uint32Array(256); for (const v of px) hist[v]++;
+    let acc = 0; const n = px.length;
+    for (lo = 0; lo < 255 && (acc += hist[lo]) < n * .01; lo++);
+    acc = 0; for (hi = 255; hi > 0 && (acc += hist[hi]) < n * .01; hi--);
+    if (hi <= lo) { lo = 0; hi = 255; }
+  }
+  const img = ctx.createImageData(cv.width, cv.height), d = img.data, k = 255 / (hi - lo);
+  for (let i = 0, j = 0; i < px.length; i++, j += 4) { const v = S.contrast ? Math.max(0, Math.min(255, (px[i] - lo) * k)) : px[i]; d[j] = d[j + 1] = d[j + 2] = v; d[j + 3] = 255; }
+  ctx.putImageData(img, 0, 0);
+}
+function draw() {
+  if (!S.n) return;
+  const px = frameBytes(S.cur);
+  $('loading').hidden = !!px;
+  paint($('frame'), px);
+  for (const f of film) {
+    const i = S.cur + f.k, ok = i >= 0 && i < S.n;
+    paint(f.cv, ok ? frameBytes(i) : null);
+    f.bar.style.background = ok ? (levelColor(S.mine[i]) || C.grid) : 'transparent';
+  }
+  // prefetch around
+  const ci = Math.floor(S.cur / chunkN);
+  for (const c of [ci + 1, ci - 1]) if (c >= 0 && c * chunkN < S.n && !chunks.has(c)) chunk(c).catch(() => {});
+  info(); drawTimeline();
+}
+function info() {
+  const i = S.cur;
+  $('n-frame').textContent = `${i + 1} / ${S.n}`;
+  $('n-time').textContent = S.t.length ? fmtT(S.t[i] - S.t[0]) : '';
+  $('n-mine').textContent = S.mine[i] === U ? 'not labeled' : LEVELS[S.mine[i]];
+  $('n-guess-l').hidden = $('n-guess').hidden = S.blind;
+  if (S.guess) $('n-guess').textContent = LEVELS[S.guess[i]] + (S.open && S.open[i] != null ? ` (${Math.round(S.open[i] * 100)} %)` : '');
+  if (S.other) $('n-other').textContent = S.other[i] === U ? 'not labeled' : LEVELS[S.other[i]];
+  const st = stepAt(i), cue = S.cues.length ? S.cues.reduce((p, c) => c.i <= i && (!p || c.i > p.i) ? c : p, null) : null;
+  $('n-step-l').hidden = $('n-step').hidden = !st;
+  if (st) $('n-step').textContent = st.label.replace(/_/g, ' ') + (st.negative ? ' (not a blink)' : '')
+    + (cue && cue.i >= st.i0 ? ` · ${((S.t[i] - S.t[cue.i]) * 1000).toFixed(0)} ms after “${cue.text || cue.action}”` : '');
+  for (const b of document.querySelectorAll('#levels button')) b.classList.toggle('on', +b.dataset.l === S.mine[i]);
+}
+function fmtT(s) { const m = Math.floor(s / 60); return `${m}:${(s - m * 60).toFixed(2).padStart(5, '0')}`; }
+
+function canvasSize(cv) {
+  const r = window.devicePixelRatio || 1, w = Math.round(cv.clientWidth * r), h = Math.round(cv.clientHeight * r);
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  const ctx = cv.getContext('2d'); ctx.setTransform(r, 0, 0, r, 0, 0);
+  return [ctx, cv.clientWidth, cv.clientHeight];
+}
+function view() {
+  const span = Math.min(S.span, S.n), a = Math.max(0, Math.min(S.n - span, S.cur - Math.floor(span / 2)));
+  return [a, a + span];
+}
+const LBL = 58;   // px for row names
+function drawTimeline() {
+  const [ctx, W, H] = canvasSize($('tl-zoom'));
+  ctx.clearRect(0, 0, W, H);
+  const [a, b] = view(), span = b - a, x = i => LBL + (i - a) / span * (W - LBL - 4), fw = Math.max(1, (W - LBL - 4) / span);
+  const rows = {cue: [2, 14], guess: [18, 46], mine: [50, 98], other: [102, 124]};
+  ctx.font = '11px system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.fillStyle = C.text2;
+  ctx.fillText('cues', 4, 8); if (!S.blind) ctx.fillText('guess', 4, 32); ctx.fillText('you', 4, 74);
+  if (S.other) ctx.fillText(S.otherName.slice(0, 9), 4, 113);
+  // places to check
+  ctx.fillStyle = withAlpha(C.s4 || '#eda100', .14);
+  for (const [c0, c1] of S.checks || []) if (c1 >= a && c0 < b) ctx.fillRect(x(Math.max(c0, a)), 16, (Math.min(c1, b - 1) - Math.max(c0, a) + 1) * fw, 84);
+  // selection
+  if (S.sel) { const s0 = Math.max(S.sel[0], a), s1 = Math.min(S.sel[1], b - 1); if (s1 >= s0) { ctx.fillStyle = withAlpha(C.accent, .16); ctx.fillRect(x(s0), 0, (s1 - s0 + 1) * fw, H); } }
+  // cues
+  ctx.strokeStyle = C.s2 || C.text2; ctx.lineWidth = 1.5;
+  // steps that must not count as blinks (looking down, squinting, talking): hatched band in the cue row
+  for (const st of S.steps || []) {
+    if (st.i1 < a || st.i0 >= b) continue;
+    ctx.fillStyle = withAlpha(st.negative ? (C.muted || '#8a8984') : C.accent, st.negative ? .35 : .12);
+    ctx.fillRect(x(Math.max(st.i0, a)), rows.cue[0], (Math.min(st.i1, b - 1) - Math.max(st.i0, a) + 1) * fw, rows.cue[1] - rows.cue[0]);
+  }
+  for (const c of S.cues) if (c.i >= a && c.i < b) { ctx.beginPath(); ctx.moveTo(x(c.i) + fw / 2, rows.cue[0]); ctx.lineTo(x(c.i) + fw / 2, rows.cue[1]); ctx.stroke(); }
+  // guess: openness line
+  if (S.open && !S.blind) {
+    const [g0, g1] = rows.guess; ctx.strokeStyle = C.text2; ctx.lineWidth = 1.2; ctx.beginPath(); let pen = false;
+    for (let i = a; i < b; i++) { const v = S.open[i]; if (v == null) { pen = false; continue; } const X = x(i) + fw / 2, Y = g1 - v * (g1 - g0); pen ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); pen = true; }
+    ctx.stroke();
+  }
+  // tracks: bar height = openness, colour = level, not visible = full grey
+  const bars = (arr, [y0, y1]) => {
+    ctx.fillStyle = C.grid; ctx.fillRect(LBL, y1 - 1, W - LBL - 4, 1);
+    for (let i = a; i < b; i++) {
+      const l = arr[i]; if (l === U) continue;
+      const hh = l === 0 ? (y1 - y0) : Math.max(3, (l - 1) / 4 * (y1 - y0));
+      ctx.fillStyle = levelColor(l); ctx.fillRect(x(i), y1 - hh, Math.max(1, fw - (fw > 4 ? 1 : 0)), hh);
+    }
+  };
+  bars(S.mine, rows.mine);
+  if (S.other) bars(S.other, rows.other);
+  // cursor
+  ctx.fillStyle = C.text; ctx.fillRect(x(S.cur) + fw / 2 - 1, 0, 2, H);
+  // time ticks
+  ctx.fillStyle = C.muted; ctx.textBaseline = 'alphabetic';
+  if (S.t.length) ctx.fillText(fmtT(S.t[a] - S.t[0]), LBL, H - 1), ctx.fillText(fmtT(S.t[b - 1] - S.t[0]), W - 60, H - 1);
+
+  // the whole recording: your labels, places to check, the window shown above
+  const [c2, W2, H2] = canvasSize($('tl-all'));
+  c2.clearRect(0, 0, W2, H2);
+  const per = S.n / W2;
+  for (let px = 0; px < W2; px++) {
+    const i0 = Math.floor(px * per), i1 = Math.max(i0 + 1, Math.floor((px + 1) * per));
+    let lab = 0, minL = 9;
+    for (let i = i0; i < i1 && i < S.n; i++) if (S.mine[i] !== U) { lab++; minL = Math.min(minL, S.mine[i] || 9); }
+    if (lab) { c2.fillStyle = levelColor(minL === 9 ? 0 : minL); c2.fillRect(px, 4, 1, H2 - 8); }
+  }
+  c2.fillStyle = withAlpha(C.s4 || '#eda100', .9);
+  for (const [s0] of S.checks || []) c2.fillRect(s0 / per, H2 - 3, 1.5, 3);
+  c2.strokeStyle = C.text; c2.lineWidth = 1; c2.strokeRect(a / per + .5, .5, Math.max(2, (b - a) / per), H2 - 1);
+}
+let rafPending = false;
+function redraw() { if (!rafPending) { rafPending = true; requestAnimationFrame(() => { rafPending = false; draw(); }); } }
+
+function drawBox() {
+  const r = $('box');
+  if (!S.crop) { r.setAttribute('hidden', ''); $('box-txt').textContent = 'Draw the eye box'; return; }
+  r.removeAttribute('hidden');
+  for (const k of ['x', 'y']) r.setAttribute(k, S.crop[k]);
+  r.setAttribute('width', S.crop.w); r.setAttribute('height', S.crop.h);
+  $('box-txt').textContent = 'Redraw the eye box';
+}
+
+// ------------------------------------------------------------------ labeling
+function pct(n) { return S.n ? Math.round(100 * n / S.n) + ' %' : '–'; }
+function progress() {
+  let n = 0, nc = 0, ncd = 0;
+  for (let i = 0; i < S.n; i++) if (S.mine[i] !== U) n++;
+  for (const [a, b] of S.checks || []) for (let i = a; i <= b; i++) { nc++; if (S.mine[i] !== U) ncd++; }
+  S.nLabeled = n;
+  const others = (S.tracks || []).filter(t => t.labeler !== S.me && t.n_labeled);
+  $('progress').innerHTML = `You: <b>${pct(n)}</b> labeled` + (nc ? ` · places to check: <b>${Math.round(100 * ncd / nc)} %</b>` : '')
+    + (others.length ? ` · also labeled by ${others.map(t => esc(t.labeler_name)).join(', ')}` : '');
+}
+function set(i0, i1, lev, record = true) {
+  if (!CAN_LABEL) { status('Labeling needs an operator account.', true); return; }
+  if (ASK_NAME && !who()) { status('Type your name at the top first.', true); $('who').focus(); return; }
+  i0 = Math.max(0, i0); i1 = Math.min(S.n - 1, i1);
+  if (i1 < i0) return;
+  if (record) S.undo.push({i0, prev: S.mine.slice(i0, i1 + 1)});
+  if (S.undo.length > 200) S.undo.shift();
+  S.mine.fill(lev === null ? U : lev, i0, i1 + 1);
+  queue([[i0, i1, lev]]);
+}
+function setArray(i0, arr) {   // per-frame values (undo, accepted guesses) as runs
+  const ranges = [];
+  for (let i = 0; i < arr.length;) {
+    let j = i; while (j + 1 < arr.length && arr[j + 1] === arr[i]) j++;
+    ranges.push([i0 + i, i0 + j, arr[i] === U ? null : arr[i]]); i = j + 1;
+  }
+  for (let i = 0; i < arr.length; i++) S.mine[i0 + i] = arr[i];
+  queue(ranges);
+}
+function queue(ranges) {
+  S.pending.push(...ranges);
+  status('Saving…'); progress(); redraw();
+  clearTimeout(queue.t); queue.t = setTimeout(flush, 600);
+}
+async function flush() {
+  if (S.saving || !S.pending.length) return;
+  S.saving = true;
+  const batch = S.pending.splice(0, 2000);
+  let ok = false;
+  try {
+    const t = await api('POST', `/api/sessions/${encodeURIComponent(SID)}/eye/labels`,
+                        {stream: STREAM, ranges: batch, blind: S.blind, ...(ASK_NAME ? {author: who()} : {})});
+    S.nLabeled = t.n_labeled;
+    if (!S.me) S.me = t.labeler;
+    $('blind').disabled = !S.blind;
+    status(S.pending.length ? 'Saving…' : 'All changes saved');
+    ok = true;
+  } catch (e) {
+    S.pending.unshift(...batch);
+    status('Not saved yet: ' + e.message + ' Retrying…', true);
+  } finally {
+    S.saving = false;
+    if (S.pending.length) { clearTimeout(queue.t); queue.t = setTimeout(flush, ok ? 50 : 4000); }
+  }
+}
+window.addEventListener('beforeunload', ev => { if (S.pending.length) { flush(); ev.preventDefault(); ev.returnValue = ''; } });
+
+function label(lev) {
+  if (S.sel) { set(S.sel[0], S.sel[1], lev); S.sel = null; redraw(); return; }
+  set(S.cur, S.cur, lev);
+  go(S.cur + 1);
+}
+function nextCheck(dir) {
+  const cs = S.checks || [];
+  if (!cs.length) { status('No places to check found yet.'); return; }
+  const unl = ([a, b]) => { for (let i = a; i <= b; i++) if (S.mine[i] === U) return true; return false; };
+  const list = dir > 0 ? cs.filter(c => c[0] > S.cur) : cs.filter(c => c[1] < S.cur).reverse();
+  const c = list.find(unl) || list[0];
+  if (!c) { status(dir > 0 ? 'No more places to check after this frame.' : 'No earlier places to check.'); return; }
+  S.sel = null; go(Math.max(0, c[0]));
+}
+function nextUnlabeled() {
+  for (let i = S.cur + 1; i < S.n; i++) if (S.mine[i] === U) return go(i);
+  for (let i = 0; i < S.cur; i++) if (S.mine[i] === U) return go(i);
+  status('Every frame is labeled.');
+}
+function accept() {
+  if (S.blind) { status('Guesses are hidden for this stream, so there is nothing to accept.'); return; }
+  if (!S.guess) { status('The guesses are not ready yet.'); return; }
+  let a, b;
+  if (S.sel) [a, b] = S.sel;
+  else {
+    a = S.cur;
+    const nx = (S.checks || []).find(c => c[1] >= a);
+    b = nx ? (nx[0] > a ? nx[0] - 1 : nx[1]) : S.n - 1;
+  }
+  const prev = S.mine.slice(a, b + 1), arr = prev.slice();
+  let k = 0;
+  for (let i = 0; i < arr.length; i++) if (arr[i] === U) { arr[i] = S.guess[a + i]; k++; }
+  if (!k) { status('Those frames are already labeled.'); return; }
+  S.undo.push({i0: a, prev});
+  setArray(a, arr);
+  S.sel = null;
+  status(`Accepted ${k} guesses. Saving…`);
+  go(Math.min(S.n - 1, b + 1));
+}
+function undo() {
+  const u = S.undo.pop();
+  if (!u) { status('Nothing to undo.'); return; }
+  setArray(u.i0, u.prev);
+  go(u.i0);
+}
+function go(i) {
+  S.cur = Math.max(0, Math.min(S.n - 1, i | 0));
+  clearTimeout(go.t); go.t = setTimeout(() => mem.set('label-pos:' + SID + ':' + STREAM, String(S.cur)), 500);
+  redraw();
+}
+
+// play at the recording's own pace (or a quarter of it)
+function play(speed) {
+  if (S.playing) { S.playing = false; return; }
+  S.playing = true;
+  const t0 = S.t[S.cur], start = performance.now();
+  const step = () => {
+    if (!S.playing) return;
+    const target = t0 + (performance.now() - start) / 1000 * speed;
+    let i = S.cur; while (i + 1 < S.n && S.t[i + 1] <= target) i++;
+    if (i !== S.cur) go(i);
+    if (i >= S.n - 1) { S.playing = false; return; }
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+// ------------------------------------------------------------------ input
+const lv = $('levels');
+for (const l of [5, 4, 3, 2, 1, 0]) {
+  const b = document.createElement('button'); b.type = 'button'; b.dataset.l = l;
+  b.innerHTML = `<span class="sw"></span><span>${LEVELS[l]}</span><kbd>${l}</kbd>`;
+  b.onclick = () => label(l);
+  lv.append(b);
+}
+function paintSwatches() { for (const b of lv.querySelectorAll('button')) b.querySelector('.sw').style.background = levelColor(+b.dataset.l); }
+
+document.querySelector('.acts').addEventListener('click', ev => {
+  const b = ev.target.closest('[data-a]'); if (!b) return;
+  ({next: () => nextCheck(1), accept, play: () => play(1), undo, boxmode: boxMode, contrast: toggleContrast})[b.dataset.a]();
+});
+function toggleContrast() { S.contrast = !S.contrast; redraw(); }
+function boxMode() {
+  if (!CAN_LABEL) { status('Setting the eye box needs an operator account.', true); return; }
+  S.boxing = !S.boxing; $('framebox').classList.toggle('boxing', S.boxing);
+  status(S.boxing ? 'Drag a box around the eye on the picture (Esc to cancel). It should hold the eye in every frame, with a little margin.' : '');
+}
+document.addEventListener('keydown', ev => {
+  const t = ev.target;
+  if (t.matches && t.matches('input[type=text], textarea, select')) return;
+  if (ev.ctrlKey && ev.key.toLowerCase() === 'z') { ev.preventDefault(); undo(); return; }
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  const k = ev.key;
+  let done = true;
+  if (k === 'ArrowRight') go(S.cur + (ev.shiftKey ? 10 : 1));
+  else if (k === 'ArrowLeft') go(S.cur - (ev.shiftKey ? 10 : 1));
+  else if (k === 'Home') go(0);
+  else if (k === 'End') go(S.n - 1);
+  else if (/^[0-5]$/.test(k)) label(+k);
+  else if (k === 'Delete' || k === 'Backspace') { if (S.sel) { set(S.sel[0], S.sel[1], null); S.sel = null; redraw(); } else set(S.cur, S.cur, null); }
+  else if (k === 'n') nextCheck(1);
+  else if (k === 'N') nextCheck(-1);
+  else if (k === 'u' || k === 'U') nextUnlabeled();
+  else if (k === 'a' || k === 'A') accept();
+  else if (k === 'z' || k === 'Z') undo();
+  else if (k === 'b' || k === 'B') boxMode();
+  else if (k === 'c' || k === 'C') toggleContrast();
+  else if (k === ' ') play(ev.shiftKey ? .25 : 1);
+  else if (k === 'Escape') { S.sel = null; if (S.boxing) boxMode(); redraw(); }
+  else done = false;
+  if (done) ev.preventDefault();
+});
+
+// timeline: click = go, drag = select, wheel = zoom
+(function () {
+  const cv = $('tl-zoom');
+  let down = null;
+  const idx = ev => { const r = cv.getBoundingClientRect(), [a, b] = view(); return Math.max(0, Math.min(S.n - 1, Math.floor(a + (ev.clientX - r.left - LBL) / (r.width - LBL - 4) * (b - a)))); };
+  cv.addEventListener('pointerdown', ev => { down = {i: idx(ev), x: ev.clientX}; cv.setPointerCapture(ev.pointerId); });
+  cv.addEventListener('pointermove', ev => {
+    if (!down || Math.abs(ev.clientX - down.x) < 4) return;
+    const i = idx(ev); S.sel = [Math.min(down.i, i), Math.max(down.i, i)]; redraw();
+  });
+  cv.addEventListener('pointerup', ev => {
+    if (down && Math.abs(ev.clientX - down.x) < 4) { S.sel = null; go(down.i); }
+    else if (S.sel) status(`${S.sel[1] - S.sel[0] + 1} frames selected: press a number to label them, A to accept the guesses, Del to clear.`);
+    down = null;
+  });
+  cv.addEventListener('wheel', ev => {
+    ev.preventDefault();
+    S.span = Math.round(Math.max(30, Math.min(S.n, S.span * (ev.deltaY > 0 ? 1.25 : 0.8))));
+    redraw();
+  }, {passive: false});
+  const all = $('tl-all');
+  const seek = ev => { const r = all.getBoundingClientRect(); go(Math.floor((ev.clientX - r.left) / r.width * S.n)); };
+  all.addEventListener('pointerdown', ev => { seek(ev); all.setPointerCapture(ev.pointerId); all.onpointermove = seek; });
+  all.addEventListener('pointerup', () => { all.onpointermove = null; });
+})();
+
+// eye box: drag on the picture
+(function () {
+  const fb = $('framebox'), r = $('box');
+  let a = null;
+  const pt = ev => { const b = fb.getBoundingClientRect(); return [Math.max(0, Math.min(S.w, (ev.clientX - b.left) / b.width * S.w)), Math.max(0, Math.min(S.h, (ev.clientY - b.top) / b.height * S.h))]; };
+  fb.addEventListener('pointerdown', ev => { if (!S.boxing) return; a = pt(ev); fb.setPointerCapture(ev.pointerId); });
+  fb.addEventListener('pointermove', ev => {
+    if (!a) return; const p = pt(ev);
+    r.removeAttribute('hidden'); r.setAttribute('x', Math.min(a[0], p[0])); r.setAttribute('y', Math.min(a[1], p[1]));
+    r.setAttribute('width', Math.abs(p[0] - a[0])); r.setAttribute('height', Math.abs(p[1] - a[1]));
+  });
+  fb.addEventListener('pointerup', async ev => {
+    if (!a) return; const p = pt(ev), box = {x: Math.min(a[0], p[0]), y: Math.min(a[1], p[1]), w: Math.abs(p[0] - a[0]), h: Math.abs(p[1] - a[1])};
+    a = null; boxMode();
+    try {
+      const d = await api('PUT', `/api/sessions/${encodeURIComponent(SID)}/eye/crop`, {stream: STREAM, box, ...(ASK_NAME ? {author: who()} : {})});
+      S.crop = d.crop; drawBox();
+      status('Eye box saved. Recomputing the guesses for it…');
+      await loadPrefill(); status('Eye box saved; the guesses now look only inside it.');
+    } catch (e) { drawBox(); status(e.message, true); }
+  });
+})();
+
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c]); }
+
+$('compare').addEventListener('change', () => loadOther().catch(e => status(e.message, true)));
+$('blind').addEventListener('change', ev => { S.blind = ev.target.checked; redraw(); });
+if ($('stream')) $('stream').addEventListener('change', ev => { location.href = `/sessions/${encodeURIComponent(SID)}/label?stream=` + encodeURIComponent(ev.target.value); });
+if (ASK_NAME) {
+  const w = $('who'); w.value = mem.get('board-name');
+  w.addEventListener('change', () => { mem.set('board-name', w.value.trim()); loadLabels().then(redraw).catch(e => status(e.message, true)); });
+}
+window.addEventListener('resize', redraw);
+const themeObs = new MutationObserver(() => { readColors(); paintSwatches(); redraw(); });
+themeObs.observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { readColors(); paintSwatches(); redraw(); });
+readColors(); paintSwatches();
+loadAll().catch(e => status(e.message, true));
+</script>
+{% endblock %}

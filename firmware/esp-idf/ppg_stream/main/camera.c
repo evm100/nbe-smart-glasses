@@ -17,6 +17,7 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "esp_camera.h"
 #include "esp_log.h"
@@ -53,6 +54,10 @@ static const char *TAG = "camera";
 #define CAM_FRAMESIZE FRAMESIZE_96X96
 #define CAM_W 96
 #define CAM_H 96
+#elif CONFIG_PPG_CAM_SIZE_128
+#define CAM_FRAMESIZE FRAMESIZE_128X128
+#define CAM_W 128
+#define CAM_H 128
 #elif CONFIG_PPG_CAM_SIZE_QQVGA
 #define CAM_FRAMESIZE FRAMESIZE_QQVGA
 #define CAM_W 160
@@ -82,6 +87,18 @@ static const char *TAG = "camera";
 // The driver drops frames whose size isn't the frame size, so the window must be >= the frame size
 // (the DSP scales down only). SVGA mode has twice the lines of CIF, so WIN_CLKDIV 1 (twice the sensor
 // clock the driver uses for CIF, divider 3) keeps the sensor at ~25 fps; 3 would halve it.
+//
+// CIF windowing (CONFIG_PPG_CAM_WIN_CIF, "CAM MODE=CIF"): the same, but the sensor stays in CIF mode
+// (400x296 px, 4 sensor px each) and WIN counts CIF pixels. Frame timing (OV2640 datasheet v1.6,
+// fig. 14-17): Tline = 1190 Tclk (SVGA) / 595 Tclk (CIF), Tframe = 672 / 336 lines. Measured on
+// GLS03: stock CIF at sysclk 10 MHz and SVGA at sysclk 20 MHz both gave ~25 fps, i.e. CIF counts
+// Tclk at sysclk/2 and a line takes 1190/sysclk in both modes. CIF has half the lines, so at the same
+// sensor clock it runs twice as fast: CLKDIV 1 (sysclk = 2 x 20 MHz / 2 = 20 MHz, inside the
+// datasheet's 24 MHz for SVGA/CIF) -> 50 fps nominal, line 59.5 us; CLKDIV 0 (40 MHz, above the
+// datasheet) -> 100 fps nominal, experimental. WIN=160 CIF px = 640 sensor px across, the same view as
+// the earlier SVGA WIN=480 + 160 crop.
+// Exposure (AEC) counts lines, and "the maximum exposure time is 1 frame period even if TEX is longer"
+// (datasheet, AEC register): at CIF/CLKDIV 1 that is ~336 lines (20 ms); larger values buy nothing.
 #ifndef CONFIG_PPG_CAM_WINDOW
 #define CONFIG_PPG_CAM_WINDOW 0
 #endif
@@ -93,11 +110,105 @@ static const char *TAG = "camera";
 #endif
 #define SVGA_W 800
 #define SVGA_H 600
+#define CIF_W 400
+#define CIF_H 296               // the driver's CIF height (the DSP window must stay inside it)
 #define OV2640_MODE_SVGA 1      // ov2640_sensor_mode_t in the driver (private header): UXGA, SVGA, CIF
+#define OV2640_MODE_CIF 2
 #define OV2640_CLKRC 0x111      // set_reg(): bit 8 = sensor bank, 0x11 = CLKRC
 #define OV2640_CLKRC_2X 0x80    // what the driver sets on the S3 for gray8 (clock doubler on)
+#define OV2640_DRIVER_CIF_DIV 3 // what the driver sets for CIF framings (stock, WIN=0)
+#define OV2640_DRIVER_SVGA_DIV 7
+#define CAM_XCLK_HZ 20000000
+#define OV2640_TLINE_CLK 1190   // sysclk periods per line (SVGA; CIF the same, see above)
+#if CONFIG_PPG_CAM_WIN_CIF
+#define CAM_WIN_MODE_DEFAULT OV2640_MODE_CIF
+#else
+#define CAM_WIN_MODE_DEFAULT OV2640_MODE_SVGA
+#endif
 static volatile uint32_t s_win = CONFIG_PPG_CAM_WINDOW;
 static volatile uint32_t s_clkdiv = CONFIG_PPG_CAM_WIN_CLKDIV;
+static volatile uint32_t s_mode = CAM_WIN_MODE_DEFAULT;  // sensor mode while windowed (s_win > 0)
+
+// IR illuminator (CONFIG_PPG_CAM_IR_GPIO >= 0): on while the camera streams, off otherwise. Driven
+// with LEDC at ~312 kHz (3.2 us period, far below one 59.5 us sensor line, so the rolling shutter
+// shows no bands and the MAX30102's ambient cancellation sees it as DC). 100 % = plain DC.
+// Run time: "CAM IR=0..100" (percent). See docs/EYE_CAMERA.md for the LED, circuit and eye limits.
+#ifndef CONFIG_PPG_CAM_IR_GPIO
+#define CONFIG_PPG_CAM_IR_GPIO -1
+#endif
+#ifndef CONFIG_PPG_CAM_IR_DUTY
+#define CONFIG_PPG_CAM_IR_DUTY 100
+#endif
+#ifndef CONFIG_PPG_CAM_FB_COUNT
+#define CONFIG_PPG_CAM_FB_COUNT 3
+#endif
+static volatile uint32_t s_ir = CONFIG_PPG_CAM_IR_DUTY;
+
+static uint32_t win_max(uint32_t mode)
+{
+    return mode == OV2640_MODE_CIF ? CIF_H : SVGA_H;
+}
+
+// Sensor timing of the current setting (nominal, from the datasheet + the GLS03 calibration above).
+static uint32_t cur_mode(void)
+{
+    if (s_win) return s_mode;
+    return CAM_W <= CIF_W && CAM_H <= CIF_H ? OV2640_MODE_CIF : OV2640_MODE_SVGA;
+}
+
+static uint32_t cur_div(void)
+{
+    if (s_win) return s_clkdiv;
+    return cur_mode() == OV2640_MODE_CIF ? OV2640_DRIVER_CIF_DIV : OV2640_DRIVER_SVGA_DIV;
+}
+
+static uint32_t frame_lines(void)
+{
+    return cur_mode() == OV2640_MODE_CIF ? 336 : 672;
+}
+
+static uint32_t line_ns(void)  // one sensor line = the exposure unit
+{
+    uint64_t sysclk = 2ULL * CAM_XCLK_HZ / (cur_div() + 1);
+    return (uint32_t)(OV2640_TLINE_CLK * 1000000000ULL / sysclk);
+}
+
+static uint32_t nominal_mfps(void)  // sensor frame rate in 1/1000 fps
+{
+    return (uint32_t)(1000000000000ULL / ((uint64_t)line_ns() * frame_lines()));
+}
+
+#if CONFIG_PPG_CAM_IR_GPIO >= 0
+#include "driver/ledc.h"
+#define IR_TIMER LEDC_TIMER_1      // timer 0 / channel 0 make the camera's XCLK
+#define IR_CHANNEL LEDC_CHANNEL_1
+#define IR_RES LEDC_TIMER_8_BIT
+#define IR_FREQ_HZ 312500          // 80 MHz / 256
+static bool s_ir_ok;
+
+static void ir_init(void)
+{
+    ledc_timer_config_t t = {.speed_mode = LEDC_LOW_SPEED_MODE, .duty_resolution = IR_RES, .timer_num = IR_TIMER,
+                             // the XCLK timer runs from APB too (S3: one clock source for all LEDC timers)
+                             .freq_hz = IR_FREQ_HZ, .clk_cfg = LEDC_USE_APB_CLK};
+    ledc_channel_config_t c = {.gpio_num = CONFIG_PPG_CAM_IR_GPIO, .speed_mode = LEDC_LOW_SPEED_MODE,
+                               .channel = IR_CHANNEL, .timer_sel = IR_TIMER, .duty = 0, .hpoint = 0};
+    s_ir_ok = ledc_timer_config(&t) == ESP_OK && ledc_channel_config(&c) == ESP_OK;
+    if (!s_ir_ok) ESP_LOGE(TAG, "IR LED on GPIO %d: LEDC setup failed", CONFIG_PPG_CAM_IR_GPIO);
+}
+
+static void ir_set(bool on)
+{
+    if (!s_ir_ok) return;
+    uint32_t pct = on ? s_ir : 0, max = (1u << IR_RES);
+    uint32_t duty = pct >= 100 ? max : pct * max / 100;  // duty = 2^res: always high (DC)
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, IR_CHANNEL, duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, IR_CHANNEL);
+}
+#else
+static void ir_init(void) {}
+static void ir_set(bool on) { (void)on; }
+#endif
 
 // Centre crop (gray8 only): the 80x80 middle of the 240x240 feed at the same pixel scale, only the
 // part of the field of view the eye is in. 12 kB/frame -> 6.4 kB: far below what USB moves.
@@ -142,6 +253,40 @@ static volatile uint32_t s_null;        // esp_camera_fb_get() gave up (4 s with
 static volatile uint32_t s_capped;      // skipped by the fps cap (not lost)
 static volatile uint32_t s_wfail;       // link_write_frame() failed (host not reading)
 static volatile uint32_t s_wait_max_us, s_tx_max_us;  // per status window
+// Sensor frames that never reached us: the driver (grab-latest) replaced them because the camera task
+// was late. They never get a seq, so the PC can't see them as seq gaps; they show as gaps in t_us.
+// Counted here from the driver's capture times: an interval > 1.5 x the running frame period.
+static volatile uint32_t s_miss;
+static uint32_t s_per_us;               // running sensor frame period (camera task only; 0 = re-learn)
+static int64_t s_prev_grab_us;
+static uint32_t s_gap_run;              // consecutive "gaps": the period itself changed
+static atomic_bool s_relearn;
+static volatile uint32_t s_win_grab;    // frames grabbed in this status window (sensor rate)
+
+static void note_interval(int64_t t_us)
+{
+    if (atomic_exchange(&s_relearn, false)) {
+        s_per_us = 0;
+        s_prev_grab_us = 0;
+    }
+    if (s_prev_grab_us && t_us > s_prev_grab_us) {
+        uint32_t dt = (uint32_t)(t_us - s_prev_grab_us);
+        if (!s_per_us) {
+            s_per_us = dt;
+        } else if (dt * 2 > s_per_us * 3) {  // a gap: whole frames missing
+            if (++s_gap_run >= 8) {          // every interval long: the rate changed, not frames lost
+                s_per_us = dt;
+                s_gap_run = 0;
+            } else {
+                s_miss += (dt + s_per_us / 2) / s_per_us - 1;
+            }
+        } else {
+            s_gap_run = 0;
+            s_per_us = s_per_us - s_per_us / 16 + dt / 16;  // slow average: rides out jitter
+        }
+    }
+    s_prev_grab_us = t_us;
+}
 
 static void apply_exposure(void)
 {
@@ -168,15 +313,17 @@ static bool apply_window(void)
     sensor_t *s = esp_camera_sensor_get();
     if (!s) return false;
     int err;
-    uint32_t win = s_win;
+    uint32_t win = s_win, mode = s_mode;
     if (win) {
-        int ox = (SVGA_W - (int)win) / 2, oy = (SVGA_H - (int)win) / 2;
+        int fw = mode == OV2640_MODE_CIF ? CIF_W : SVGA_W, fh = mode == OV2640_MODE_CIF ? CIF_H : SVGA_H;
+        int ox = (fw - (int)win) / 2, oy = (fh - (int)win) / 2;
         // set_res_raw(mode, -, -, -, offsetX, offsetY, windowX, windowY, outX, outY, -, -) on the OV2640
-        err = s->set_res_raw(s, OV2640_MODE_SVGA, 0, 0, 0, ox, oy, (int)win, (int)win, CAM_W, CAM_H, true, false);
+        err = s->set_res_raw(s, (int)mode, 0, 0, 0, ox, oy, (int)win, (int)win, CAM_W, CAM_H, true, false);
         if (!err) err = s->set_reg(s, OV2640_CLKRC, 0xFF, OV2640_CLKRC_2X | (s_clkdiv & 0x3F));
     } else {
         err = s->set_framesize(s, CAM_FRAMESIZE);
     }
+    atomic_store(&s_relearn, true);  // the frame period may have changed
 #if CONFIG_PPG_CAM_VFLIP
     s->set_vflip(s, 1);
 #endif
@@ -187,8 +334,10 @@ static bool apply_window(void)
     if (err) {
         ESP_LOGE(TAG, "sensor window %u (clkdiv %u) failed: %d", (unsigned)win, (unsigned)s_clkdiv, err);
     } else if (win) {
-        ESP_LOGI(TAG, "sensor window %ux%u SVGA px (%u sensor px) -> %dx%d, clkdiv %u", (unsigned)win,
-                 (unsigned)win, (unsigned)win * 2, CAM_W, CAM_H, (unsigned)s_clkdiv);
+        unsigned per = mode == OV2640_MODE_CIF ? 4 : 2;
+        ESP_LOGI(TAG, "sensor window %ux%u %s px (%u sensor px) -> %dx%d, clkdiv %u, ~%u fps nominal", (unsigned)win,
+                 (unsigned)win, mode == OV2640_MODE_CIF ? "CIF" : "SVGA", (unsigned)win * per, CAM_W, CAM_H,
+                 (unsigned)s_clkdiv, (unsigned)(nominal_mfps() / 1000));
     }
     return !err;
 }
@@ -275,7 +424,7 @@ static void frame_stats(const uint8_t *px, size_t w, size_t h, size_t len, uint3
 static uint32_t feat_fs_mhz(void)
 {
     uint32_t cap = s_fps_cap;
-    return (cap ? cap : 25) * 1000;  // no cap: the sensor's own ~25 frames/s (nominal; see cam_fps in the S line)
+    return cap ? cap * 1000 : nominal_mfps();  // no cap: the sensor's own rate (nominal; see cam_fps in the S line)
 }
 
 static bool feat_init(void)
@@ -309,6 +458,7 @@ static void camera_step(void)
     }
     if (atomic_exchange(&s_restart, false)) {
         s_seq = 0;
+        atomic_store(&s_relearn, true);
 #if CONFIG_PPG_CAMERA_EDGE_FEATURES
         s_fs_have_prev = false;  // the first frame of a recording has no motion value
 #endif
@@ -323,7 +473,9 @@ static void camera_step(void)
         return;
     }
     s_grab++;
+    s_win_grab++;
     int64_t t_us = (int64_t)fb->timestamp.tv_sec * 1000000 + fb->timestamp.tv_usec;
+    note_interval(t_us);
     uint32_t cap = s_fps_cap;
     // the cap skips frames before they get a seq: a skipped frame is not a lost one
     if (cap && t_us - last_us < 1000000 / (int64_t)cap - 2000) {
@@ -395,7 +547,7 @@ bool camera_init(void)
         .pin_vsync = CAM_PIN_VSYNC,
         .pin_href = CAM_PIN_HREF,
         .pin_pclk = CAM_PIN_PCLK,
-        .xclk_freq_hz = 20000000,
+        .xclk_freq_hz = CAM_XCLK_HZ,
         .ledc_timer = LEDC_TIMER_0,
         .ledc_channel = LEDC_CHANNEL_0,
 #if CONFIG_PPG_CAM_JPEG
@@ -405,7 +557,9 @@ bool camera_init(void)
         .pixel_format = PIXFORMAT_GRAYSCALE,
 #endif
         .frame_size = CAM_FRAMESIZE,
-        .fb_count = 2,
+        // 3+: the driver queues fb_count - 1 frames (grab-latest drops the oldest only when all are
+        // full), so one slow link write no longer costs a sensor frame
+        .fb_count = CONFIG_PPG_CAM_FB_COUNT,
         .fb_location = CAMERA_FB_IN_PSRAM,
         .grab_mode = CAMERA_GRAB_LATEST,
     };
@@ -424,10 +578,13 @@ bool camera_init(void)
 #endif
     apply_exposure();
     if (s_win) apply_window();
+    ir_init();
+    ir_set(false);
     s_ok = true;
     xTaskCreatePinnedToCore(camera_task, "ppg_camera", 4096, NULL, 5, NULL, 0);
-    ESP_LOGI(TAG, "OV2640 %dx%d %s (sent %dx%d), cap %d fps", CAM_W, CAM_H, CAM_FMT_NAME, OUT_W, OUT_H,
-             CONFIG_PPG_CAM_FPS);
+    ESP_LOGI(TAG, "OV2640 %dx%d %s (sent %dx%d), cap %d fps, sensor ~%u fps nominal, %u fb", CAM_W, CAM_H,
+             CAM_FMT_NAME, OUT_W, OUT_H, CONFIG_PPG_CAM_FPS, (unsigned)(nominal_mfps() / 1000),
+             (unsigned)CONFIG_PPG_CAM_FB_COUNT);
     return true;
 }
 
@@ -454,6 +611,25 @@ void camera_header(pline_t *l)
         pl_str(l, ",clkdiv=");
         pl_u64(l, s_clkdiv);
     }
+    // sensor mode and timing (nominal): exposure x line_us = exposure time; exposure above exp_max
+    // (one frame) is clamped by the sensor. win_min..win_max = the range "CAM WIN=" accepts.
+#if !CONFIG_PPG_CAM_JPEG  // (the driver clocks JPEG differently: no nominal timing for it)
+    pl_str(l, cur_mode() == OV2640_MODE_CIF ? ",mode=cif" : ",mode=svga");
+    pl_str(l, ",fps_sensor=");
+    pl_fixed(l, nominal_mfps() / 100, 1);
+    pl_str(l, ",line_us=");
+    pl_fixed(l, line_ns() / 100, 1);
+    pl_str(l, ",exp_max=");
+    pl_u64(l, frame_lines());
+    pl_str(l, ",win_min=");
+    pl_u64(l, CAM_W > CAM_H ? CAM_W : CAM_H);
+    pl_str(l, ",win_max=");
+    pl_u64(l, win_max(s_win ? s_mode : CAM_WIN_MODE_DEFAULT));
+#endif
+#if CONFIG_PPG_CAM_IR_GPIO >= 0
+    pl_str(l, ",ir=");
+    pl_u64(l, s_ir);
+#endif
     if (s_aec) {
         pl_str(l, ",aec=1");
     } else {
@@ -471,11 +647,14 @@ void camera_start(void)
     atomic_store(&s_restart, true);
     atomic_store(&s_run, s_ok);
     s_window_sent = 0;
+    s_win_grab = 0;
+    ir_set(s_ok);
 }
 
 void camera_stop(void)
 {
     atomic_store(&s_run, false);
+    ir_set(false);
 }
 
 void camera_status(pline_t *l, uint32_t window_ms)
@@ -499,6 +678,12 @@ void camera_status(pline_t *l, uint32_t window_ms)
     pl_u64(l, s_wait_max_us / 1000);
     pl_str(l, ",cam_tx_ms=");    // longest USB write of a frame in this window
     pl_u64(l, s_tx_max_us / 1000);
+    // sensor side: frames/s the driver delivered, and sensor frames lost before they got a seq
+    pl_str(l, ",cam_sfps=");
+    pl_fixed(l, (int64_t)s_win_grab * 10000 / (window_ms ? window_ms : 1), 1);
+    pl_str(l, ",cam_miss=");
+    pl_u64(l, s_miss);
+    s_win_grab = 0;
     s_window_sent = 0;
     s_wait_max_us = s_tx_max_us = 0;
 }
@@ -506,13 +691,17 @@ void camera_status(pline_t *l, uint32_t window_ms)
 bool camera_command(const char *args)
 {
     bool changed = false, rewindow = false;
+#if !CONFIG_PPG_CAM_JPEG
+    uint32_t mode = s_mode;
+    long win = -1;  // -1 = not given
+#endif
     const char *p = args;
     while (*p) {
         while (*p == ' ') p++;
         const char *eq = strchr(p, '=');
         if (!eq) break;
         long v = strtol(eq + 1, NULL, 10);
-        if (strncmp(p, "FPS=", 4) == 0 && v >= 0 && v <= 60) {
+        if (strncmp(p, "FPS=", 4) == 0 && v >= 0 && v <= 120) {
             s_fps_cap = (uint32_t)v;
             changed = true;
         } else if (strncmp(p, "EXP=", 4) == 0 && v >= 0 && v <= 1200) {
@@ -526,10 +715,19 @@ bool camera_command(const char *args)
         } else if (strncmp(p, "AEC=", 4) == 0) {
             s_aec = v != 0;
             changed = true;
+        } else if (strncmp(p, "IR=", 3) == 0 && v >= 0 && v <= 100) {
+            s_ir = (uint32_t)v;
+            ir_set(atomic_load(&s_run));
+            changed = true;
 #if !CONFIG_PPG_CAM_JPEG
-        } else if (strncmp(p, "WIN=", 4) == 0 && (v == 0 || (v >= (CAM_W > CAM_H ? CAM_W : CAM_H) && v <= SVGA_H))) {
-            s_win = (uint32_t)(v & ~3L);  // the OV2640 window registers count in 4s
-            changed = rewindow = true;
+        } else if (strncmp(p, "MODE=", 5) == 0) {  // MODE=CIF / MODE=SVGA (sensor mode of the window)
+            if (strncasecmp(eq + 1, "CIF", 3) == 0) {
+                mode = OV2640_MODE_CIF;
+            } else if (strncasecmp(eq + 1, "SVGA", 4) == 0) {
+                mode = OV2640_MODE_SVGA;
+            }
+        } else if (strncmp(p, "WIN=", 4) == 0 && v >= 0) {
+            win = v;
         } else if (strncmp(p, "CLK=", 4) == 0 && v >= 0 && v <= 63) {
             s_clkdiv = (uint32_t)v;
             changed = rewindow = true;
@@ -539,6 +737,19 @@ bool camera_command(const char *args)
         if (!sp) break;
         p = sp;
     }
+#if !CONFIG_PPG_CAM_JPEG
+    // the window is checked against the mode it will be used in (MODE= may come after WIN=)
+    if (mode != s_mode) {
+        if (win < 0 && s_win > win_max(mode)) win = (long)win_max(mode);  // keep a window, shrunk to fit
+        s_mode = mode;
+        changed = rewindow = true;
+    }
+    if (win == 0 || (win >= (CAM_W > CAM_H ? CAM_W : CAM_H) && win <= (long)win_max(mode))) {
+        s_win = (uint32_t)(win & ~3L);  // the OV2640 window registers count in 4s
+        changed = rewindow = true;
+    }
+#endif
+    atomic_store(&s_relearn, true);
     if (rewindow && s_ok) {
         apply_window();  // also sets the exposure again
     } else if (changed && s_ok) {

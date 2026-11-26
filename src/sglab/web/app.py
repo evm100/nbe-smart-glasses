@@ -222,6 +222,7 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
 
     @app.middleware("http")
     async def authenticate(request: Request, call_next):
+        request.state.t_arrive_ns = time.monotonic_ns()  # cued-session clock pings (sglab.cues)
         path = request.url.path
         public = path.startswith(sec.PUBLIC_PATHS)
         if ctx.token and not auth:  # single-user mode behind a shared link token
@@ -482,4 +483,6 @@ def create_app(settings: Settings | None = None, token: str | None = None, hub=N
     app.include_router(models_router)
     from .board import router as board_router  # lab board (/board, /api/board...)
     app.include_router(board_router)
+    from .labels import router as labels_router  # eye labeling (/labeling, /sessions/{sid}/label)
+    app.include_router(labels_router)
     return app
