@@ -1,0 +1,87 @@
+{
+  "_format": [
+    "Cued-session protocols for the live trial page (sglab.cues). Edit freely; the server checks the file when the page loads.",
+    "protocol: id (letters, digits, _ -), name, summary, version, steps.",
+    "step: id, title (the big instruction), detail (smaller text), label (what the step is, for training), negative (true = should NOT count as a blink),",
+    "      lead_in_s (instruction shown before the first cue, default 3), duration_s, cues, same_as (copy an earlier step by id, then override fields).",
+    "cues: {type: repeat, every_s, count, action, text, release_after_s, release_action, release_text}  - a beep every every_s s, count times",
+    "      {type: sequence, every_s, items: [{action, text, gaze}], loop}                                   - items in turn every every_s s for the step",
+    "      {type: timed, items: [{at_s, action, text}]}                                                     - items at fixed times after the lead-in",
+    "      tone (per cues or per item): beep | release | tick | none.  gaze: ahead | up | down | left | right."
+  ],
+  "protocols": [
+    {
+      "id": "cued_blink_v1",
+      "name": "Cued blinks (about 10 min)",
+      "summary": "Spontaneous blinks, blinks on a beep, long and half blinks, then look-arounds, faces, talking and taking the glasses off (things that must not count as blinks).",
+      "version": 1,
+      "steps": [
+        {"id": "spontaneous", "label": "spontaneous_blink", "duration_s": 63, "lead_in_s": 3,
+         "title": "Look straight ahead and blink naturally",
+         "detail": "Sit comfortably. No beeps for one minute - just blink as you normally would."},
+        {"id": "blink_cued", "label": "cued_blink",
+         "title": "Blink once at each beep",
+         "detail": "One normal blink each time you hear the beep. 20 beeps, every 3 seconds.",
+         "cues": {"type": "repeat", "every_s": 3, "count": 20, "action": "blink", "text": "Blink"}},
+        {"id": "long_blink", "label": "long_blink",
+         "title": "Close your eyes at the beep, open at the low tone",
+         "detail": "Keep them closed for about one second, until the lower tone. 10 times, every 4 seconds.",
+         "cues": {"type": "repeat", "every_s": 4, "count": 10, "action": "long_blink_close", "text": "Close",
+                  "release_after_s": 1.0, "release_action": "long_blink_open", "release_text": "Open"}},
+        {"id": "half_blink", "label": "half_blink",
+         "title": "Half blink at each beep",
+         "detail": "Lower your eyelids only halfway, then open again. 10 beeps, every 3 seconds.",
+         "cues": {"type": "repeat", "every_s": 3, "count": 10, "action": "half_blink", "text": "Half blink"}},
+        {"id": "gaze", "label": "gaze_shift", "negative": true, "duration_s": 93,
+         "title": "Look where the arrow points",
+         "detail": "Move only your eyes, not your head. Looking down can look like closing - that is why we record it.",
+         "cues": {"type": "sequence", "every_s": 3, "tone": "tick", "loop": true, "items": [
+           {"action": "look_down", "text": "Look down", "gaze": "down"},
+           {"action": "look_ahead", "text": "Look ahead", "gaze": "ahead"},
+           {"action": "look_up", "text": "Look up", "gaze": "up"},
+           {"action": "look_ahead", "text": "Look ahead", "gaze": "ahead"},
+           {"action": "look_left", "text": "Look left", "gaze": "left"},
+           {"action": "look_ahead", "text": "Look ahead", "gaze": "ahead"},
+           {"action": "look_right", "text": "Look right", "gaze": "right"},
+           {"action": "look_ahead", "text": "Look ahead", "gaze": "ahead"}]}},
+        {"id": "faces", "label": "facial_expression", "negative": true, "duration_s": 33,
+         "title": "Make the face shown, hold it until the next beep",
+         "detail": "Squint, smile, frown - 10 seconds each.",
+         "cues": {"type": "timed", "items": [
+           {"at_s": 0, "action": "squint", "text": "Squint"},
+           {"at_s": 10, "action": "smile", "text": "Smile"},
+           {"at_s": 20, "action": "frown", "text": "Frown"}]}},
+        {"id": "talk", "label": "talk_head_turn", "negative": true, "duration_s": 63,
+         "title": "Talk and turn your head",
+         "detail": "Chat with the operator and look around the room now and then, for one minute."},
+        {"id": "glasses_off_on", "label": "glasses_off_on", "negative": true, "duration_s": 33,
+         "title": "Take the glasses off, then put them back on",
+         "detail": "Follow the beeps. Sit still once they are back on.",
+         "cues": {"type": "timed", "items": [
+           {"at_s": 0, "action": "glasses_off", "text": "Take them off"},
+           {"at_s": 12, "action": "glasses_on", "text": "Put them back on"}]}},
+        {"id": "blink_cued_again", "same_as": "blink_cued", "label": "cued_blink",
+         "title": "Again: blink once at each beep",
+         "detail": "Same as before, with the glasses back on. 20 beeps, every 3 seconds."}
+      ]
+    },
+    {
+      "id": "quick_check",
+      "name": "Quick check (30 s)",
+      "summary": "A short run to check the sound and the timing before the real one.",
+      "version": 1,
+      "steps": [
+        {"id": "blink_check", "label": "cued_blink", "title": "Blink once at each beep",
+         "detail": "Five beeps, every 3 seconds.",
+         "cues": {"type": "repeat", "every_s": 3, "count": 5, "action": "blink", "text": "Blink"}},
+        {"id": "gaze_check", "label": "gaze_shift", "negative": true, "duration_s": 15,
+         "title": "Look where the arrow points",
+         "cues": {"type": "sequence", "every_s": 3, "tone": "tick", "loop": false, "items": [
+           {"action": "look_down", "text": "Look down", "gaze": "down"},
+           {"action": "look_ahead", "text": "Look ahead", "gaze": "ahead"},
+           {"action": "look_up", "text": "Look up", "gaze": "up"},
+           {"action": "look_ahead", "text": "Look ahead", "gaze": "ahead"}]}}
+      ]
+    }
+  ]
+}

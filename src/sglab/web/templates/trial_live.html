@@ -49,6 +49,20 @@ details.mini select { width: 100%; margin-top: 6px; font-size: 12px; }
 .cam-view img { image-rendering: pixelated; background: var(--grid); }
 .cam-view.flash { box-shadow: 0 0 0 3px #22d3ee; border-radius: 6px; }
 .cam-side { display: grid; gap: 10px; min-width: 0; }
+.cam-ctl { margin-top: 10px; width: var(--disp, 320px); max-width: 100%; min-width: 260px; border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; display: grid; gap: 6px; font-size: 13px; }
+.cam-ctl .row { display: grid; grid-template-columns: 92px minmax(0, 1fr) 62px; gap: 8px; align-items: center; }
+.cam-ctl .row.off { opacity: .45; }
+.cam-ctl input[type=range] { width: 100%; }
+.cam-ctl input[type=number] { width: 100%; font-variant-numeric: tabular-nums; }
+.cam-ctl label.chk { display: inline-flex; gap: 5px; align-items: center; }
+.cam-ctl .ctl-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
+.cam-ctl .ctl-foot { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.cam-ctl .ctl-state { font-size: 12px; color: var(--text-2); }
+.cam-ctl .ctl-state.dirty { color: var(--warn); }
+.cam-ctl .k-ir-row { border-top: 1px solid var(--border); padding-top: 6px; }
+.cam-ctl .k-ir { padding: 2px 8px; }
+.cam-ctl .k-ir.on { background: #be123c; border-color: #be123c; color: #fff; }
 .cam .stats { font-variant-numeric: tabular-nums; }
 .eye-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px; }
 .eye-stats div { background: var(--grid); border-radius: 8px; padding: 6px 8px; }
@@ -68,6 +82,45 @@ canvas.chart { display: block; width: 100%; }
 .aux-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
 .aux-grid .tile { min-height: 110px; }
 details.health > summary { cursor: pointer; font-weight: 600; margin: 28px 0 10px; font-size: 16px; }
+
+/* cued session: big, glanceable instructions for the wearer (sglab.cues) */
+.cue-setup { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.cue-setup[hidden] { display: none; }
+.cue-steps { margin: 8px 0 0; padding-left: 22px; color: var(--text-2); font-size: 13px; }
+.cue-steps li { margin: 2px 0; } .cue-steps li b { color: var(--text); font-weight: 600; }
+.cue-stage { position: relative; min-height: 440px; margin-top: 12px; border: 2px solid var(--border); border-radius: 12px;
+  background: var(--surface); padding: 18px 20px 14px; display: grid; grid-template-rows: auto 1fr auto; gap: 10px;
+  text-align: center; overflow: hidden; transition: border-color .4s, background-color .4s; }
+.cue-stage[hidden] { display: none; }
+.cue-stage:fullscreen { min-height: 100vh; border-radius: 0; border-width: 6px; background: var(--bg); padding: 28px 36px 22px; }
+.cue-stage.hit { border-color: var(--accent); transition: none; }
+.cue-stage.newstep { border-color: var(--s3); background: var(--grid); transition: none; }
+.cue-stage.paused { border-color: var(--warn); }
+.cue-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; color: var(--text-2); font-size: 15px; }
+.cue-head .cue-count { font-size: 38px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--text); }
+.cue-mid { display: grid; align-content: center; justify-items: center; gap: 10px; position: relative; z-index: 1; }
+.cue-title { font-size: clamp(26px, 4.2vw, 54px); font-weight: 650; line-height: 1.15; max-width: 22ch; }
+.cue-detail { font-size: clamp(15px, 1.7vw, 22px); color: var(--text-2); max-width: 46ch; }
+.cue-now { font-size: clamp(44px, 8vw, 112px); font-weight: 750; line-height: 1.05; min-height: 1.1em; font-variant-numeric: tabular-nums; }
+.cue-now.wait { color: var(--muted); font-size: clamp(28px, 4vw, 52px); font-weight: 600; }
+.cue-now.pop { animation: cuepop .35s ease-out; }
+@keyframes cuepop { from { transform: scale(1.18); color: var(--accent); } to { transform: scale(1); } }
+.cue-arrow { font-size: clamp(60px, 10vw, 140px); line-height: 1; color: var(--accent); }
+.cue-dot { position: absolute; width: 46px; height: 46px; border-radius: 50%; background: var(--accent); z-index: 2;
+  transform: translate(-50%, -50%); transition: left .2s, top .2s; box-shadow: 0 0 0 8px var(--grid); }
+.cue-dot[hidden] { display: none; }
+.cue-stage.gazing { min-height: 620px; }   /* room around the instructions for the target dot */
+.cue-stage.gazing .cue-detail { display: none; }
+.cue-stage.gazing .cue-title { font-size: clamp(20px, 2.4vw, 30px); }
+.cue-stage.gazing .cue-now { font-size: clamp(36px, 5vw, 68px); }
+.cue-foot { display: grid; gap: 8px; }
+.cue-bar { height: 10px; border-radius: 5px; background: var(--grid); overflow: hidden; }
+.cue-bar i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 5px; }
+.cue-segs { display: flex; gap: 3px; height: 8px; }
+.cue-segs i { display: block; height: 100%; border-radius: 3px; background: var(--grid); }
+.cue-segs i.done { background: var(--good); } .cue-segs i.now { background: var(--accent); } .cue-segs i.skipped { background: var(--muted); }
+.cue-foot .btnrow { justify-content: center; }
+.cue-foot .note { min-height: 1.3em; }
 </style>{% endblock %}
 {% block content %}
 <div class="top">
@@ -127,6 +180,41 @@ details.health > summary { cursor: pointer; font-weight: 600; margin: 28px 0 10p
   </div>
 </div>
 
+<!-- ===== cued session (sglab.cues) ===== -->
+<h2 id="cue-h">Cued session <span class="note">step-by-step instructions and beeps for the wearer; the time of every beep is saved with the recording</span></h2>
+<div class="card" id="cue-card">
+  <div class="cue-setup" id="cue-setup">
+    <label>Protocol <select id="cue-proto"><option>loading…</option></select></label>
+    <button class="primary big" id="cue-start" disabled>▶ Start cued session</button>
+    <button type="button" id="cue-test" title="Play the beep once, to set the volume">♪ Test sound</button>
+    <span class="note" id="cue-info"></span>
+  </div>
+  <details id="cue-what" style="margin-top:8px"><summary class="note" style="cursor:pointer">What happens, step by step</summary><ol class="cue-steps" id="cue-steps"></ol></details>
+  <div class="note" id="cue-hint" style="margin-top:6px">Use the computer's own speakers or wired headphones (Bluetooth delays the beeps). Keep this page in front while it runs.</div>
+  <div class="note" id="cue-done" style="margin-top:6px"></div>
+  <div class="cue-stage" id="cue-stage" hidden>
+    <div class="cue-head"><span id="cue-stepno"></span><span class="cue-count" id="cue-left"></span></div>
+    <div class="cue-mid">
+      <div class="cue-title" id="cue-title"></div>
+      <div class="cue-detail" id="cue-detail"></div>
+      <div class="cue-arrow" id="cue-arrow" hidden></div>
+      <div class="cue-now" id="cue-now"></div>
+      <div class="cue-dot" id="cue-dot" hidden></div>
+    </div>
+    <div class="cue-foot">
+      <div class="cue-bar" title="this step"><i id="cue-bar"></i></div>
+      <div class="cue-segs" id="cue-segs" title="the whole session"></div>
+      <div class="btnrow">
+        <button class="big" id="cue-pause">❚❚ Pause</button>
+        <button class="big" id="cue-skip">Skip step ▶▶</button>
+        <button class="big" id="cue-full">⛶ Full screen</button>
+        <button class="danger big" id="cue-abort">Stop session</button>
+      </div>
+      <div class="note" id="cue-status"></div>
+    </div>
+  </div>
+</div>
+
 <!-- ===== camera + eye ===== -->
 <div id="cam-section" hidden>
   <h2>Eye camera <span class="note">tracker from the lab's MATLAB V7 code, running on every frame</span></h2>
@@ -165,6 +253,26 @@ details.health > summary { cursor: pointer; font-weight: 600; margin: 28px 0 10p
   </table>
 </div>
 </details>
+
+<div id="ac-section" hidden>
+<h2>Automatic cuff <span class="note">a servo presses the monitor's START button; the result comes back over Bluetooth and is logged as cuff BP</span></h2>
+<div class="card stack" style="display:grid; gap:12px">
+  <div class="row-inline">
+    <b style="width:90px">Device</b>
+    <select id="ac-node"></select>
+    <span id="ac-dev"></span>
+  </div>
+  <div class="row-inline">
+    <b style="width:90px">Every</b>
+    <input type="number" id="ac-int" min="1.5" max="60" step="0.5" style="width:80px"> <span>min</span>
+    <label style="display:inline-flex; gap:6px; align-items:center; margin-left:8px"><input type="checkbox" id="ac-on"> <b>automatic readings</b></label>
+    <button id="ac-now">Measure now</button>
+    <button id="ac-abort" hidden style="border-color:var(--bad); color:var(--bad)">Abort reading</button>
+  </div>
+  <div id="ac-status" class="note"></div>
+</div>
+</div>
+<div id="ac-none" class="note" hidden style="margin-top:10px">No automatic cuff is registered. To add one, an admin registers a node with site <code>cuff</code> (Admin → Nodes).</div>
 
 <h2>Log readings &amp; markers</h2>
 <div class="card stack" style="display:grid; gap:14px">
@@ -236,10 +344,81 @@ for (const [id, kind] of [['bp-form', 'bp'], ['ox-form', 'spo2'], ['mk-form', 'm
 $('cuff').onclick = () => send('cuff_start', {});
 document.querySelectorAll('.quick').forEach(b => b.onclick = () => send('marker', {label: b.textContent}));
 $('stop').onclick = async () => {
-  if (!confirm('Stop the recording?')) return;
+  const cueOn = cueRunning();
+  if (!confirm(cueOn ? 'A cued session is still running. Stop the recording anyway? Everything logged so far is kept.' : 'Stop the recording?')) return;
+  if (cueOn) await cueFinish('aborted', 'the recording was stopped during the session');
   const r = await fetch(API + '/stop', {method: 'POST'});
   if (r.ok) location.reload(); else flash((await r.json()).error, true);
 };
+
+// ===================================================================== automatic cuff
+let acState = null;
+async function acPost(path, body) {
+  const r = await fetch(API + '/cuff' + path, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                               body: JSON.stringify(body || {})});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { flash(d.error || d.detail || 'auto-cuff error', true); }
+  pollCuff();
+  return r.ok;
+}
+const acMin = () => parseFloat($('ac-int').value);
+$('ac-node').onchange = () => { if ($('ac-node').value) acPost('', {node_id: $('ac-node').value, interval_s: acMin() * 60}); };
+$('ac-int').onchange = () => {
+  if (!(acMin() > 0)) return;
+  acPost('', {node_id: $('ac-node').value || undefined, interval_s: Math.round(acMin() * 60)});
+};
+$('ac-on').onchange = async () => {
+  const on = $('ac-on').checked;
+  if (!await acPost('', {node_id: $('ac-node').value || undefined, interval_s: Math.round(acMin() * 60), enabled: on}))
+    $('ac-on').checked = !on;
+};
+$('ac-now').onclick = async () => {
+  if (!acState?.binding && !await acPost('', {node_id: $('ac-node').value, interval_s: Math.round(acMin() * 60)})) return;
+  if (await acPost('/measure')) flash('auto-cuff: reading started');
+};
+$('ac-abort').onclick = async () => {
+  if (confirm('Abort the reading in progress? (the cuff deflates)')) await acPost('/abort');
+};
+const fmtDur = s => s >= 60 ? `${Math.floor(s / 60)} min ${String(Math.round(s % 60)).padStart(2, '0')} s` : `${Math.round(s)} s`;
+function renderCuff(d) {
+  acState = d;
+  const any = d.cuffs.length > 0;
+  $('ac-section').hidden = !any; $('ac-none').hidden = any;
+  if (!any) return;
+  const b = d.binding, sel = $('ac-node');
+  const opts = (b ? '' : '<option value="">– choose –</option>') + d.cuffs.map(c => {
+    const taken = c.trial && (!b || c.node_id !== b.node_id);
+    return `<option value="${esc(c.node_id)}" ${taken ? 'disabled' : ''}>${esc(c.label)}${c.online ? '' : ' (offline)'}${taken ? ' (other trial)' : ''}</option>`;
+  }).join('');
+  if (sel.dataset.opts !== opts) { sel.innerHTML = opts; sel.dataset.opts = opts; }
+  if (document.activeElement !== sel) sel.value = b ? b.node_id : (d.cuffs.length === 1 && !d.cuffs[0].trial ? d.cuffs[0].node_id : '');
+  if (document.activeElement !== $('ac-int'))
+    $('ac-int').value = ((b ? b.interval_s : d.limits.default_interval_s) / 60).toString();
+  $('ac-int').min = d.limits.min_interval_s / 60; $('ac-int').max = d.limits.max_interval_s / 60;
+  $('ac-on').checked = !!(b && b.enabled);
+  const dev = d.cuffs.find(c => c.node_id === (b ? b.node_id : sel.value));
+  $('ac-dev').innerHTML = !dev ? '' : `<span class="pill ${dev.online ? 'online' : 'offline'}">${esc(dev.online ? (dev.cuff_state || 'online') : dev.state)}</span>`
+    + (dev.monitor ? ` <span class="note">${esc(dev.monitor)}${dev.fw ? ' · ' + esc(dev.fw) : ''}</span>` : '');
+  const busy = b && b.req;
+  $('ac-now').disabled = !!busy || !dev || !dev.online;
+  $('ac-abort').hidden = !busy;
+  const parts = [];
+  if (b) {
+    if (b.phase === 'requested') parts.push('<b>pressing START…</b>');
+    else if (b.phase === 'measuring') parts.push(`<b>measuring</b> for ${fmtDur(b.measuring_for_s || 0)} (inflate, deflate, Bluetooth download)`);
+    else if (b.enabled && b.next_in_s != null) parts.push(`next reading in <b>${fmtDur(b.next_in_s)}</b>`);
+    else if (!b.enabled) parts.push('automatic readings off');
+    if (b.last_reading) { const L = b.last_reading;
+      parts.push(`last: <b>${L.sys}/${L.dia}</b>${L.hr ? ' · ' + L.hr + ' bpm' : ''}${L.t_s != null ? ' at ' + L.t_s.toFixed(0) + ' s' : ''}${L.mov ? ' · <span style="color:var(--warn)">movement flagged</span>' : ''}`); }
+    parts.push(`${b.n_ok} ok${b.n_fail ? `, <span style="color:var(--bad)">${b.n_fail} failed</span>` : ''}`);
+    if (b.last_error) parts.push(`<span style="color:var(--bad)">${esc(b.last_error)}</span>`);
+  } else parts.push('choose the cuff on this subject to start');
+  $('ac-status').innerHTML = parts.join(' · ') + `<br>Readings are spaced start to start, with at least ${d.limits.min_rest_s / 60} min of rest after each one.`;
+}
+async function pollCuff() {
+  try { const r = await fetch(API + '/cuff'); if (r.ok) renderCuff(await r.json()); } catch (e) {}
+}
+pollCuff(); setInterval(pollCuff, 2000);
 
 // shared canvas helper: sized to its CSS box, crisp on HiDPI
 function ctx2d(cv) {
@@ -275,7 +454,7 @@ async function poll() {
   if (r.status === 404 || r.status === 410) { location.href = PAGE; return; }
   if (!r.ok) return;
   const s = lastStatus = await r.json();
-  if (s.state !== 'recording') { location.reload(); return; }
+  if (s.state !== 'recording') { if (cueRunning()) CUE.run.ended = true; location.reload(); return; }  // the server kept the cue run (partial)
   const m = Math.floor(s.elapsed_s / 60), sec = Math.floor(s.elapsed_s % 60);
   $('clock').textContent = `${m}:${String(sec).padStart(2, '0')}`;
   let problem = false;
@@ -464,7 +643,21 @@ function showCameras(list) {
           <button class="recal" title="Re-learn where the eye is (~2 s). Use after the glasses moved.">Re-find eye</button></span></h3>
         <div class="cam-wrap">
           <div><div class="cam-view"><img alt="waiting for the first frame"><canvas class="ov"></canvas></div>
-            <div class="note stats" style="margin-top:6px"></div></div>
+            <div class="note stats" style="margin-top:6px"></div>
+            <div class="cam-ctl">
+              <div class="ctl-head"><span>Camera settings</span>
+                <label class="chk" title="Let the sensor choose exposure and gain. Brightness then hunts, which the eye tracker reads as blinks — keep it off for recordings."><input type="checkbox" class="k-aec"> auto exposure</label></div>
+              <div class="row k-exp-row"><span>Exposure</span><input type="range" class="k-exp-r" min="0" max="1200" step="10"><input type="number" class="k-exp" min="0" max="1200" step="10"></div>
+              <div class="row k-gain-row"><span>Gain</span><input type="range" class="k-gain-r" min="0" max="30" step="1"><input type="number" class="k-gain" min="0" max="30" step="1"></div>
+              <div class="row k-win-row" title="Sensor window: a smaller square shows less of the scene, bigger (zoomed in). The frame size stays the same."><span>Field of view</span><input type="range" class="k-win-r" step="4"><input type="number" class="k-win" step="4"></div>
+              <div class="k-win-extra" style="display:flex; justify-content:space-between; gap:8px"><span class="note">← narrower (zoom in) · wider →</span>
+                <label class="chk note" title="The board's stock framing, no sensor window."><input type="checkbox" class="k-stock"> stock framing</label></div>
+              <div class="row k-ir-row" title="IR illuminator (D0): on/off and brightness (PWM, % of full). Applies right away; it is only lit while recording."><span><button type="button" class="k-ir" aria-pressed="false">IR off</button></span>
+                <input type="range" class="k-ir-r" min="1" max="100" step="1" value="100"><input type="number" class="k-ir-n" min="1" max="100" step="1" value="100"></div>
+              <div class="note k-ir-none" hidden>No IR LED in this board's firmware (CONFIG_PPG_CAM_IR_GPIO).</div>
+              <div class="ctl-foot"><span class="ctl-state">matches the board</span>
+                <span class="btnrow"><button type="button" class="k-revert" disabled>Revert</button><button type="button" class="primary k-apply" disabled>Apply</button></span></div>
+            </div></div>
           <div class="cam-side">
             <div class="eye-stats">
               <div><span>Blinks</span><b class="e-blinks">–</b></div>
@@ -502,15 +695,132 @@ function showCameras(list) {
         c.overlay = b.dataset.o === '1'; card.querySelectorAll('.ovl button').forEach(x => x.classList.toggle('on', x === b)); drawOverlay(c); });
       card.querySelector('.recal').onclick = async () => { await fetch(`${API}/eye/${encodeURIComponent(v.stream)}/recalibrate`, {method: 'POST'}); flash('finding the eye again…'); };
       if (!v.tracking) card.querySelector('.cam-side').innerHTML = '<div class="note">Eye tracking runs on grayscale streams only.</div>';
+      initCamCtl(v.stream, c, v.settings || {});
       pollCam(v.stream, c);
       if (v.tracking) pollEye(v.stream, c);
     }
     const mb = (v.bytes / 1e6).toFixed(1);
     const cam = !v.sensor_ok ? '<span style="color:var(--bad)">camera not found on the board</span> · ' : '';
-    const exp = v.exposure == null ? '' : v.exposure === 65535 ? ' · auto exposure' : ` · exposure ${v.exposure} gain ${v.gain}`;
+    const lu = v.settings && v.settings.line_us;  // firmware >= 2026-11: exposure in ms, sensor rate
+    const ems = lu && v.exposure !== 65535 && v.exposure != null
+      ? ` (${(Math.min(v.exposure, v.settings.exp_max || 1e9) * lu / 1000).toFixed(1)} ms)` : '';
+    const exp = v.exposure == null ? '' : v.exposure === 65535 ? ' · auto exposure' : ` · exposure ${v.exposure}${ems} gain ${v.gain}`;
+    const sens = v.settings && v.settings.fps_sensor ? ` · sensor ${esc(v.settings.mode || '')} ${v.settings.fps_sensor} fps` : '';
     const warn = v.fs && v.frames > 10 && v.fps < 0.8 * v.fs ? ' style="color:var(--warn)"' : '';
-    c.stats.innerHTML = `${cam}${v.w}×${v.h} ${esc(v.fmt)} · <span${warn}>${v.fps.toFixed(1)} fps</span> · ${v.frames} frames · ${v.dropped} dropped · ${mb} MB${exp}`;
+    c.stats.innerHTML = `${cam}${v.w}×${v.h} ${esc(v.fmt)} · <span${warn}>${v.fps.toFixed(1)} fps</span> · ${v.frames} frames · ${v.dropped} dropped · ${mb} MB${exp}${sens}`;
+    if (c.ctl && v.settings) c.ctl.sync(v.settings);
   }
+}
+
+// operator camera controls: exposure / gain / auto exposure / sensor window (FOV). The form follows
+// what the board reports (its H line) until the operator edits it; Apply sends one CAM command and
+// the form shows "waiting for the board" until the new H line confirms it.
+function initCamCtl(name, c, s0) {
+  const box = c.card.querySelector('.cam-ctl'), q = k => box.querySelector(k);
+  const st = q('.ctl-state'), apply = q('.k-apply'), revert = q('.k-revert');
+  const pairs = {exp: [q('.k-exp-r'), q('.k-exp')], gain: [q('.k-gain-r'), q('.k-gain')], win: [q('.k-win-r'), q('.k-win')]};
+  const aec = q('.k-aec'), stock = q('.k-stock');
+  let board = s0, dirty = false, pending = null;  // pending: the values we asked for, until the board reports them
+  box.style.setProperty('--disp', c.view.style.getPropertyValue('--disp'));  // as wide as the image
+  if (!s0.win_ok) { q('.k-win-row').hidden = true; q('.k-win-extra').hidden = true; }
+  for (const el of pairs.win) { el.min = s0.win_min || 240; el.max = s0.win_max || 600; }
+  // the sensor clamps exposure at one frame (exp_max lines): no point offering more
+  if (s0.exp_max) for (const el of pairs.exp) el.max = s0.exp_max;
+  const want = () => ({aec: aec.checked, exposure: +pairs.exp[1].value, gain: +pairs.gain[1].value,
+                       win: stock.checked ? 0 : +pairs.win[1].value});
+  const shade = () => {
+    q('.k-exp-row').classList.toggle('off', aec.checked); q('.k-gain-row').classList.toggle('off', aec.checked);
+    q('.k-win-row').classList.toggle('off', stock.checked);
+    for (const k of ['exp', 'gain']) pairs[k].forEach(e => e.disabled = aec.checked);
+    pairs.win.forEach(e => e.disabled = stock.checked);
+  };
+  const fill = s => {
+    aec.checked = !!s.aec;
+    for (const e of pairs.exp) e.value = s.exposure ?? 300;
+    for (const e of pairs.gain) e.value = s.gain ?? 0;
+    stock.checked = !s.win;
+    for (const e of pairs.win) e.value = s.win || Math.min(s.win_max || 600, Math.max(s.win_min || 240, 400));
+    shade();
+  };
+  const show = (txt, cls) => { st.textContent = txt; st.className = 'ctl-state' + (cls ? ' ' + cls : ''); };
+  const touched = () => { dirty = true; apply.disabled = revert.disabled = false; show('not applied yet', 'dirty'); };
+  for (const [r, n] of Object.values(pairs)) {
+    r.oninput = () => { n.value = r.value; touched(); };
+    n.oninput = () => { r.value = n.value; touched(); };
+  }
+  aec.onchange = () => { shade(); touched(); };
+  stock.onchange = () => { shade(); touched(); };
+  revert.onclick = () => { dirty = false; fill(board); apply.disabled = revert.disabled = true; show('matches the board'); };
+  apply.onclick = async () => {
+    const w = want(), b = board, body = {};
+    if (w.aec !== !!b.aec) body.aec = w.aec;
+    if (!w.aec && (w.exposure !== b.exposure || w.aec !== !!b.aec)) body.exposure = w.exposure;
+    if (!w.aec && (w.gain !== b.gain || w.aec !== !!b.aec)) body.gain = w.gain;
+    if (b.win_ok && w.win !== (b.win || 0)) body.win = w.win;
+    if (!Object.keys(body).length) { revert.onclick(); return; }
+    apply.disabled = true; show('sending…');
+    try {
+      const r = await fetch(`${API}/video/${encodeURIComponent(name)}/settings`, {method: 'POST',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || j.detail || r.statusText);
+      dirty = false; revert.disabled = true; pending = {...body, t: Date.now()};
+      if ('win' in body) pending.win = body.win & ~3;
+      show('waiting for the board…');
+      flash(`camera: ${j.command}`);
+      if ('win' in body && c.tracking)  // the eye moved in the image: let the tracker find it again
+        setTimeout(() => fetch(`${API}/eye/${encodeURIComponent(name)}/recalibrate`, {method: 'POST'}), 1500);
+    } catch (e) { apply.disabled = false; show('not applied: ' + e.message, 'dirty'); flash('camera: ' + e.message, true); }
+  };
+  c.ctl = {sync(s) {
+    board = s;
+    if (box._irSync) box._irSync(s);
+    if (pending) {
+      const ok = ['aec', 'exposure', 'gain', 'win'].every(k => !(k in pending) || (k === 'aec' ? !!s.aec === pending.aec : (s[k] || 0) === pending[k]));
+      if (ok) { pending = null; show('matches the board'); }
+      else if (Date.now() - pending.t > 5000) { pending = null; show('the board did not confirm — older firmware or link down?', 'dirty'); }
+      else return;
+    }
+    if (!dirty) fill(s);
+  }};
+  fill(s0);
+  initIr(name, box, s0);
+}
+// IR LED: its own control, sent at once (button = on/off, slider on release). Off is "CAM IR=0", so
+// the brightness to switch back on with is kept here (and per stream in localStorage).
+function initIr(name, box, s0) {
+  const q = k => box.querySelector(k), btn = q('.k-ir'), r = q('.k-ir-r'), n = q('.k-ir-n'), row = q('.k-ir-row');
+  const key = 'irLevel:' + name;
+  if (s0.ir == null) { row.classList.add('off'); [btn, r, n].forEach(e => e.disabled = true); q('.k-ir-none').hidden = false; return; }
+  let level = +localStorage.getItem(key) || (s0.ir > 0 ? s0.ir : 100), on = s0.ir > 0, busy = false;
+  const paint = () => {
+    btn.textContent = on ? 'IR on' : 'IR off'; btn.classList.toggle('on', on); btn.setAttribute('aria-pressed', on);
+    if (document.activeElement !== r && document.activeElement !== n) r.value = n.value = level;
+  };
+  const send = async ir => {
+    busy = true;
+    try {
+      const res = await fetch(`${API}/video/${encodeURIComponent(name)}/settings`, {method: 'POST',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ir})});
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || j.detail || res.statusText);
+      flash(`camera: ${j.command}`);
+    } catch (e) { flash('IR LED: ' + e.message, true); }
+    setTimeout(() => { busy = false; }, 1500);  // let the board's fresh H line arrive before following it again
+  };
+  const setLevel = v => {
+    level = Math.max(1, Math.min(100, Math.round(+v) || 1)); localStorage.setItem(key, level); paint();
+    if (on) send(level);
+  };
+  btn.onclick = () => { on = !on; paint(); send(on ? level : 0); };
+  r.oninput = () => { n.value = r.value; };
+  r.onchange = () => setLevel(r.value);
+  n.onchange = () => setLevel(n.value);
+  box._irSync = s => {
+    if (busy || s.ir == null) return;
+    on = s.ir > 0; if (on) level = s.ir; paint();
+  };
+  paint();
 }
 async function pollCam(name, c) {
   // one request in flight per camera: on a slow link the preview skips frames instead of queueing them
@@ -913,6 +1223,349 @@ function frame() {
   drawPPG(head);
   for (const c of Object.values(cams)) if (c.pts.length) drawEyeCharts(c, Math.min(head, c.pts[c.pts.length - 1].t + 0.5));
 }
+
+// ===================================================================== cued session (sglab.cues)
+// Every cue is logged with the browser time (performance.now) at which the wearer got it: for a beep
+// the moment the sound card plays it (audio clock -> performance time via getOutputTimestamp), for a
+// screen change the animation frame that drew it. Clock pings (NTP style: send, server receive,
+// server reply, receive) let the server put those times on the recording clock - the clock of the
+// camera frames. Sounds are scheduled LOOKAHEAD_MS ahead on the audio clock, so a busy page does not
+// delay them.
+const CUE = {protocols: [], P: null, run: null, ac: null, buf: [], sync: [], osc: [], vis: [], n: 0, fit: null,
+             flushP: null, failures: 0, late: 0};
+const LOOKAHEAD_MS = 250, LEAD_MS = 1500, PING_EVERY_MS = 10000;
+const GAZE_POS = {up: [50, 6], down: [50, 94], left: [3, 50], right: [97, 50]};   // % of the middle area
+const GAZE_ARROW = {ahead: '◉', up: '↑', down: '↓', left: '←', right: '→'};
+// [frequency Hz, start offset s, length s, volume]
+const TONE = {beep: [[1000, 0, 0.09, 0.5]], release: [[520, 0, 0.13, 0.55]], tick: [[1500, 0, 0.035, 0.25]],
+              chime: [[660, 0, 0.11, 0.4], [990, 0.13, 0.16, 0.4]]};
+const fmtS = s => { s = Math.max(0, Math.ceil(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+function cueRunning() { return !!(CUE.run && !CUE.run.ended); }
+
+async function cueLoadProtocols() {
+  try {
+    const r = await fetch('/api/cue-protocols'), d = await r.json();
+    if (!r.ok) { $('cue-info').textContent = d.error || 'Could not load the protocols.'; return; }
+    CUE.protocols = d.protocols;
+  } catch (e) { $('cue-info').textContent = 'Could not load the protocols.'; return; }
+  if (!CUE.protocols.length) { $('cue-proto').innerHTML = '<option>none set up</option>'; $('cue-info').textContent = 'No protocols in config/cue_protocols.json yet.'; return; }
+  $('cue-proto').innerHTML = CUE.protocols.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+  $('cue-proto').onchange = cueShowProtocol; cueShowProtocol(); $('cue-start').disabled = false;
+}
+function cueShowProtocol() {
+  const p = CUE.protocols.find(x => x.id === $('cue-proto').value); if (!p) return;
+  $('cue-info').textContent = `${p.steps.length} steps · about ${Math.max(1, Math.round(p.total_s / 60))} min`;
+  $('cue-steps').innerHTML = p.steps.map(s => `<li><b>${esc(s.title)}</b> · ${fmtS(s.duration_s)}` +
+    (s.cues.length ? ` · ${s.cues.filter(c => c.tone !== 'release').length} cues` : ' · no beeps') + (s.negative ? ' · <i>should not count as a blink</i>' : '') + '</li>').join('');
+}
+async function cueLoadDone() {  // runs already saved in this recording (e.g. a first lighting condition)
+  try {
+    const r = await fetch(API + '/cues'); if (!r.ok) return;
+    const d = await r.json(), word = {completed: 'finished', aborted: 'stopped early', partial: 'cut short', running: 'running'};
+    $('cue-done').textContent = d.runs.length ? 'Done in this recording: ' + d.runs.map(x =>
+      `${x.protocol_name} (${word[x.status] || x.status}, ${x.entries.filter(e => e.kind === 'cue' && !e.cancelled).length} cues)`).join(' · ') : '';
+  } catch (e) {}
+}
+
+// ---- sound: scheduled on the audio clock so that it reaches the speaker at a given performance time
+function audioMap() {
+  const ac = CUE.ac;
+  if (ac.getOutputTimestamp) {
+    const ts = ac.getOutputTimestamp();
+    if (ts && ts.performanceTime > 0 && ts.contextTime > 0) return {ctx: ts.contextTime, perf: ts.performanceTime};
+  }
+  return {ctx: ac.currentTime, perf: performance.now() + ((ac.outputLatency || 0) + (ac.baseLatency || 0)) * 1000};
+}
+function playTone(kind, atMs) {  // -> the performance time the sound really starts (later than atMs if it is late)
+  const notes = TONE[kind]; if (!notes || !CUE.ac) return null;
+  const ac = CUE.ac, m = audioMap();
+  const when = Math.max(m.ctx + (atMs - m.perf) / 1000, ac.currentTime + 0.005);
+  for (const [f, off, dur, vol] of notes) {
+    const o = ac.createOscillator(), g = ac.createGain(), t = when + off;
+    o.type = 'sine'; o.frequency.value = f;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vol, t + 0.004);
+    g.gain.setValueAtTime(vol, t + dur - 0.012); g.gain.linearRampToValueAtTime(0, t + dur);
+    o.connect(g).connect(ac.destination); o.start(t); o.stop(t + dur + 0.01);
+    CUE.osc.push({o, t});
+  }
+  CUE.osc = CUE.osc.filter(x => x.t + 1 > ac.currentTime);
+  return m.perf + (when - m.ctx) * 1000;
+}
+function cancelSounds() {  // sounds scheduled but not yet playing
+  const now = CUE.ac ? CUE.ac.currentTime : 0;
+  for (const x of CUE.osc) if (x.t > now) { try { x.o.stop(); x.o.disconnect(); } catch (e) {} }
+  CUE.osc = CUE.osc.filter(x => x.t <= now);
+}
+async function audioReady() {
+  try {
+    CUE.ac = CUE.ac || new (window.AudioContext || window.webkitAudioContext)({latencyHint: 'interactive'});
+    await CUE.ac.resume();
+  } catch (e) { CUE.ac = null; }
+  return !!CUE.ac && CUE.ac.state === 'running';
+}
+$('cue-test').onclick = async () => { if (await audioReady()) playTone('beep', performance.now() + 30); else $('cue-info').textContent = 'This browser did not allow sound - check the volume and the sound settings.'; };
+
+// ---- log + clock
+function cueLog(e) { e.key = e.key || `n${++CUE.n}`; CUE.buf.push(e); return e; }
+async function cuePing() {
+  const p0 = performance.now();
+  try {
+    const r = await fetch(API + '/cues/ping', {method: 'POST', cache: 'no-store'});
+    const p1 = performance.now();
+    if (!r.ok) return null;
+    const d = await r.json();
+    CUE.sync.push({p0_ms: p0, p1_ms: p1, t1_s: d.t1_s, t2_s: d.t2_s});
+    return true;
+  } catch (e) { return null; }
+}
+async function cuePost(path, body) {
+  const r = await fetch(`${API}/cues/${CUE.run.id}/${path}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { const err = new Error(d.error || `error ${r.status}`); err.status = r.status; throw err; }
+  if (d.clock_fit) CUE.fit = d.clock_fit;
+  return d;
+}
+function cueFlush() {
+  if (!CUE.run || CUE.run.closed || CUE.flushP || (!CUE.buf.length && !CUE.sync.length)) return CUE.flushP;
+  const entries = CUE.buf.splice(0), sync = CUE.sync.splice(0);
+  CUE.flushP = cuePost('log', {entries, sync}).then(() => { CUE.failures = 0; })
+    .catch(e => {
+      if (e.status === 409 && !cueRunning()) return;
+      CUE.buf.unshift(...entries); CUE.sync.unshift(...sync); CUE.failures++;   // kept here, sent again next time
+    })
+    .finally(() => { CUE.flushP = null; cueStatus(); });
+  return CUE.flushP;
+}
+function cueStatus() {
+  const f = CUE.fit, parts = [];
+  if (CUE.failures > 1) parts.push('The connection to the server is slow – the cue times are kept in this page and sent when it is back.');
+  else if (f) parts.push(f.err_ms > 30 ? `Timing matched to the recording within ±${Math.ceil(f.err_ms)} ms (slow connection – still usable).`
+                                       : `Timing matched to the recording within ±${Math.max(1, Math.ceil(f.err_ms))} ms.`);
+  if (CUE.late) parts.push(`${CUE.late} beep(s) came late because the page was in the background; their real times are saved.`);
+  $('cue-status').textContent = parts.join(' ');
+}
+
+// ---- the run
+function startStep(i, atMs) {
+  const R = CUE.run, s = CUE.P.steps[i];
+  const att = R.attempts[i] = (R.attempts[i] ?? -1) + 1;
+  Object.assign(R, {step: i, att, t0: atMs, t1: atMs + s.duration_s * 1000, next: 0, endQueued: false});
+  const perf = playTone('chime', atMs) ?? atMs;
+  const e = cueLog({key: `s${i}.${att}.start`, kind: 'step_start', step: i, attempt: att, step_id: s.id, label: s.label,
+                    text: s.title, tone: 'chime', perf_ms: perf, planned_perf_ms: atMs});
+  CUE.vis.push({at: atMs, entry: e, fn: () => showStep(i, atMs, atMs + s.duration_s * 1000)});
+}
+function cueTick() {
+  const R = CUE.run; if (!R || R.ended || R.paused) return;
+  const now = performance.now(), s = CUE.P.steps[R.step];
+  while (R.next < s.cues.length && R.t0 + s.cues[R.next].t * 1000 <= now + LOOKAHEAD_MS) {
+    const i = R.next++, c = s.cues[i], at = R.t0 + c.t * 1000;
+    const perf = c.tone === 'none' ? at : (playTone(c.tone, at) ?? at), late = perf - at;
+    if (late > 5) CUE.late++;
+    const e = cueLog({key: `s${R.step}.${R.att}.c${i}`, kind: 'cue', step: R.step, attempt: R.att, step_id: s.id, cue: i,
+                      action: c.action, text: c.text, gaze: c.gaze, tone: c.tone, perf_ms: perf, planned_perf_ms: at,
+                      late_ms: late > 1 ? late : undefined, hidden: document.hidden || undefined});
+    CUE.vis.push({at, entry: e, fn: () => showCue(c, i, s)});
+  }
+  if (!R.endQueued && R.t1 <= now + LOOKAHEAD_MS) {   // step boundary: the next step starts the moment this one ends
+    R.endQueued = true;
+    const at = R.t1, i = R.step;
+    const e = cueLog({key: `s${i}.${R.att}.end`, kind: 'step_end', step: i, attempt: R.att, step_id: s.id, status: 'done', perf_ms: at});
+    CUE.vis.push({at, entry: e, fn: () => markSeg(i, 'done')});
+    if (i + 1 < CUE.P.steps.length) startStep(i + 1, at);
+    else CUE.vis.push({at, entry: null, fn: () => cueFinish('completed')});
+  }
+  if (document.hidden) runVisuals(now, null);  // no animation frames in the background: keep the run moving
+}
+function runVisuals(limit, frameTs) {
+  const due = CUE.vis.filter(v => v.at <= limit); if (!due.length) return;
+  CUE.vis = CUE.vis.filter(v => v.at > limit);
+  for (const v of due) {
+    if (v.entry && frameTs != null) cueLog({key: v.entry.key, kind: v.entry.kind, screen_perf_ms: frameTs});
+    v.fn();
+  }
+}
+function cueFrame(ts) {
+  requestAnimationFrame(cueFrame);
+  if (!cueRunning()) return;
+  runVisuals(ts + 8, ts);   // ts = start of the frame that will show the change
+  const R = CUE.run, V = CUE.view, now = performance.now();
+  if (!V || R.paused) return;
+  const s = CUE.P.steps[V.i];
+  $('cue-left').textContent = fmtS((V.t1 - now) / 1000);
+  $('cue-bar').style.width = `${Math.min(100, Math.max(0, 100 * (now - V.t0) / (V.t1 - V.t0))).toFixed(1)}%`;
+  if (s.cues.length && !V.shown) {
+    const first = V.t0 + s.cues[0].t * 1000;
+    if (now < first) { $('cue-now').className = 'cue-now wait'; $('cue-now').textContent = `starts in ${Math.ceil((first - now) / 1000)}`; }
+  }
+}
+function showStep(i, t0, t1) {
+  const s = CUE.P.steps[i];
+  CUE.view = {i, t0, t1, shown: 0};
+  $('cue-stepno').textContent = `Step ${i + 1} of ${CUE.P.steps.length}`;
+  $('cue-title').textContent = s.title; $('cue-detail').textContent = s.detail || '';
+  $('cue-now').className = 'cue-now'; $('cue-now').textContent = '';
+  const gaze = s.cues.some(c => c.gaze);
+  $('cue-arrow').hidden = !gaze; setGaze(gaze ? 'ahead' : null); $('cue-stage').classList.toggle('gazing', gaze);
+  markSeg(i, 'now'); flashStage('newstep', 700);
+}
+function showCue(c, i, s) {
+  if (CUE.view) CUE.view.shown = i + 1;
+  const el = $('cue-now'); el.className = 'cue-now'; void el.offsetWidth; el.classList.add('pop');
+  el.textContent = c.text || c.action.replace(/_/g, ' ');
+  if (c.gaze) setGaze(c.gaze);
+  const main = s.cues.filter(x => x.tone !== 'release'), k = s.cues.slice(0, i + 1).filter(x => x.tone !== 'release').length;
+  if (CUE.view) $('cue-stepno').textContent = `Step ${CUE.view.i + 1} of ${CUE.P.steps.length} · beep ${k} of ${main.length}`;
+  flashStage('hit', 160);
+}
+function setGaze(g) {
+  $('cue-arrow').textContent = g ? (GAZE_ARROW[g] || '') : '';
+  const d = $('cue-dot'), p = GAZE_POS[g];
+  d.hidden = !p;
+  if (p) { d.style.left = p[0] + '%'; d.style.top = p[1] + '%'; }
+}
+function flashStage(cls, ms) { const st = $('cue-stage'); st.classList.add(cls); setTimeout(() => st.classList.remove(cls), ms); }
+function markSeg(i, cls) { const seg = $('cue-segs').children[i]; if (seg) seg.className = cls; }
+
+// pause / skip / stop: end the step that is playing now. false = it ends by itself in a moment anyway
+function cueStopHere(status) {
+  const R = CUE.run, now = performance.now();
+  if (R.endQueued && R.step === CUE.P.steps.length - 1 && R.t0 <= now) return false;
+  const pendingStart = R.t0 > now;   // the next step is about to start: the previous one has finished
+  if (status === 'skipped' && pendingStart) return false;
+  cancelSounds();
+  for (const v of CUE.vis) if (v.at > now && v.entry && v.entry.kind !== 'step_end') cueLog({key: v.entry.key, kind: v.entry.kind, cancelled: true});
+  CUE.vis = CUE.vis.filter(v => v.at <= now || (v.entry && v.entry.kind === 'step_end'));
+  if (!pendingStart) {
+    cueLog({key: `s${R.step}.${R.att}.end`, kind: 'step_end', step: R.step, attempt: R.att, step_id: CUE.P.steps[R.step].id, status, perf_ms: now});
+    markSeg(R.step, status === 'skipped' ? 'skipped' : '');
+  }
+  R.next = Infinity; R.endQueued = true;
+  return true;
+}
+function cuePausedLook(on) {
+  $('cue-pause').textContent = on ? '▶ Resume' : '❚❚ Pause';
+  $('cue-stage').classList.toggle('paused', on);
+}
+$('cue-pause').onclick = () => {
+  const R = CUE.run; if (!cueRunning()) return;
+  const now = performance.now();
+  if (!R.paused) {
+    if (!cueStopHere('interrupted')) return;
+    R.paused = true; CUE.view = null;
+    cueLog({kind: 'pause', step: R.step, perf_ms: now});
+    cuePausedLook(true);
+    $('cue-stepno').textContent = `Step ${R.step + 1} of ${CUE.P.steps.length}`;
+    $('cue-title').textContent = CUE.P.steps[R.step].title;
+    $('cue-detail').textContent = 'Paused. Resume starts this step again from its beginning.';
+    $('cue-now').className = 'cue-now wait'; $('cue-now').textContent = 'Paused'; $('cue-left').textContent = '';
+    $('cue-arrow').hidden = true; setGaze(null); $('cue-stage').classList.remove('gazing');
+  } else {
+    R.paused = false; cuePausedLook(false);
+    cueLog({kind: 'resume', step: R.step, perf_ms: now});
+    startStep(R.step, now + LEAD_MS);
+  }
+  cueFlush();
+};
+$('cue-skip').onclick = () => {
+  const R = CUE.run; if (!cueRunning()) return;
+  const now = performance.now();
+  if (!R.paused && !cueStopHere('skipped')) return;
+  cueLog({kind: 'skip', step: R.step, perf_ms: now});
+  markSeg(R.step, 'skipped');
+  R.paused = false; cuePausedLook(false);
+  if (R.step + 1 < CUE.P.steps.length) startStep(R.step + 1, now + 800);
+  else cueFinish('completed', 'the last step was skipped');
+};
+$('cue-abort').onclick = () => {
+  if (cueRunning() && confirm('Stop the cued session? Everything logged so far is kept.')) cueFinish('aborted', 'stopped by the operator');
+};
+$('cue-full').onclick = () => {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else if ($('cue-stage').requestFullscreen) $('cue-stage').requestFullscreen().catch(() => {});
+};
+document.addEventListener('fullscreenchange', () => { $('cue-full').textContent = document.fullscreenElement ? '⛶ Leave full screen' : '⛶ Full screen'; });
+
+$('cue-start').onclick = async () => {
+  const P = CUE.protocols.find(x => x.id === $('cue-proto').value); if (!P || cueRunning()) return;
+  $('cue-start').disabled = true; $('cue-done').textContent = '';
+  const info = t => { $('cue-info').textContent = t; };
+  info('Getting ready…');
+  if (!await audioReady()) { info('This browser did not allow sound. Press Start again, or check the volume and sound settings.'); $('cue-start').disabled = false; return; }
+  Object.assign(CUE, {sync: [], buf: [], vis: [], osc: [], n: 0, fit: null, failures: 0, late: 0, view: null});
+  for (let k = 0; k < 8; k++) await cuePing();
+  if (CUE.sync.length < 3) { info('The server did not answer – press Start again in a moment.'); $('cue-start').disabled = false; return; }
+  const ac = CUE.ac, client = {user_agent: navigator.userAgent, audio_method: ac.getOutputTimestamp ? 'getOutputTimestamp' : 'latency-estimate',
+    audio_base_latency_s: ac.baseLatency, audio_output_latency_s: ac.outputLatency, audio_sample_rate: ac.sampleRate, time_origin_ms: performance.timeOrigin};
+  let d;
+  try {
+    const r = await fetch(API + '/cues/start', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                                 body: JSON.stringify({protocol_id: P.id, client, sync: CUE.sync.splice(0)})});
+    d = await r.json();
+    if (!r.ok) throw new Error(d.error || `error ${r.status}`);
+  } catch (e) { info('Could not start: ' + e.message); $('cue-start').disabled = false; return; }
+  CUE.P = d.protocol; CUE.fit = d.clock_fit;
+  const t0 = performance.now() + LEAD_MS;
+  CUE.run = {id: d.run_id, attempts: {}, paused: false, ended: false, closed: false, step: 0, att: 0, t0, t1: t0, next: 0, endQueued: true, lastPing: performance.now()};
+  $('cue-segs').innerHTML = CUE.P.steps.map(s => `<i style="flex:${s.duration_s}"></i>`).join('');
+  $('cue-setup').hidden = $('cue-what').hidden = $('cue-hint').hidden = true;
+  $('cue-stage').hidden = false; cuePausedLook(false);
+  $('cue-stepno').textContent = ''; $('cue-left').textContent = ''; $('cue-bar').style.width = '0';
+  $('cue-title').textContent = CUE.P.name; $('cue-detail').textContent = ''; $('cue-now').className = 'cue-now wait'; $('cue-now').textContent = 'Get ready';
+  $('cue-arrow').hidden = true; setGaze(null); $('cue-stage').classList.remove('gazing');
+  $('cue-stage').scrollIntoView({behavior: 'smooth', block: 'center'});
+  cueLog({key: 'run.start', kind: 'run_start', perf_ms: t0, text: CUE.P.id});
+  startStep(0, t0);
+  cueStatus(); cueFlush();
+};
+
+async function cueFinish(status, reason) {
+  const R = CUE.run; if (!R || R.ended) return;
+  const now = performance.now();
+  if (status !== 'completed') {
+    if (!R.paused) cueStopHere('aborted');
+    cueLog({kind: 'abort', step: R.step, perf_ms: now, note: reason});
+  }
+  R.ended = true;
+  cueLog({key: 'run.end', kind: 'run_end', perf_ms: status === 'completed' ? R.t1 : now, status});
+  cancelSounds(); CUE.vis = [];
+  $('cue-status').textContent = 'Saving…';
+  for (let k = 0; k < 4; k++) await cuePing();
+  try { await CUE.flushP; } catch (e) {}
+  let ok = false, err = '';
+  for (let k = 0; k < 4 && !ok; k++) {
+    try { await cuePost('end', {status, reason, entries: CUE.buf, sync: CUE.sync}); ok = true; }
+    catch (e) { err = e.message; if ([404, 409, 410].includes(e.status)) break; await new Promise(r => setTimeout(r, 1000)); }
+  }
+  R.closed = true;
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  $('cue-stage').hidden = true;
+  $('cue-setup').hidden = $('cue-what').hidden = $('cue-hint').hidden = false; $('cue-start').disabled = false; cueShowProtocol();
+  const f = CUE.fit;
+  $('cue-status').textContent = '';
+  $('cue-done').textContent = ok ? `Saved: ${CUE.P.name} – ${status === 'completed' ? 'finished' : 'stopped early (kept, marked as stopped early)'}` +
+      (f ? ` · timing within ±${Math.max(1, Math.ceil(f.err_ms))} ms.` : '.')
+    : `The last seconds of the session could not be sent (${err}); everything before that is saved.`;
+  CUE.buf = []; CUE.sync = [];
+}
+setInterval(cueTick, 20);
+setInterval(() => {
+  if (!cueRunning()) return;
+  if (performance.now() - CUE.run.lastPing > PING_EVERY_MS) { CUE.run.lastPing = performance.now(); cuePing(); }
+  cueFlush();
+}, 2000);
+document.addEventListener('visibilitychange', () => {
+  if (cueRunning()) cueLog({kind: document.hidden ? 'page_hidden' : 'page_visible', perf_ms: performance.now()});
+});
+addEventListener('beforeunload', e => { if (cueRunning()) { e.preventDefault(); e.returnValue = ''; } });
+addEventListener('pagehide', () => {   // closed / reloaded mid-run: send what is left, marked as stopped early
+  if (!cueRunning()) return;
+  CUE.run.ended = true;
+  const body = JSON.stringify({status: 'aborted', reason: 'the page was closed or reloaded during the session',
+                               entries: CUE.buf.concat([{key: 'run.end', kind: 'run_end', perf_ms: performance.now(), status: 'aborted'}]), sync: CUE.sync});
+  try { fetch(`${API}/cues/${CUE.run.id}/end`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body, keepalive: true}); } catch (e) {}
+});
+cueLoadProtocols(); cueLoadDone(); requestAnimationFrame(cueFrame);
 
 loadModels(); poll(); pollInsights(); pollAux(); fetchLive(); requestAnimationFrame(frame);
 setInterval(poll, 1000);

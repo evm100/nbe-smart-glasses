@@ -44,3 +44,6 @@ runs/
 
 # Pi gateway config (Wi-Fi passwords)
 deploy/pi-gateway/gateway.conf
+
+# Claude Code agent worktrees
+.claude/worktrees/

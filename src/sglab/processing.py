@@ -43,10 +43,32 @@ def site_overrides(settings) -> dict:
     return {p.stem: json.loads(p.read_text()) for p in sorted(d.glob("*.json"))} if d.is_dir() else {}
 
 
+# Measurement sites (stream roles) the platform knows. glasses_l / glasses_r: the two temples of dual-PPG
+# glasses (docs/DUAL_PPG.md); head: the retired head board (old sessions).
+SITES = ("finger", "glasses", "glasses_l", "glasses_r", "head")
+
+
+def site_family(role: str) -> str:
+    """The site whose settings a role falls back to: glasses_l / glasses_r (and a recorder-made
+    glasses_r_b) -> glasses. Other roles are their own family."""
+    for fam in ("glasses",):
+        if role.startswith(fam + "_"):
+            return fam
+    return role
+
+
+def site_override(sites: dict, role: str) -> dict:
+    """The site overrides for a role: its own config/sites/<role>.json, else its family's."""
+    if role in sites:
+        return sites[role]
+    return sites.get(site_family(role), {})
+
+
 def stream_configs(base1: Layer1Config, base2: Layer2Config, sites: dict, stream: dict
                    ) -> tuple[Layer1Config, Layer2Config]:
-    """The configs for one stream: the base ones with its role's site overrides on top."""
-    o = sites.get(stream.get("role") or "", {})
+    """The configs for one stream: the base ones with its role's site overrides on top
+    (a side of dual glasses without a file of its own uses glasses.json)."""
+    o = site_override(sites, stream.get("role") or "")
     return with_overrides(base1, o.get("layer1")), with_overrides(base2, o.get("layer2"))
 
 

@@ -241,6 +241,24 @@ def api_trial_video(request: Request, tid: str, stream: str, after: int = -1, us
     return Response(p[1], media_type=p[2], headers=headers)
 
 
+@router.post("/api/trials/{tid}/video/{stream}/settings")
+async def api_trial_video_settings(request: Request, tid: str, stream: str, user=operator):
+    """{"exposure": 0-1200, "gain": 0-30, "aec": bool, "win": 0 | win_min-win_max, "fps": 0-120 (0 = no cap),
+    "ir": 0-100, "mode": "cif" | "svga"}, any
+    subset: sends the board its CAM command. The new values show in the stream's `settings` once the
+    board's fresh H line arrives (usually well under a second)."""
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    body = await request.json()
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "expected a JSON object"}, status_code=400)
+    try:
+        cmd = ctx.manager.camera_settings(tid, stream, body)
+    except TrialError as err:
+        return JSONResponse({"error": str(err)}, status_code=400)
+    return {"ok": True, "command": cmd}
+
+
 @router.get("/api/trials/{tid}/eye/{stream}")
 def api_trial_eye(request: Request, tid: str, stream: str, after: int = -1, user=operator):
     """Live eye tracking of a camera stream: summary (blinks/min, PERCLOS, gaze shifts...) and every
@@ -311,6 +329,141 @@ async def api_trial_event(request: Request, tid: str, user=operator):
         return ctx.manager.add_event(tid, body.get("kind", ""), body)
     except (TrialError, CommandError) as e:
         return JSONResponse({"error": str(e)}, status_code=400)
+
+
+# ---- auto-cuff (sglab.autocuff): scheduled BP readings during the trial -------------------
+def _cuffs(ctx):
+    if ctx.cuffs is None:
+        raise HTTPException(503, "auto-cuff support is not running")
+    return ctx.cuffs
+
+
+@router.get("/api/trials/{tid}/cuff")
+def api_trial_cuff(request: Request, tid: str, user=operator):
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    return _cuffs(ctx).trial_state(tid)
+
+
+@router.post("/api/trials/{tid}/cuff")
+async def api_trial_cuff_set(request: Request, tid: str, user=operator):
+    """Body: any of {"node_id": "CUF01", "enabled": true, "interval_s": 300}."""
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    body = await request.json()
+    try:
+        b = _cuffs(ctx).configure(tid, node_id=body.get("node_id"), enabled=body.get("enabled"),
+                                  interval_s=body.get("interval_s"))
+    except TrialError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    ctx.audit(request, "trial.cuff", tid, {k: body[k] for k in ("node_id", "enabled", "interval_s") if k in body})
+    return b
+
+
+@router.post("/api/trials/{tid}/cuff/{action}")
+def api_trial_cuff_action(request: Request, tid: str, action: str, user=operator):
+    """action: measure (one reading now) | abort (stop the reading in progress)."""
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    cm = _cuffs(ctx)
+    try:
+        if action == "measure":
+            return cm.measure_now(tid)
+        if action == "abort":
+            return cm.abort(tid)
+    except TrialError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    raise HTTPException(404, f"unknown action {action!r}")
+
+
+# ------------------------------------------------------------------ cued sessions (sglab.cues)
+def _protocols(ctx) -> list[dict]:
+    from ..cues import CueProtocolError, load_protocols
+    try:
+        return load_protocols(ctx.settings.root)
+    except CueProtocolError as e:
+        raise HTTPException(500, f"config/cue_protocols.json has a mistake: {e}") from None
+
+
+async def _body(request: Request) -> dict:
+    try:
+        b = await request.json()
+    except ValueError:
+        raise HTTPException(400, "expected a JSON body") from None
+    if not isinstance(b, dict):
+        raise HTTPException(400, "expected a JSON object")
+    return b
+
+
+@router.get("/api/cue-protocols")
+def api_cue_protocols(request: Request, user=operator):
+    """The cued-session protocols (config/cue_protocols.json), every step expanded into its cues."""
+    return {"protocols": _protocols(C(request))}
+
+
+@router.post("/api/trials/{tid}/cues/ping")
+async def api_cue_ping(request: Request, tid: str, user=operator):
+    """Clock ping: {t1_s: request arrived, t2_s: reply sent}, both on the session clock."""
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    try:
+        return ctx.manager.cue_clock(tid, getattr(request.state, "t_arrive_ns", None))
+    except TrialError as e:
+        return JSONResponse({"error": str(e)}, status_code=409)
+
+
+def _run_reply(run: dict) -> dict:
+    return {"run_id": run["run_id"], "status": run["status"], "clock_fit": run["clock_fit"],
+            "n_entries": len(run["entries"])}
+
+
+@router.post("/api/trials/{tid}/cues/start")
+async def api_cue_start(request: Request, tid: str, user=operator):
+    """{protocol_id, client: {user_agent, audio_*...}, sync: [pings]} -> {run_id, protocol, clock_fit}."""
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    b = await _body(request)
+    p = next((x for x in _protocols(ctx) if x["id"] == b.get("protocol_id")), None)
+    if p is None:
+        return JSONResponse({"error": f"unknown protocol {b.get('protocol_id')!r}"}, status_code=400)
+    try:
+        run = ctx.manager.cue_start(tid, p, user.get("username"), b.get("client"), b.get("sync"))
+    except TrialError as e:
+        return JSONResponse({"error": str(e)}, status_code=409)
+    ctx.audit(request, "trial.cues_start", tid, {"protocol": p["id"], "run": run["run_id"]})
+    return {**_run_reply(run), "protocol": p}
+
+
+@router.post("/api/trials/{tid}/cues/{run_id}/log")
+async def api_cue_log(request: Request, tid: str, run_id: str, user=operator):
+    """{entries: [...], sync: [pings]}: entries with a `key` already logged are updated in place."""
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    b = await _body(request)
+    try:
+        return _run_reply(ctx.manager.cue_log(tid, run_id, b.get("entries"), b.get("sync")))
+    except TrialError as e:
+        return JSONResponse({"error": str(e)}, status_code=409)
+
+
+@router.post("/api/trials/{tid}/cues/{run_id}/end")
+async def api_cue_end(request: Request, tid: str, run_id: str, user=operator):
+    """{status: completed | aborted, reason, entries, sync}."""
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    b = await _body(request)
+    try:
+        run = ctx.manager.cue_end(tid, run_id, b.get("status", "aborted"), b.get("reason"), b.get("entries"), b.get("sync"))
+    except TrialError as e:
+        return JSONResponse({"error": str(e)}, status_code=409)
+    return _run_reply(run)
+
+
+@router.get("/api/trials/{tid}/cues")
+def api_trial_cues(request: Request, tid: str, user=operator):
+    ctx = C(request)
+    _trial_or_404(ctx, tid)
+    return ctx.manager.cue_doc(tid)
 
 
 @router.post("/api/trials/{tid}/stop")

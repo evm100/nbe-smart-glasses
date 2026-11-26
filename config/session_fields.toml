@@ -18,7 +18,7 @@ remember = true
 name = "protocol"
 prompt = "Protocol / condition"
 type = "choice"
-choices = ["rest", "paced_breathing", "post_exercise", "cold_pressor", "posture_change", "valsalva", "mental_stress", "other"]
+choices = ["rest", "paced_breathing", "post_exercise", "cold_pressor", "posture_change", "valsalva", "mental_stress", "cued_blinks", "other"]
 ask = "before"
 remember = true
 

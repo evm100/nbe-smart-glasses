@@ -9,6 +9,8 @@ Topics (prefix default "nbe"; one set per node ID):
                           (nbe_gateway) publishes here for its board, exactly like a Wi-Fi node.
     nbe/dev/<ID>/cmd      server -> node, QoS 1: INFO | START | STOP | OTA <token> (see sglab.firmware);
                           GW-EXIT <gw_id> to a USB gateway (shut_down_gateway)
+    nbe/dev/<ID>/data     JSON objects (first byte "{") from an auto-cuff node go to on_json instead
+                          (sglab.autocuff; auto-cuff/PROTOCOL.md)
     nbe/core/status       server -> nodes, retained {"online": true} + last-will {"online": false};
                           nodes stop streaming when the server disappears
 
@@ -55,6 +57,7 @@ class MqttHub:
         self.idle_cbs: dict[str, Callable[[bool], None]] = {}  # node reports streaming true/false
         self.receivers: dict[str, FrameReceiver] = {}  # binary frame reassembly + ACKs per node
         self.on_mac: Callable[[str, str], None] | None = None  # node reported a (new) MAC -> registry
+        self.on_json: Callable[[str, dict], None] | None = None  # JSON on a data topic (auto-cuff nodes)
         self.connected = False
         self.last_error: str | None = None
         self.stats = {"data_msgs": 0, "data_bytes": 0, "unrouted": 0, "ignored": 0, "orphan_stops": 0}
@@ -150,6 +153,9 @@ class MqttHub:
         elif kind == "data":
             self.stats["data_msgs"] += 1
             self.stats["data_bytes"] += len(payload)
+            if payload[:1] == b"{":  # auto-cuff messages; sensor data is never JSON
+                self._json_message(node_id, payload)
+                return
             if is_frame(payload):  # firmware >= 0.6: acknowledged binary frames -> protocol lines
                 with self.lock:
                     rx = self.receivers.setdefault(node_id, FrameReceiver())
@@ -172,6 +178,23 @@ class MqttHub:
                 self.stats["unrouted"] += 1
                 if b"$D," in payload:  # samples, not just a boot banner / INFO answer
                     self._maybe_stop_orphan(node_id)
+
+    def _json_message(self, node_id: str, payload: bytes) -> None:
+        with self.lock:
+            if node_id in self.status:
+                self.status[node_id]["_last_data"] = time.time()
+        try:
+            msg = json.loads(payload.decode())
+        except (ValueError, UnicodeDecodeError):
+            self.stats["unrouted"] += 1
+            return
+        if not isinstance(msg, dict) or self.on_json is None:
+            self.stats["unrouted"] += 1
+            return
+        try:
+            self.on_json(node_id, msg)
+        except Exception:
+            log.exception("handling JSON from %s", node_id)
 
     def _gateway_status(self, node_id: str, st: dict, retain: bool) -> bool:
         """Note a USB gateway's status; True if it is one that was shut down (it got GW-EXIT again)."""

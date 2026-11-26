@@ -7,7 +7,8 @@ CONFIG_PPG_LINK_HYBRID=y
 # CONFIG_PPG_LINK_USB_BIN is not set
 # CONFIG_PPG_LINK_MQTT is not set
 
-# Frames travel in MQTT data frames: one frame record (160x160 crop = 25.6 kB) must fit one message.
+# Frames travel in MQTT data frames: one frame record (112x112 = 12.5 kB at ~50 fps since 2026-11, was
+# 160x160 = 25.6 kB at ~25 fps: about the same ~0.63 MB/s) must fit one message.
 CONFIG_PPG_MQTT_BATCH_BUFFER_BYTES=65536
 # ~0.65 MB/s of frames. Throughput <= window / round trip, so the window has to cover a few frames
 # (256 kB / 40 ms = 6 MB/s ceiling); every ACK sends more at once (ACK-clocked).

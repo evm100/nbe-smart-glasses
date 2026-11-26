@@ -83,7 +83,7 @@ script, plug in the glasses. The node shows as online on the devices page and re
 node; the trial page shows a live camera preview.
 
 Camera settings at run time (sent by the server, or typed into a serial terminal):
-`CAM FPS=10 EXP=400 GAIN=4 AEC=0 WIN=252 CLK=1`. The S line reports `cam_fps` (frames actually sent per second)
+`CAM FPS=10 EXP=400 GAIN=4 AEC=0 WIN=252 CLK=1 MODE=CIF IR=100`. The S line reports `cam_fps` (frames actually sent per second)
 and `cam_drop` (frames the board couldn't send because the PC didn't read fast enough).
 
 **First hardware runs:** frames barely got out (a few per minute). That turned out to be the CPU clock
@@ -113,6 +113,16 @@ and the driver (grab-latest) quietly replaces frames nobody picked up. Signs, in
 with `capped` still 0, and only then `usb fail`/`cam_drop`. Also watch `tx_drop` (PPG bytes lost:
 PPG records share the USB port) and the console's `waiting to send` (the uplink to the server,
 not USB, can't keep up; nothing is lost but the live view lags).
+
+**Eye video at ~50 fps (current, 2026-11):** `sdkconfig.camera` now keeps the sensor in **CIF mode**
+(`CONFIG_PPG_CAM_WIN_CIF`, run time `CAM MODE=CIF`): half the lines of SVGA, so `CLK=1` gives ~50 fps
+instead of ~25. `WIN=160` CIF px (the same view as SVGA `WIN=480` + 160 crop) is scaled to 128×128 and the
+middle 112×112 is sent (12.5 kB, ~630 kB/s). Exposure counts sensor lines (59.5 µs) and is clamped at one
+frame (336 lines = 20 ms). The H line now says `mode=`, `fps_sensor=`, `line_us=`, `exp_max=`,
+`win_min=`/`win_max=`; the S line adds `cam_sfps` (sensor frames/s) and `cam_miss` (sensor frames the
+driver replaced before the camera task took them: invisible as seq gaps). Optional IR LED on a GPIO
+(`CONFIG_PPG_CAM_IR_GPIO`, `CAM IR=n`). Measure with `scripts/cam_bench.py`; details, the exposure /
+frame-rate trade-off, the IR LED and its eye-safety limits: `docs/EYE_CAMERA.md`. **Not yet run on hardware.**
 
 ### Hybrid: Wi-Fi with USB-C takeover (camera glasses, or any node)
 

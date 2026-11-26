@@ -1,0 +1,7 @@
+{
+  "layer2": {
+    "quality": {
+      "require_layer1_good": false
+    }
+  }
+}

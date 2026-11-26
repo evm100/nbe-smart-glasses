@@ -11,6 +11,7 @@ every zoom, so a 90-minute recording still shows single pulses when you zoom in.
     GET /api/sessions/{sid}/eye/trace               per-frame closure / gaze / motion in a range
     GET /api/sessions/{sid}/video/{stream}/frame    one recorded frame as PNG (+ the tracker's overlay)
     GET /api/sessions/{sid}/aux                     a further sensor's channels (sglab.auxstream)
+    GET /api/sessions/{sid}/cues                    the cued-session log (sglab.cues), optionally with frame numbers
 """
 from __future__ import annotations
 
@@ -436,6 +437,49 @@ def api_video_frame(request: Request, sid: str, stream: str, i: int | None = Non
             ov["closed"] = ov["state"] == "closed"
             headers["X-Eye"] = json.dumps(ov, separators=(",", ":"))
     return Response(out.getvalue(), media_type="image/png", headers=headers)
+
+
+# ------------------------------------------------------------------ cued sessions
+@router.get("/api/sessions/{sid}/cues")
+def api_cues(request: Request, sid: str, stream: str | None = None,
+             format: str = Query("json", pattern="^(json|csv)$"), user=viewer):
+    """The cue log of the session's cued runs (sglab.cues; {"runs": []} when there were none).
+    Every entry has t_s on the session clock (the clock of the frames). With stream=<camera>
+    each entry also gets frame_i: the recorded frame captured closest to t_s (and screen_frame_i).
+    format=csv: one row per entry (the cues.csv saved with the session)."""
+    from .. import cues as cuemod
+
+    ctx = C(request)
+    s = _session(ctx, sid)
+    folder = _folder(ctx, s)
+    doc = cuemod.read_doc(folder) or {"schema": cuemod.SCHEMA, "runs": []}
+    if format == "csv":
+        return Response(cuemod.to_csv(doc), media_type="text/csv",
+                        headers={"Content-Disposition": f'attachment; filename="{s["session_id"]}_cues.csv"'})
+    if stream:
+        from ..video import frame_times, gray_array
+        f = _frames(ctx, s, stream)
+        try:
+            _, idx = gray_array(f)
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from None
+        ft = _cache.get(f, "ft", lambda: frame_times(idx["t_s"], idx["t_dev_us"]))
+        order = np.argsort(ft)
+        fs = ft[order]
+
+        def nearest(t):
+            if t is None or not fs.size:
+                return None
+            j = int(np.searchsorted(fs, t))
+            best = min((k for k in (j - 1, j) if 0 <= k < fs.size), key=lambda k: abs(fs[k] - t))
+            return int(order[best])
+        for r in doc["runs"]:
+            for e in r["entries"]:
+                e["frame_i"] = nearest(e.get("t_s"))
+                if e.get("screen_t_s") is not None:
+                    e["screen_frame_i"] = nearest(e["screen_t_s"])
+        doc["frames"] = {"stream": stream, "n": int(ft.size)}
+    return doc
 
 
 # ------------------------------------------------------------------ further sensors

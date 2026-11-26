@@ -665,7 +665,7 @@ def build_parser() -> argparse.ArgumentParser:
     tf.add_argument("--sessions", nargs="*", help="only session ids containing one of these")
     tr = ts.add_parser("run", help="search settings (resumable; Ctrl-C keeps finished trials)")
     tr.add_argument("--data", required=True, help="folder of session folders (tune-data, or the server's data/raw)")
-    tr.add_argument("--site", required=True, choices=["glasses", "head"])
+    tr.add_argument("--site", required=True, choices=["glasses", "glasses_l", "glasses_r", "head"])
     tr.add_argument("--stage", default="beats", choices=["beats", "morph", "all"])
     tr.add_argument("--out", help="study folder (default runs/tune/<site>-<stage>)")
     tr.add_argument("--trials", type=int, default=500, help="total trial budget (default 500)")

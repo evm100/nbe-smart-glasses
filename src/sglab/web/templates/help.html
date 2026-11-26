@@ -22,7 +22,7 @@ dl.gloss dt { font-weight: 600; } dl.gloss dd { margin: 0; color: var(--text-2);
 <div class="help">
 <nav>
   <b>Doing things</b>
-  <a href="#record">Run a recording</a><a href="#cuff">Log cuff and pulse-ox readings</a><a href="#review">Look at a recording</a><a href="#glasses">Camera glasses and the USB gateway</a>
+  <a href="#record">Run a recording</a><a href="#cuff">Log cuff and pulse-ox readings</a><a href="#review">Look at a recording</a><a href="#cued">Run a cued blink session</a><a href="#glasses">Camera glasses and the USB gateway</a>
   <b>Something is wrong</b>
   <a href="#t-offline">My device is offline</a><a href="#t-nodata">Recording started but no data</a><a href="#t-poor">Signal quality is poor</a><a href="#t-eye">The eye is not found</a><a href="#t-bp">No blood-pressure number</a><a href="#t-closed">I closed the page mid-recording</a><a href="#t-empty">Plots are empty afterwards</a>
   <b>Reference</b>
@@ -63,6 +63,19 @@ dl.gloss dt { font-weight: 600; } dl.gloss dd { margin: 0; color: var(--text-2);
   <li><b>Signal quality</b> tells you how much of the recording was usable and, in plain words, why the rest was rejected.</li>
   <li>Write what you notice under <b>Notes &amp; discussion</b>; it also appears on the board.</li>
 </ul>
+</div>
+
+<h2 id="cued">Run a cued blink session</h2>
+<div class="card">
+<p style="margin-top:0">A cued session tells the wearer what to do, step by step, with big instructions on the screen and a beep for each blink. The time of every beep is saved with the recording, so the eye-camera frames can later be matched to what the wearer was asked to do.</p>
+<ol>
+  <li>Start a recording with the camera glasses as usual (protocol: <i>cued_blinks</i>).</li>
+  <li>On the live page, under <b>Cued session</b>, choose the protocol. Press <b>♪ Test sound</b> and set the volume. Use the computer's own speakers or wired headphones — Bluetooth delays the beeps.</li>
+  <li>Press <b>▶ Start cued session</b>. If the wearer faces the screen, press <b>Full screen</b>. Keep the page in front until it says “Saved”.</li>
+  <li><b>Pause</b> stops the current step; <b>Resume</b> starts that step again from its beginning. <b>Skip step</b> moves on. <b>Stop session</b> ends it early. In every case what was done so far is kept, and marked as finished, paused or stopped early.</li>
+  <li>To repeat it under different lighting, simply start it again (in the same or a new recording).</li>
+</ol>
+<p class="note">On the recording's page, <b>Cued sessions</b> lists every step with its time; the eye plot shows the steps and beeps as purple lines. Steps can be changed in <code>config/cue_protocols.json</code>.</p>
 </div>
 
 <h2 id="glasses">Camera glasses and the USB gateway</h2>

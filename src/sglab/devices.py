@@ -46,8 +46,8 @@ class DeviceDirectory:
             return []
         out = []
         for n in self.registry.nodes():
-            if not n["enabled"]:
-                continue
+            if not n["enabled"] or (n["site"] or "").strip().lower() == "cuff":
+                continue  # auto-cuffs aren't streams: they're attached on the live page (sglab.autocuff)
             st = self.hub.node_state(n["node_id"]) if self.hub else {"online": False, "state": "MQTT off"}
             if self.hub and not self.hub.connected:
                 st = {**st, "online": False, "state": "server not connected to broker"}

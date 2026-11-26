@@ -1,0 +1,20 @@
+# auto-cuff MQTT node (cuff_node.py). Install with: sudo ./install-service.sh
+# Paths assume the repo checkout lives at /home/<user>/nbe-smart-glasses; install-service.sh fills them in.
+[Unit]
+Description=NBE auto-cuff (servo + Omron BLE) MQTT node
+Wants=network-online.target bluetooth.service time-sync.target
+After=network-online.target bluetooth.service time-sync.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@DIR@
+ExecStart=@DIR@/.venv/bin/python @DIR@/cuff_node.py
+Restart=always
+RestartSec=5
+# Optional overrides (see cuff_core.py): monitor MAC, model, timings
+EnvironmentFile=-/etc/default/auto-cuff
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

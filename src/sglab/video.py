@@ -6,7 +6,7 @@ Per camera stream in a session folder (written once, like every raw file):
     <role>_<dev>_<stream>.csv      one row per frame: t_s, seq, t_dev_us, exposure, gain, offset, nbytes
 
 .frames layout (little-endian):
-    file header   b"NBEVID01" | w u16 | h u16 | fmt u8 | 7 bytes zero          (24 bytes)
+    file header   b"NBEVID01" | w u16 | h u16 | fmt u8 | 7 bytes zero          (20 bytes)
     per frame     nbytes u32 | seq u32 | t_dev_us i64 | t_s f64 | exposure u16 | gain u8 | fmt u8 | data
 fmt 0 = 8-bit grayscale (nbytes = w*h), 1 = JPEG. t_dev_us is on the same device clock as the
 board's PPG samples (t_dev_us in <role>_<dev>.csv), so the two line up without the PC clock.
@@ -262,7 +262,29 @@ class VideoWriter:
                 "dropped": st["n_dropped_seq"], "bytes": st["bytes"],
                 "sensor_ok": self.header.get("sensor_ok") != "0",
                 "exposure": self.latest.exposure if self.latest else None,
-                "gain": self.latest.gain if self.latest else None, "tracking": self.tracker is not None}
+                "gain": self.latest.gain if self.latest else None, "tracking": self.tracker is not None,
+                "settings": self.camera_settings()}
+
+    def camera_settings(self) -> dict:
+        """What the board's latest H line says the camera is set to (changes after a CAM command)."""
+        h = self.header
+
+        def num(k, cast=int):
+            try:
+                return cast(float(h[k]))
+            except (KeyError, TypeError, ValueError):
+                return None
+        return {"aec": h.get("aec") == "1", "exposure": num("exposure"), "gain": num("gain"),
+                "fps": num("fs"), "win": num("win") or 0,
+                # the sensor window (FOV) is gray8 only: a square of win x win SVGA (or CIF, mode=cif) px.
+                # Newer firmware says its own limits (win_min = the sensor frame, which a centre crop
+                # makes larger than the w x h sent); older: the sent frame size .. 600
+                "win_ok": self.fmt == FMT_GRAY8, "win_min": num("win_min") or max(self.w, self.h),
+                "win_max": num("win_max") or 600,
+                # sensor timing (firmware >= 2026-11, nominal): exposure x line_us = exposure time;
+                # exposure above exp_max (one frame) is clamped by the sensor
+                "mode": h.get("mode"), "fps_sensor": num("fps_sensor", float), "line_us": num("line_us", float),
+                "exp_max": num("exp_max"), "ir": num("ir")}
 
     def summary(self) -> dict:
         st = self.stats

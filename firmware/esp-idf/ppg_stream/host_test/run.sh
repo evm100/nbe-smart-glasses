@@ -24,6 +24,9 @@ gcc $CF -DTEST_HYBRID -Istubs_net -Istubs_cam -o sim_hybrid sim.c ../main/max301
 gcc $CF -DTEST_HYBRID -DTEST_OUTAGE -DCONFIG_PPG_MQTT_RING_KB=128 -Istubs_net -Istubs_cam -o sim_hybrid_outage sim.c \
     ../main/max30102.c ../main/proto.c ../main/diag.c ../main/frame.c ../main/link_mqtt.c ../main/usbgw.c \
     ../main/camera.c mqtt_fake.c
+# camera controls: "CAM WIN=280 MODE=CIF CLK=1 EXP=200" mid-stream + sensor frames the driver replaced (cam_miss)
+gcc $CF -DTEST_HYBRID -DTEST_CAM_MISS -Istubs_net -Istubs_cam -o sim_cam_miss sim.c ../main/max30102.c ../main/proto.c \
+    ../main/diag.c ../main/frame.c ../main/link_mqtt.c ../main/usbgw.c ../main/camera.c mqtt_fake.c
 # protocol v2.1, auxiliary streams (TEST_AUX = PPG_AUX + PPG_AUX_DEMO, + PPG_CAMERA_EDGE_FEATURES on the
 # camera builds): the demo stream on the plain USB text link, and with the camera's frame statistics
 # on the USB binary and the hybrid link
@@ -72,6 +75,9 @@ rm -f frames_mqtt.bin
 ./sim_hybrid_outage 8 > out_hybrid_usb.bin 2>hybrid_log.txt || { cat hybrid_log.txt; exit 1; }
 grep "hybrid:" hybrid_log.txt
 "${PYTHON:-python3}" check_hybrid.py out_hybrid_usb.bin --outage
+rm -f frames_mqtt.bin
+./sim_cam_miss 8 > out_cam.bin 2>cam_log.txt || { cat cam_log.txt; exit 1; }
+"${PYTHON:-python3}" check_cam.py out_cam.bin cam_log.txt
 "${PYTHON:-python3}" check_output.py
 ./sim_aux 12 > out_aux.txt 2>/dev/null
 "${PYTHON:-python3}" check_xstream.py text out_aux.txt
@@ -82,4 +88,5 @@ rm -f frames_mqtt.bin
 "${PYTHON:-python3}" check_xstream.py hybrid out_aux_hybrid.bin
 rm -f sim sim_int sim_uart sim_hr sim_slow sim_mqtt mqtt_log.txt frames_mqtt.bin out_mqtt_usb.txt \
       sim_usbbin out_usbbin.bin usbbin_log.txt sim_hybrid sim_hybrid_outage out_hybrid_usb.bin hybrid_log.txt \
-      sim_aux sim_aux_usbbin sim_aux_hybrid out_aux_usbbin.bin out_aux_hybrid.bin
+      sim_aux sim_aux_usbbin sim_aux_hybrid out_aux_usbbin.bin out_aux_hybrid.bin \
+      sim_cam_miss out_cam.bin cam_log.txt

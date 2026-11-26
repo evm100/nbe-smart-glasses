@@ -1,0 +1,3 @@
+[submodule "auto-cuff/omblepy"]
+	path = auto-cuff/omblepy
+	url = https://github.com/userx14/omblepy

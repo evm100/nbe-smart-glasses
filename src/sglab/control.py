@@ -9,6 +9,7 @@ when the trial stops.
 """
 from __future__ import annotations
 
+import contextlib
 import secrets
 import threading
 import time
@@ -61,6 +62,7 @@ class Trial:
         self.warnings: list[str] = []
         self.started_wall = time.time()
         self.analysis = None  # liveppg.LiveAnalysis while recording
+        self.cues = None      # cues.CueLog once a cued run was started on the live page
 
     def brief(self) -> dict:
         return {"id": self.id, "owner": self.owner, "state": self.state, "device_keys": self.device_keys,
@@ -78,6 +80,7 @@ class TrialManager:
         self.trials: dict[str, Trial] = {}
         self.claims: dict[str, str] = {}  # port -> trial id
         self.finished: dict[str, str] = {}  # trial id -> session id (so a late page load can redirect)
+        self.cuffs = None  # autocuff.CuffManager, set by the web app when MQTT is on
 
     def _cat(self) -> Catalog:
         return Catalog(self.settings.db_path, self.settings.data_root)
@@ -152,6 +155,8 @@ class TrialManager:
         return trial
 
     def _release(self, trial: Trial, drop: bool = False) -> None:
+        if drop and self.cuffs is not None:
+            self.cuffs.trial_closed(trial.id)
         with self.lock:
             for p in trial.ports:
                 if self.claims.get(p) == trial.id:
@@ -173,8 +178,12 @@ class TrialManager:
                 raise TrialError("not recording")
             t.rec.stop()
             t.state = "stopped"
+            if t.cues is not None:  # a cued run still playing is kept, marked partial
+                t.cues.close_all("the recording was stopped before the cued run ended")
             if t.analysis is not None:
                 t.analysis.stop_flag.set()
+        if self.cuffs is not None:
+            self.cuffs.trial_stopped(tid)
         self._release(t)  # devices are free for the next trial while this one is being saved
 
     def finalize(self, tid: str, post: dict, user: str | None = None) -> str:
@@ -195,11 +204,16 @@ class TrialManager:
             cat = self._cat()
             try:
                 t.rec.subject_snapshot = cat.subject(meta.get("subject_id")) if meta.get("subject_id") else None
-                dest, _ = t.rec.finalize(meta)
+                if t.cues is not None:
+                    t.cues.close_all("the recording was saved before the cued run ended")
+                with t.cues.lock if t.cues is not None else contextlib.nullcontext():  # no cue write mid-move
+                    dest, _ = t.rec.finalize(meta)
                 sid = cat.upsert_session(dest)
             finally:
                 cat.close()
             t.state = "saved"
+        if self.cuffs is not None:
+            self.cuffs.trial_closed(tid)
         with self.lock:
             self.trials.pop(tid, None)
             self.finished[tid] = sid
@@ -213,6 +227,65 @@ class TrialManager:
                 self.stop(b["id"])
             except TrialError:
                 pass
+
+    # ---- cued sessions (sglab.cues) -------------------------------------------------
+    def cue_clock(self, tid: str, arrived_ns: int | None = None) -> dict:
+        """One clock ping for the live page: t1_s = when the request arrived, t2_s = now (t_s)."""
+        t = self.get(tid)
+        rec = t.rec
+        if rec is None or t.state != "recording":
+            raise TrialError("not recording")
+        t2 = rec.now()
+        t1 = (arrived_ns - rec.t0_ns) / 1e9 if arrived_ns else t2
+        return {"t1_s": round(min(t1, t2), 6), "t2_s": round(t2, 6)}
+
+    def _cue_log(self, t: Trial):
+        from .cues import CueLog
+        if t.cues is None:
+            t.cues = CueLog(lambda: t.rec.folder if t.rec else None, lambda: t.rec.now())
+        return t.cues
+
+    def cue_start(self, tid: str, protocol: dict, operator: str | None, client: dict | None,
+                  sync: list | None) -> dict:
+        t = self.get(tid)
+        with t.lock:
+            if t.state != "recording":
+                raise TrialError("not recording")
+            run = self._cue_log(t).start(protocol, operator, client, sync)
+            t.rec.add_event("marker", label=f"cued session started: {protocol['name']}")
+        return run
+
+    def _cue_call(self, t: Trial, run_id: str, fn):
+        if t.cues is None:
+            raise TrialError(f"no cued run {run_id}")
+        try:
+            return fn(t.cues)
+        except KeyError:
+            raise TrialError(f"no cued run {run_id}") from None
+        except ValueError as e:
+            raise TrialError(str(e)) from None
+
+    def cue_log(self, tid: str, run_id: str, entries: list | None, sync: list | None) -> dict:
+        t = self.get(tid)
+        return self._cue_call(t, run_id, lambda c: c.log(run_id, entries, sync))
+
+    def cue_end(self, tid: str, run_id: str, status: str, reason: str | None, entries: list | None,
+                sync: list | None) -> dict:
+        t = self.get(tid)
+        was = self._cue_call(t, run_id, lambda c: c.run(run_id)["status"])
+        run = self._cue_call(t, run_id, lambda c: c.end(run_id, status, reason, entries, sync))
+        with t.lock:
+            if was == "running" and t.state == "recording":
+                t.rec.add_event("marker", label=f"cued session {run['status']}: {run['protocol_name']}")
+        return run
+
+    def cue_doc(self, tid: str) -> dict:
+        from .cues import build_doc
+        t = self.get(tid)
+        if t.cues is None:
+            return build_doc([])
+        with t.cues.lock:
+            return build_doc(t.cues.runs)
 
     # ---- live data ------------------------------------------------------------------
     def status(self, tid: str) -> dict:
@@ -276,6 +349,77 @@ class TrialManager:
                 if vw.name == stream:
                     return vw.preview(after, wait_s)
         raise TrialError(f"no camera stream {stream!r} in trial {tid}")
+
+    def camera_settings(self, tid: str, stream: str, req: dict) -> str:
+        """Change a camera while recording: {"exposure", "gain", "aec", "mode", "win", "fps", "ir"} (any subset)
+        -> the board's "CAM ..." command (protocol v2). The board answers with fresh H lines, so the
+        recording keeps the new settings; the change is also logged as an event. Returns the command."""
+        t = self.get(tid)
+        with t.lock:
+            if t.state != "recording" or t.rec is None:
+                raise TrialError("not recording")
+            owner = next(((w, vw) for w in t.rec.workers for vw in list(w.video.values()) if vw.name == stream), None)
+            if owner is None:
+                raise TrialError(f"no camera stream {stream!r} in trial {tid}")
+            w, vw = owner
+            cur = vw.camera_settings()
+
+            def num(k, lo, hi):
+                try:
+                    v = int(req[k])
+                except (TypeError, ValueError):
+                    raise TrialError(f"{k} must be a whole number") from None
+                if isinstance(req[k], bool) or not lo <= v <= hi:
+                    raise TrialError(f"{k} must be {lo}-{hi}")
+                return v
+
+            parts, label = [], []
+            if req.get("aec") is True:
+                parts.append("AEC=1")
+                label.append("auto exposure")
+            else:  # EXP / GAIN switch the board to fixed exposure by themselves
+                if req.get("exposure") is not None:
+                    v = num("exposure", 0, 1200)
+                    parts.append(f"EXP={v}")
+                    label.append(f"exposure {v}")
+                if req.get("gain") is not None:
+                    v = num("gain", 0, 30)
+                    parts.append(f"GAIN={v}")
+                    label.append(f"gain {v}")
+                if req.get("aec") is False and not parts:
+                    parts.append("AEC=0")
+                    label.append("fixed exposure")
+            if req.get("mode") is not None:  # sensor mode of the window (firmware >= 2026-11): cif ~50 fps, svga ~25
+                m = str(req["mode"]).lower()
+                if m not in ("cif", "svga") or not cur["win_ok"]:
+                    raise TrialError("mode must be cif or svga (grayscale streams only)")
+                parts.append(f"MODE={m.upper()}")
+                label.append(f"{m.upper()} mode")
+                if m != cur.get("mode"):  # the window limits are the other mode's (the board checks them too)
+                    cur = dict(cur, win_max=296 if m == "cif" else 600)
+            if req.get("win") is not None:
+                if not cur["win_ok"]:
+                    raise TrialError("the window (FOV) can only be changed on grayscale streams")
+                v = num("win", 0, cur["win_max"])
+                if v and v < cur["win_min"]:
+                    raise TrialError(f"window must be 0 (full view) or {cur['win_min']}-{cur['win_max']}")
+                v &= ~3  # the OV2640 window registers count in 4s (the board rounds the same way)
+                parts.append(f"WIN={v}")
+                label.append("full view" if v == 0 else f"window {v}")
+            if req.get("fps") is not None:
+                v = num("fps", 0, 120)
+                parts.append(f"FPS={v}")
+                label.append(f"{v} fps cap" if v else "no fps cap")
+            if req.get("ir") is not None:  # IR illuminator brightness, % (firmware CONFIG_PPG_CAM_IR_GPIO)
+                v = num("ir", 0, 100)
+                parts.append(f"IR={v}")
+                label.append(f"IR LED {v} %")
+            if not parts:
+                raise TrialError("nothing to change")
+            cmd = "CAM " + " ".join(parts)
+            w.src.write(cmd)
+            t.rec.add_event("camera", label=f"camera {stream}: " + ", ".join(label), stream=stream, command=cmd)
+            return cmd
 
     def live(self, tid: str, seconds: float = 8.0, max_points: int = 800, after: list[int] | None = None) -> list[dict]:
         """Last few seconds of each stream's first channel for the live plot: decimated to

@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Eye Tracking Rebuild Plan</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Why the MATLAB-port eye tracker is being replaced, the methods we considered, and the plan: IR camera, a learned eye-openness signal, blink events and fatigue features, built on our own labeled recordings.">
+<style>
+/* Layout: one reading column (~68ch) with figures allowed to run wider; summary first, detail after.
+   Self-contained on purpose: the lab board shows pages with no network access (system fonts, inline SVG). */
+:root {
+  color-scheme: light;
+  --bg: #f6f6f4; --surface: #fcfcfb; --line: #e4e3de; --wash: #ecebe7;
+  --fg: #0b0b0b; --fg-2: #52514e; --muted: #8a8984;
+  --accent: #2a78d6;            /* the site's accent: links, the 22 fps samples, "primary" */
+  --accent-soft: rgba(42,120,214,.10);
+  --alt: #1baf7a;               /* 50 fps samples, "use" */
+  --amber: #a06200; --amber-soft: rgba(237,161,0,.14);
+  --red: #c0362c; --red-soft: rgba(192,54,44,.10);
+  --good-soft: rgba(27,175,122,.13);
+  /* the schematic eye, as an IR camera sees it: bright skin, light sclera, mid iris, black pupil */
+  --skin: #d9d6cf; --sclera: #f3f2ee; --iris: #8f8d86; --pupil: #141413; --lid: #6b6963;
+  --f-display: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --f-body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --f-data: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #121211; --surface: #1a1a19; --line: #2e2e2c; --wash: #262624;
+    --fg: #ffffff; --fg-2: #c3c2b7; --muted: #8f8e86;
+    --accent: #5b9cec; --accent-soft: rgba(91,156,236,.16);
+    --alt: #2fbf8a; --amber: #e0a33a; --amber-soft: rgba(224,163,58,.16);
+    --red: #e66767; --red-soft: rgba(230,103,103,.15); --good-soft: rgba(47,191,138,.16);
+    --skin: #5d5b56; --sclera: #cfcdc6; --iris: #77756f; --pupil: #0a0a0a; --lid: #2b2a28;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121211; --surface: #1a1a19; --line: #2e2e2c; --wash: #262624;
+  --fg: #ffffff; --fg-2: #c3c2b7; --muted: #8f8e86;
+  --accent: #5b9cec; --accent-soft: rgba(91,156,236,.16);
+  --alt: #2fbf8a; --amber: #e0a33a; --amber-soft: rgba(224,163,58,.16);
+  --red: #e66767; --red-soft: rgba(230,103,103,.15); --good-soft: rgba(47,191,138,.16);
+  --skin: #5d5b56; --sclera: #cfcdc6; --iris: #77756f; --pupil: #0a0a0a; --lid: #2b2a28;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.6 var(--f-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 56px; }
+.page { max-width: 1000px; margin: 0 auto; display: grid; gap: 44px; }
+.col { max-width: 68ch; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+/* type scale: 13 / 15 / 18 / 22 / 34 */
+h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; margin: 0; line-height: 1.2; }
+h1 { font-size: clamp(26px, 5vw, 34px); font-weight: 750; letter-spacing: -.02em; }
+h2 { font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
+h3 { font-size: 15px; font-weight: 650; }
+p { margin: 0; }
+.eyebrow { font: 600 12px/1.3 var(--f-data); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.lede { font-size: 18px; line-height: 1.55; color: var(--fg-2); }
+.small { font-size: 13px; color: var(--fg-2); }
+.data { font-family: var(--f-data); font-size: 13px; font-variant-numeric: tabular-nums; }
+section { display: grid; gap: 14px; }
+section > header { display: grid; gap: 6px; }
+ul.plain, ol.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; }
+
+/* header */
+.top { display: grid; gap: 12px; padding-bottom: 24px; border-bottom: 1px solid var(--line); }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font: 13px/1.4 var(--f-data); color: var(--muted); }
+
+/* the summary: the one block on the page that is set off */
+.summary { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 20px 22px;
+  display: grid; gap: 14px; }
+.decisions { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px 22px; margin: 0; padding: 0; list-style: none; }
+.decisions li { display: grid; gap: 3px; min-width: 0; }
+.decisions b { font-family: var(--f-display); font-size: 15px; }
+.decisions span { font-size: 13.5px; color: var(--fg-2); line-height: 1.5; }
+
+/* figures */
+figure { margin: 0; display: grid; gap: 10px; }
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+figcaption { font-size: 13px; color: var(--fg-2); max-width: 75ch; }
+figcaption b { color: var(--fg); }
+svg text { font-family: var(--f-body); }
+svg .t-axis { fill: var(--muted); font: 11px var(--f-data); }
+svg .t-label { fill: var(--fg-2); font-size: 12px; }
+svg .t-strong { fill: var(--fg); font-size: 13px; font-weight: 600; }
+svg .t-note { fill: var(--muted); font-size: 11px; }
+svg .grid { stroke: var(--line); stroke-width: 1; fill: none; }
+svg .axis { stroke: var(--muted); stroke-width: 1; fill: none; }
+
+/* tables */
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+tr:last-child td { border-bottom: 0; }
+th { font: 600 11.5px/1.3 var(--f-data); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); background: var(--wash); }
+td:first-child { font-weight: 600; }
+td .sub { display: block; font-weight: 400; font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.pill { display: inline-block; white-space: nowrap; font: 600 12px/1 var(--f-data); padding: 5px 8px; border-radius: 999px; }
+.p-use { background: var(--good-soft); color: var(--alt); }
+.p-main { background: var(--accent-soft); color: var(--accent); }
+.p-later { background: var(--amber-soft); color: var(--amber); }
+.p-no { background: var(--red-soft); color: var(--red); }
+
+/* callout: used once, for the gaze-velocity finding */
+.callout { border-left: 3px solid var(--amber); background: var(--amber-soft); padding: 14px 18px; border-radius: 0 8px 8px 0; display: grid; gap: 6px; }
+
+/* protocol timeline */
+.protocol { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; counter-reset: step; }
+.protocol li { display: grid; grid-template-columns: 2.2em 6.5em 1fr; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+.protocol li:last-child { border-bottom: 0; }
+.protocol li::before { counter-increment: step; content: counter(step); font: 600 13px var(--f-data); color: var(--muted); }
+.protocol .dur { font: 13px var(--f-data); color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.protocol .what { min-width: 0; }
+.protocol .why { display: block; font-size: 13px; color: var(--muted); }
+.tag { font: 600 11px var(--f-data); letter-spacing: .04em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; margin-left: 6px; white-space: nowrap; }
+.tag.pos { background: var(--accent-soft); color: var(--accent); }
+.tag.neg { background: var(--red-soft); color: var(--red); }
+
+/* roadmap */
+.phases { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.phases li { display: grid; grid-template-columns: 5.5em 1fr; gap: 16px; padding: 14px 0; border-top: 1px solid var(--line); }
+.phases .n { font: 600 13px var(--f-data); color: var(--muted); padding-top: 2px; }
+.phases .body { display: grid; gap: 6px; min-width: 0; }
+.phases .done-when { font-size: 13px; color: var(--fg-2); }
+.phases .done-when b { color: var(--fg); font-weight: 600; }
+
+/* two-up blocks */
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 22px 32px; }
+.two > div { display: grid; gap: 8px; align-content: start; min-width: 0; }
+.numbers { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; }
+.numbers dt { font: 600 13px var(--f-data); font-variant-numeric: tabular-nums; text-align: right; }
+.numbers dd { margin: 0; font-size: 14px; color: var(--fg-2); }
+
+.refs { font-size: 13px; color: var(--fg-2); display: grid; gap: 4px; margin: 0; padding-left: 1.2em; }
+footer { font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 16px; }
+
+@media (max-width: 560px) {
+  body { font-size: 14.5px; padding-block: 18px 40px; }
+  .page { gap: 36px; }
+  .protocol li { grid-template-columns: 1.8em 1fr; }
+  .protocol .dur { grid-column: 2; }
+  .protocol .what { grid-column: 2; }
+  .phases li { grid-template-columns: 1fr; gap: 4px; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="top col">
+  <div class="eyebrow">NBE smart glasses · eye analysis</div>
+  <h1>Rebuilding the eye tracker</h1>
+  <p class="lede">The current tracker is a line-by-line port of the lab's MATLAB V7 program, and it misses blinks.
+    Now that the camera pipeline works and the picture is usable, we are starting the eye analysis over from first principles.
+    This page explains what we considered and what we plan to build.</p>
+  <div class="meta"><span>Draft plan</span><span>25 Nov 2026</span><span>Camera: OV2640 on XIAO ESP32-S3, 160 px crop, ~22 fps</span></div>
+</header>
+
+<div class="summary">
+  <div class="eyebrow">The plan in short</div>
+  <p>Light the eye with infrared and raise the frame rate. Collect a set of controlled recordings with cued blinks and label them.
+    From each frame, compute one number: <b>how open the eye is</b>, from 0 to 1. Compute it two ways and keep the better one: a quick baseline that needs no training, and a small trained network.
+    Turn that signal into blink events, then into fatigue features such as blink duration and PERCLOS.
+    Keep the network small enough that it can later run on the glasses.</p>
+  <ul class="decisions">
+    <li><b>IR, not visible light</b><span>An 850 or 940 nm LED makes the pupil and lid edge clear, and the picture no longer depends on room lighting.</span></li>
+    <li><b>One signal: eye openness</b><span>Blinks, blink duration, partial blinks and PERCLOS all come from the same 0–1 trace.</span></li>
+    <li><b>Learned, not hand-tuned</b><span>The MATLAB tracker uses about 25 thresholds tuned by hand. The new one is trained on our own labeled frames.</span></li>
+    <li><b>Measured, not eyeballed</b><span>We judge every version against labeled, cued-blink recordings from wearers it never saw during training.</span></li>
+  </ul>
+</div>
+
+<section class="col">
+  <header><h2>Why start over</h2></header>
+  <p>The port finds the eye as the "darkest round blob" and calls the eye closed when that blob fades.
+    When the lid comes down, eyelashes and the lid crease also form dark, roundish blobs, so a closed eye can still look half-open to the tracker.
+    Its brightness normalisation and its "open-eye reference" both adapt over a few seconds, which partly cancels the change it is trying to detect.
+    Its second blink detector, frame-to-frame motion, cannot tell a lid sweep from an eye movement or a head turn.
+    The constants were tuned on a different camera at 80 px.</p>
+  <p>Patching it would mean tuning more thresholds by eye on a few hours of footage. The approach below replaces the guesswork with labels and measurement.</p>
+</section>
+
+<section>
+  <header class="col">
+    <h2>What a blink looks like to our camera</h2>
+    <p>A blink lasts roughly 100–400 ms. The lid comes down fast and goes back up more slowly. At our current ~22 fps, the camera catches the closing phase in only about two frames.</p>
+  </header>
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 720 262" width="100%" style="min-width:560px; max-width:860px" role="img" aria-labelledby="f1t f1d">
+        <title id="f1t">Eye openness during a typical blink, sampled at 22 and 50 frames per second</title>
+        <desc id="f1d">The lid closes in about 80 ms, stays closed for about 50 ms and reopens over about 200 ms. At 22 fps there are 2 samples in the closing phase and 1 while closed; at 50 fps there are 4 and 2.</desc>
+        <!-- phase bands -->
+        <rect x="124" y="30" width="102.4" height="180" fill="var(--accent-soft)"/>
+        <rect x="226.4" y="30" width="64" height="180" fill="var(--wash)"/>
+        <rect x="290.4" y="30" width="256" height="180" fill="var(--good-soft)" opacity=".7"/>
+        <text x="175.2" y="22" text-anchor="middle" class="t-label">closing ~80 ms</text>
+        <text x="258.4" y="22" text-anchor="middle" class="t-label">closed</text>
+        <text x="418.4" y="22" text-anchor="middle" class="t-label">reopening ~200 ms</text>
+        <!-- grid + axes -->
+        <path class="grid" d="M60 40 H700 M60 125 H700"/>
+        <path class="axis" d="M60 210 H700"/>
+        <g class="t-axis" text-anchor="middle">
+          <text x="60" y="228">0</text><text x="188" y="228">100</text><text x="316" y="228">200</text>
+          <text x="444" y="228">300</text><text x="572" y="228">400</text><text x="700" y="228">500 ms</text>
+        </g>
+        <path class="axis" d="M60 210 v4 M188 210 v4 M316 210 v4 M444 210 v4 M572 210 v4 M700 210 v4"/>
+        <g class="t-axis" text-anchor="end">
+          <text x="52" y="44">open</text><text x="52" y="129">half</text><text x="52" y="214">closed</text>
+        </g>
+        <!-- the blink -->
+        <polyline fill="none" stroke="var(--fg-2)" stroke-width="2" stroke-linejoin="round" points="60.0,40.0 124.0,40.0 130.4,41.6 136.8,46.5 143.2,54.3 149.6,64.9 156.0,77.8 162.4,92.5 168.8,108.4 175.2,125.0 181.6,141.6 188.0,157.5 194.4,172.2 200.8,185.1 207.2,195.7 213.6,203.5 220.0,208.4 226.4,210.0 290.4,210.0 296.8,209.7 303.2,209.0 309.6,207.7 316.0,205.8 322.4,203.5 328.8,200.7 335.2,197.5 341.6,193.8 348.0,189.6 354.4,185.1 360.8,180.2 367.2,175.0 373.6,169.4 380.0,163.6 386.4,157.5 392.8,151.3 399.2,144.8 405.6,138.3 412.0,131.7 418.4,125.0 424.8,118.3 431.2,111.7 437.6,105.2 444.0,98.7 450.4,92.5 456.8,86.4 463.2,80.6 469.6,75.0 476.0,69.8 482.4,64.9 488.8,60.4 495.2,56.2 501.6,52.5 508.0,49.3 514.4,46.5 520.8,44.2 527.2,42.3 533.6,41.0 540.0,40.3 546.4,40.0 700.0,40.0"/>
+        <!-- 50 fps samples -->
+        <g fill="var(--bg)" stroke="var(--alt)" stroke-width="1.6">
+          <circle cx="70.2" cy="40" r="3.2"/><circle cx="95.8" cy="40" r="3.2"/><circle cx="121.4" cy="40" r="3.2"/><circle cx="147.0" cy="60.4" r="3.2"/>
+          <circle cx="172.6" cy="118.3" r="3.2"/><circle cx="198.2" cy="180.2" r="3.2"/><circle cx="223.8" cy="209.7" r="3.2"/><circle cx="249.4" cy="210" r="3.2"/>
+          <circle cx="275.0" cy="210" r="3.2"/><circle cx="300.6" cy="209.3" r="3.2"/><circle cx="326.2" cy="201.9" r="3.2"/><circle cx="351.8" cy="187.0" r="3.2"/>
+          <circle cx="377.4" cy="165.9" r="3.2"/><circle cx="403.0" cy="140.9" r="3.2"/><circle cx="428.6" cy="114.3" r="3.2"/><circle cx="454.2" cy="88.8" r="3.2"/>
+          <circle cx="479.8" cy="66.8" r="3.2"/><circle cx="505.4" cy="50.5" r="3.2"/><circle cx="531.0" cy="41.5" r="3.2"/><circle cx="556.6" cy="40" r="3.2"/>
+          <circle cx="582.2" cy="40" r="3.2"/><circle cx="607.8" cy="40" r="3.2"/><circle cx="633.4" cy="40" r="3.2"/><circle cx="659.0" cy="40" r="3.2"/><circle cx="684.6" cy="40" r="3.2"/>
+        </g>
+        <!-- 22 fps samples -->
+        <g fill="var(--accent)">
+          <circle cx="83.0" cy="40" r="5"/><circle cx="141.2" cy="51.6" r="5"/><circle cx="199.4" cy="182.5" r="5"/><circle cx="257.6" cy="210" r="5"/>
+          <circle cx="315.8" cy="205.9" r="5"/><circle cx="373.9" cy="169.1" r="5"/><circle cx="432.1" cy="110.7" r="5"/><circle cx="490.3" cy="59.4" r="5"/>
+          <circle cx="548.5" cy="40" r="5"/><circle cx="606.7" cy="40" r="5"/><circle cx="664.9" cy="40" r="5"/>
+        </g>
+        <!-- legend -->
+        <g transform="translate(60 248)">
+          <circle cx="5" cy="0" r="5" fill="var(--accent)"/><text x="16" y="4" class="t-label">22 fps (today): 2 frames while closing, 1 while closed</text>
+          <circle cx="365" cy="0" r="3.2" fill="var(--bg)" stroke="var(--alt)" stroke-width="1.6"/><text x="376" y="4" class="t-label">50 fps: 4 while closing, 2 while closed</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption><b>Figure 1.</b> A model blink (lid closes in 80 ms, stays shut 50 ms, reopens in 200 ms) sampled at the current frame rate and at 50 fps.
+      At 22 fps, one dropped frame can erase a blink, and durations are only known to about ±45 ms.
+      Fatigue shows up as blinks getting <i>longer</i> and the lid moving <i>slower</i>, so frame rate limits how well we can measure exactly the features we care about.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <header class="col">
+    <h2>The options</h2>
+    <p>Eye-state methods fall into a few families. Methods built for a camera that sees the whole face don't transfer to a camera a few centimetres from one eye, so several popular ones are ruled out for us.</p>
+  </header>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Method</th><th>How it works</th><th>For our near-eye IR camera</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td>Eye aspect ratio<span class="sub">Soukupová &amp; Čech</span></td>
+          <td>Find face landmarks, then use the ratio of lid gap to eye width.</td>
+          <td>Needs a full face in view. It's the common blog-post answer, and it doesn't apply here.</td>
+          <td><span class="pill p-no">ruled out</span></td></tr>
+        <tr><td>Pupil fitting<span class="sub">Starburst, ElSe, PuRe</span></td>
+          <td>Find the pupil edge and fit an ellipse. A blink shows up as "pupil lost".</td>
+          <td>Strong for gaze under IR. For blinks it's weak: "pupil lost" has many causes.</td>
+          <td><span class="pill p-later">for gaze, later</span></td></tr>
+        <tr><td>Lid motion<span class="sub">frame differences, optical flow</span></td>
+          <td>Look for a burst of downward, then upward, movement in the lid region.</td>
+          <td>Cheap and good at counting blinks. Confused by head motion; poor for durations.</td>
+          <td><span class="pill p-use">baseline</span></td></tr>
+        <tr><td>Eigen-eyes<span class="sub">PCA on the session's own frames</span></td>
+          <td>Learn the main ways the eye image varies. The strongest one usually tracks the lid.</td>
+          <td>No labels needed, and it adapts to each wearer and fit. The quickest useful signal.</td>
+          <td><span class="pill p-use">baseline</span></td></tr>
+        <tr><td>Openness network<span class="sub">small CNN, 64×64 input</span></td>
+          <td>A trained network maps each frame to an openness value from 0 to 1.</td>
+          <td>The current standard. Robust to lashes, make-up and fit, if the training data covers them. Small enough for a microcontroller.</td>
+          <td><span class="pill p-main">primary</span></td></tr>
+        <tr><td>Eye segmentation<span class="sub">RITnet, EllSeg, OpenEDS</span></td>
+          <td>Label every pixel as pupil, iris, sclera or lid. Openness and gaze both follow.</td>
+          <td>Best single model for blinks <i>and</i> gaze, but much more labeling work.</td>
+          <td><span class="pill p-later">upgrade if gaze</span></td></tr>
+        <tr><td>Temporal model<span class="sub">hysteresis + timing rules → HMM / 1-D CNN</span></td>
+          <td>Turns the per-frame trace into events: onset, closed, reopening, complete or partial.</td>
+          <td>Needed by every option above. Timing is what separates a blink from looking down: a downward glance doesn't spring back.</td>
+          <td><span class="pill p-use">always</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <header class="col">
+    <h2>What we'll build</h2>
+    <p>A layered pipeline: the input is fixed first, every frame becomes one openness number, and everything downstream is computed from that trace.
+      Labels from controlled recordings feed both training and scoring.</p>
+  </header>
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 960 330" width="100%" style="min-width:760px" role="img" aria-labelledby="f2t f2d">
+        <title id="f2t">The planned eye-analysis pipeline</title>
+        <desc id="f2d">Camera, frame check, per-frame openness from a baseline and a network, blink events, per-minute features, wellbeing models. Below: cued recordings go to a labeling tool; labels train the network and feed a scorecard.</desc>
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/></marker>
+        </defs>
+        <!-- main row -->
+        <g stroke="var(--line)" stroke-width="1.2">
+          <rect x="10" y="52" width="130" height="104" rx="8" fill="var(--surface)"/>
+          <rect x="172" y="52" width="130" height="104" rx="8" fill="var(--surface)"/>
+          <rect x="334" y="22" width="130" height="164" rx="8" fill="var(--accent-soft)" stroke="var(--accent)"/>
+          <rect x="496" y="52" width="130" height="104" rx="8" fill="var(--surface)"/>
+          <rect x="658" y="52" width="130" height="104" rx="8" fill="var(--surface)"/>
+          <rect x="820" y="52" width="130" height="104" rx="8" fill="var(--surface)" stroke-dasharray="4 3"/>
+        </g>
+        <g text-anchor="middle">
+          <text x="75" y="80" class="t-strong">Eye camera</text>
+          <text x="75" y="100" class="t-label">IR LED, fixed</text><text x="75" y="116" class="t-label">exposure,</text><text x="75" y="132" class="t-label">≥ 30–50 fps</text>
+          <text x="237" y="80" class="t-strong">Frame check</text>
+          <text x="237" y="100" class="t-label">eye in view?</text><text x="237" y="116" class="t-label">dropped frames?</text><text x="237" y="132" class="t-label">crop to the eye</text>
+          <text x="399" y="46" class="t-strong">Openness 0–1</text>
+          <text x="399" y="62" class="t-note">one number per frame</text>
+          <text x="561" y="80" class="t-strong">Events</text>
+          <text x="561" y="100" class="t-label">blink onset,</text><text x="561" y="116" class="t-label">closed, reopened;</text><text x="561" y="132" class="t-label">full or partial</text>
+          <text x="723" y="80" class="t-strong">Features</text>
+          <text x="723" y="100" class="t-label">per minute: rate,</text><text x="723" y="116" class="t-label">duration, PERCLOS,</text><text x="723" y="132" class="t-label">lid speed</text>
+          <text x="885" y="80" class="t-strong">Wellbeing</text>
+          <text x="885" y="100" class="t-label">fatigue first,</text><text x="885" y="116" class="t-label">with PPG / BP</text><text x="885" y="132" class="t-label">alongside</text>
+        </g>
+        <!-- the two openness sources -->
+        <rect x="346" y="74" width="106" height="44" rx="6" fill="var(--surface)" stroke="var(--line)"/>
+        <text x="399" y="92" text-anchor="middle" class="t-label" style="font-weight:600">Baseline</text>
+        <text x="399" y="108" text-anchor="middle" class="t-note">PCA + lid motion</text>
+        <rect x="346" y="128" width="106" height="44" rx="6" fill="var(--surface)" stroke="var(--accent)"/>
+        <text x="399" y="146" text-anchor="middle" class="t-label" style="font-weight:600">Network</text>
+        <text x="399" y="162" text-anchor="middle" class="t-note">small CNN, int8</text>
+        <!-- main arrows -->
+        <g stroke="var(--muted)" stroke-width="1.4" fill="none" marker-end="url(#ar)">
+          <path d="M140 104 H170"/><path d="M302 104 H332"/><path d="M464 104 H494"/><path d="M626 104 H656"/><path d="M788 104 H818"/>
+        </g>
+        <!-- data loop -->
+        <g stroke="var(--line)" stroke-width="1.2" fill="var(--surface)">
+          <rect x="10" y="248" width="130" height="60" rx="8"/>
+          <rect x="172" y="248" width="130" height="60" rx="8"/>
+          <rect x="334" y="248" width="130" height="60" rx="8"/>
+          <rect x="496" y="248" width="292" height="60" rx="8"/>
+        </g>
+        <g text-anchor="middle">
+          <text x="75" y="272" class="t-strong">Cued recordings</text><text x="75" y="290" class="t-label">beeps logged</text>
+          <text x="237" y="272" class="t-strong">Labeling tool</text><text x="237" y="290" class="t-label">correct, don't draw</text>
+          <text x="399" y="272" class="t-strong">Labels</text><text x="399" y="290" class="t-label">openness per frame</text>
+          <text x="642" y="272" class="t-strong">Scorecard</text><text x="642" y="290" class="t-label">blink F1, duration error, unseen wearers</text>
+        </g>
+        <g stroke="var(--muted)" stroke-width="1.4" fill="none" marker-end="url(#ar)">
+          <path d="M140 278 H170"/><path d="M302 278 H332"/><path d="M464 278 H494"/>
+          <path d="M420 248 V188"/>
+          <path d="M561 156 V246"/>
+        </g>
+        <path d="M352 96 C 300 150, 260 200, 250 246" stroke="var(--alt)" stroke-width="1.4" stroke-dasharray="4 3" fill="none" marker-end="url(#ar)"/>
+        <text x="264" y="236" class="t-note" style="fill:var(--alt)">pre-fills guesses</text>
+        <text x="428" y="226" class="t-note">trains</text>
+        <text x="569" y="226" class="t-note">scored</text>
+      </svg>
+    </div>
+    <figcaption><b>Figure 2.</b> The live path runs left to right; the data loop runs underneath.
+      The baseline is useful twice: it is the number the network has to beat, and it pre-fills the labeling tool so people correct guesses instead of labeling from scratch.
+      The dashed box is the eventual goal, not part of this rebuild.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <header class="col">
+    <h2>What we'll measure, for fatigue</h2>
+    <p>The professor's priority is fatigue, and the fatigue literature is clearest on lid behaviour. Each feature needs a minimum frame rate to be measured well.</p>
+  </header>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Feature</th><th>With fatigue</th><th>Needs</th><th>With our camera</th></tr></thead>
+      <tbody>
+        <tr><td>Blink duration</td><td>Gets longer. One of the most consistent markers (Schleicher et al.).</td><td class="data">≥ 30 fps</td><td><span class="pill p-main">yes, after fps raise</span></td></tr>
+        <tr><td>PERCLOS<span class="sub">share of time the eye is ≥ 80 % closed</span></td><td>Rises. The standard drowsiness measure (Dinges, Wierwille).</td><td class="data">openness trace</td><td><span class="pill p-use">yes</span></td></tr>
+        <tr><td>Lid closing / reopening speed<span class="sub">amplitude–velocity ratio</span></td><td>The lid slows down (Johns et al.).</td><td class="data">≥ 50 fps</td><td><span class="pill p-later">if we reach 50 fps</span></td></tr>
+        <tr><td>Partial blinks</td><td>Become more common.</td><td class="data">openness trace</td><td><span class="pill p-use">yes</span></td></tr>
+        <tr><td>Blink rate</td><td>Usually rises, but depends heavily on the task (reading lowers it).</td><td class="data">any</td><td><span class="pill p-use">yes, as context</span></td></tr>
+        <tr><td>Saccade peak velocity</td><td>Drops. A good marker (Di Stasi and colleagues).</td><td class="data">≥ ~200 Hz</td><td><span class="pill p-no">not at camera rates</span></td></tr>
+        <tr><td>Where the eye looks<span class="sub">fixation spread, gaze range</span></td><td>Narrows; more staring.</td><td class="data">pupil position</td><td><span class="pill p-later">coarse, later</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout col">
+    <h3>About gaze velocity</h3>
+    <p class="small">The original idea was that gaze velocity tracks wellbeing. The literature supports that: saccadic peak velocity does drop with fatigue.
+      But a saccade lasts only 20–100 ms, about one to two frames at 22 fps, so its velocity can't be measured with this camera. Eye trackers that report it sample at hundreds of Hz.
+      The "gaze shift speed" in the current tracker is really "how far the eye moved between two frames".
+      We suggest putting gaze on hold and leading with lid features, which our camera <i>can</i> measure, and revisiting gaze later if we add segmentation.</p>
+  </div>
+</section>
+
+<section>
+  <header class="col">
+    <h2>The data we need</h2>
+    <p>A model is only as good as its labels. The few hours already recorded are useful for the baseline and for pretraining, but they come from few wearers and have no ground truth.
+      A short, scripted session gives us both: each blink is cued by a beep whose time is logged, so we know roughly when blinks happened before anyone labels a frame.</p>
+  </header>
+  <div class="two">
+    <div>
+      <h3>Cued-blink session, about 10 minutes</h3>
+      <ol class="protocol">
+        <li><span class="dur">60 s</span><span class="what">Sit and look ahead, blink naturally <span class="tag pos">blinks</span><span class="why">Spontaneous blinks, the kind we'll see in real use.</span></span></li>
+        <li><span class="dur">20 × 3 s</span><span class="what">Blink once at each beep <span class="tag pos">blinks</span><span class="why">Known times: ground truth before labeling.</span></span></li>
+        <li><span class="dur">10 × 4 s</span><span class="what">Long blink: hold closed for ~1 s <span class="tag pos">long</span><span class="why">The slow, long blinks that fatigue produces.</span></span></li>
+        <li><span class="dur">10 × 3 s</span><span class="what">Half blink at each beep <span class="tag pos">partial</span><span class="why">Teaches the in-between openness levels.</span></span></li>
+        <li><span class="dur">90 s</span><span class="what">Follow targets: down, up, left, right and back <span class="tag neg">not a blink</span><span class="why">Looking down lowers the lid, the main blink look-alike.</span></span></li>
+        <li><span class="dur">30 s</span><span class="what">Squint, smile, frown <span class="tag neg">not a blink</span><span class="why">The lid moves for reasons other than blinking.</span></span></li>
+        <li><span class="dur">60 s</span><span class="what">Talk and turn the head <span class="tag neg">not a blink</span><span class="why">Motion and glasses shifting on the face.</span></span></li>
+        <li><span class="dur">90 s</span><span class="what">Take the glasses off, put them back, repeat step 2 <span class="tag pos">blinks</span><span class="why">The eye won't sit in the same place every session.</span></span></li>
+      </ol>
+      <p class="small">Run it twice per wearer under different room lighting. Aim for 8–10 wearers, with a mix of eye shapes, lash lengths and make-up.</p>
+    </div>
+    <div>
+      <h3>Labeling: five openness levels per frame</h3>
+      <p class="small">The labeler scrubs through frames and presses a number key. Only frames near a blink need care, because long open stretches can be labeled in bulk.
+        Labels are pre-filled from the cue times and the baseline, so most of the work is checking and correcting.</p>
+      <figure class="blink-demo">
+        <svg viewBox="0 0 640 132" width="100%" role="img" aria-labelledby="f3t">
+          <title id="f3t">Five label levels from fully open (key 5) to closed (key 1)</title>
+          <defs>
+            <clipPath id="almond" clipPathUnits="userSpaceOnUse"><path d="M10 35 Q60 0 110 35 Q60 70 10 35 Z"/></clipPath>
+          </defs>
+          <g id="eyes">
+            <!-- ly = lid apex height; ctrl = 2*ly - 35 -->
+            <g transform="translate(4 12)"><rect x="0" y="0" width="120" height="70" rx="10" fill="var(--skin)"/>
+              <path d="M10 35 Q60 0 110 35 Q60 70 10 35 Z" fill="var(--sclera)"/><g clip-path="url(#almond)"><circle cx="60" cy="35" r="17" fill="var(--iris)"/><circle cx="60" cy="35" r="8" fill="var(--pupil)"/><circle cx="64" cy="31" r="2.2" fill="var(--sclera)"/>
+              <path d="M0 0 H120 V35 H110 Q60 -3 10 35 H0 Z" fill="var(--skin)"/><path d="M10 35 Q60 -3 110 35" stroke="var(--lid)" stroke-width="2.5" fill="none"/></g>
+              <path d="M10 35 Q60 0 110 35 Q60 70 10 35 Z" fill="none" stroke="var(--lid)" stroke-width="1"/></g>
+            <g transform="translate(132 12)"><rect x="0" y="0" width="120" height="70" rx="10" fill="var(--skin)"/>
+              <path d="M10 35 Q60 0 110 35 Q60 70 10 35 Z" fill="var(--sclera)"/><g clip-path="url(#almond)"><circle cx="60" cy="35" r="17" fill="var(--iris)"/><circle cx="60" cy="35" r="8" fill="var(--pupil)"/><circle cx="64" cy="31" r="2.2" fill="var(--sclera)"/>
+              <path d="M0 0 H120 V35 H110 Q60 17.5 10 35 H0 Z" fill="var(--skin)"/><path d="M10 35 Q60 17.5 110 35" stroke="var(--lid)" stroke-width="2.5" fill="none"/></g>
+              <path d="M10 35 Q60 0 110 35 Q60 70 10 35 Z" fill="none" stroke="var(--lid)" stroke-width="1"/></g>
+            <g transform="translate(260 12)"><rect x="0" y="0" width="120" height="70" rx="10" fill="var(--skin)"/>
+              <path d="M10 35 Q60 0 110 35 Q60 70 10 35 Z" fill="var(--sclera)"/><g clip-path="url(#almond)"><circle cx="60" cy="35" r="17" fill="var(--iris)"/><circle cx="60" cy="35" r="8" fill="var(--pupil)"/><circle cx="64" cy="31" r="2.2" fill="var(--sclera)"/>
+              <path d="M0 0 H120 V35 H110 Q60 35 10 35 H0 Z" fill="var(--skin)"/><path d="M10 35 Q60 35 110 35" stroke="var(--lid)" stroke-width="2.5" fill="none"/></g>
+              <path d="M10 35 Q60 0 110 35 Q60 70 10 35 Z" fill="none" stroke="var(--lid)" stroke-width="1"/></g>
+            <g transform="translate(388 12)"><rect x="0" y="0" width="120" height="70" rx="10" fill="var(--skin)"/>
+              <path d="M10 35 Q60 0 110 35 Q60 70 10 35 Z" fill="var(--sclera)"/><g clip-path="url(#almond)"><circle cx="60" cy="35" r="17" fill="var(--iris)"/><circle cx="60" cy="35" r="8" fill="var(--pupil)"/><circle cx="64" cy="31" r="2.2" fill="var(--sclera)"/>
+              <path d="M0 0 H120 V35 H110 Q60 52.5 10 35 H0 Z" fill="var(--skin)"/><path d="M10 35 Q60 52.5 110 35" stroke="var(--lid)" stroke-width="2.5" fill="none"/></g>
+              <path d="M10 35 Q60 0 110 35 Q60 70 10 35 Z" fill="none" stroke="var(--lid)" stroke-width="1"/></g>
+            <g transform="translate(516 12)"><rect x="0" y="0" width="120" height="70" rx="10" fill="var(--skin)"/>
+              <path d="M10 35 Q60 0 110 35 Q60 70 10 35 Z" fill="var(--skin)"/>
+              <path d="M10 35 Q60 70 110 35" stroke="var(--lid)" stroke-width="2.5" fill="none"/>
+              <path d="M22 44 l-4 6 M40 50 l-2 7 M60 52.5 v7 M80 50 l2 7 M98 44 l4 6" stroke="var(--lid)" stroke-width="1.4"/></g>
+          </g>
+          <g text-anchor="middle">
+            <text x="64" y="104" class="t-strong">5 · open</text><text x="192" y="104" class="t-strong">4 · ¾</text>
+            <text x="320" y="104" class="t-strong">3 · ½</text><text x="448" y="104" class="t-strong">2 · ¼</text><text x="576" y="104" class="t-strong">1 · closed</text>
+            <text x="64" y="122" class="t-note">openness 1.0</text><text x="192" y="122" class="t-note">0.75</text><text x="320" y="122" class="t-note">0.5</text>
+            <text x="448" y="122" class="t-note">0.25</text><text x="576" y="122" class="t-note">0</text>
+          </g>
+        </svg>
+        <figcaption>Key <b>0</b> marks "eye not visible" (glasses off, eye out of frame). The network learns a continuous value; the five levels are just quick to type.</figcaption>
+      </figure>
+      <dl class="numbers">
+        <dt>3–5 k</dt><dd>labeled frames to start, mostly around blinks</dd>
+        <dt>8–10</dt><dd>wearers, so we can test on people the model never saw</dd>
+        <dt>~2 h</dt><dd>of labeling per wearer session, with pre-filled guesses (estimate)</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section class="col">
+  <header><h2>How we'll know it works</h2></header>
+  <p>Every version of the tracker, including the current port, gets the same scorecard on held-out wearers. Each test wearer's recordings are kept out of training entirely, so the scores describe a new person putting the glasses on.</p>
+  <dl class="numbers">
+    <dt>≥ 0.95</dt><dd><b>Blink F1</b> on cued blinks: detections matched to labeled blinks within ±100 ms</dd>
+    <dt>≤ 1 frame</dt><dd><b>Median blink-duration error</b></dd>
+    <dt>≤ 1 / min</dt><dd><b>False blinks</b> during the look-down, squint and talking parts of the session</dd>
+    <dt>≤ 2 pts</dt><dd><b>PERCLOS error</b> per minute, in percentage points</dd>
+  </dl>
+  <p class="small">The targets are proposals for us to agree on. Scoring the current port first tells us how far there is to go.</p>
+</section>
+
+<section>
+  <header class="col"><h2>Roadmap</h2>
+    <p>The phases are in order. Each phase ends with something we can measure, not just a finished piece of code.</p></header>
+  <ol class="phases">
+    <li><span class="n">Phase 0</span><div class="body"><h3>Fix the input</h3>
+      <p class="small">Fit the IR LED. 850 nm is easier for the sensor to see but glows faintly red; 940 nm is invisible but dimmer to the camera.
+        Check whether the camera lens has an IR-cut filter: if it does, the LED won't help until the lens is swapped.
+        Keep the LED at a low, measured power, well inside the eye-safety limits for IR (IEC 62471).
+        Keep exposure fixed. Push the frame rate up using a smaller sensor window, aiming for 50 fps and accepting 30. Count dropped frames on Wi-Fi versus USB.</p>
+      <p class="done-when"><b>Done when</b> a recording shows a sharp pupil and lid edge at ≥ 30 fps with under 1 % of frames dropped.</p></div></li>
+    <li><span class="n">Phase 1</span><div class="body"><h3>Collect and label</h3>
+      <p class="small">Add the cued session to the trial page (beeps with logged times). Build the labeling tool on the session page: a frame strip, an openness trace, and number keys.
+        Record the first wearers.</p>
+      <p class="done-when"><b>Done when</b> 3 wearers are recorded and labeled, and the current port has a scorecard.</p></div></li>
+    <li><span class="n">Phase 2</span><div class="body"><h3>Baseline and event layer</h3>
+      <p class="small">Build the PCA and lid-motion openness signal, turn it into blink events with hysteresis and timing rules, and compute per-minute features. This replaces the port on the live page.</p>
+      <p class="done-when"><b>Done when</b> the baseline beats the port on the scorecard.</p></div></li>
+    <li><span class="n">Phase 3</span><div class="body"><h3>The openness network</h3>
+      <p class="small">Train a small CNN on 64×64 eye crops: start from public IR eye data (TEyeD, MRL Eye), then train on ours. Score it with leave-one-wearer-out, then quantise it to 8-bit and check the scores hold.</p>
+      <p class="done-when"><b>Done when</b> the network meets the targets above on unseen wearers.</p></div></li>
+    <li><span class="n">Phase 4</span><div class="body"><h3>On the microcontroller</h3>
+      <p class="small">Run the 8-bit model on the ESP32-S3 with ESP-DL or TFLite Micro, so the glasses send openness values instead of raw frames.</p>
+      <p class="done-when"><b>Done when</b> the on-device output matches the server's output frame for frame.</p></div></li>
+    <li><span class="n">Phase 5</span><div class="body"><h3>Fatigue study</h3>
+      <p class="small">Record sessions before and after a fatiguing task, and relate the lid features to self-reported sleepiness (e.g. the Karolinska scale) alongside PPG.</p>
+      <p class="done-when"><b>Done when</b> at least one lid feature separates rested from fatigued sessions within the same wearer.</p></div></li>
+  </ol>
+</section>
+
+<section>
+  <header class="col"><h2>Will it fit on the glasses?</h2>
+    <p>Very likely, with room to spare. These are planning estimates for a network of about 50 thousand parameters; Phase 4 measures the real numbers.</p></header>
+  <div class="two">
+    <dl class="numbers">
+      <dt>4 KB</dt><dd>one 64×64 8-bit input frame</dd>
+      <dt>~50 KB</dt><dd>model weights, 8-bit (flash)</dd>
+      <dt>&lt; 100 KB</dt><dd>working memory while it runs</dd>
+      <dt>512 KB</dt><dd>SRAM on the ESP32-S3, plus 8 MB PSRAM on the XIAO Sense</dd>
+    </dl>
+    <p class="small">The S3 has vector instructions that ESP-DL uses for 8-bit networks, so a model this size should take a few milliseconds per frame, well inside a 20 ms frame budget at 50 fps.
+      If a later segmentation model is too big, the board to look at next is one with a small neural accelerator. We don't need to decide that now.</p>
+  </div>
+</section>
+
+<section class="col">
+  <header><h2>Open decisions</h2></header>
+  <ul class="plain">
+    <li><b>850 or 940 nm LED</b>: depends on whether the faint red glow bothers wearers, and on how bright the image is at a safe power.</li>
+    <li><b>Is gaze in or out for now?</b> We suggest out: lid features first, gaze when segmentation is on the table.</li>
+    <li><b>Who labels, and how much?</b> About two hours per wearer session; split across the team, it's a few afternoons.</li>
+    <li><b>Fatigue protocol for Phase 5</b>: which fatiguing task, and what reference measure the professor wants to compare against.</li>
+  </ul>
+</section>
+
+<section class="col">
+  <header><h2>Further reading</h2></header>
+  <ol class="refs">
+    <li>Soukupová &amp; Čech, real-time eye blink detection using facial landmarks: the eye-aspect-ratio method.</li>
+    <li>Fuhl, Santini, Kasneci and colleagues: ExCuSe, ElSe and PuRe pupil detection; TEyeD, a large near-eye dataset with lid and blink labels.</li>
+    <li>Garbin et al., OpenEDS: near-eye IR images with segmentation labels. Chaudhary et al., RITnet: a very small eye segmentation network.</li>
+    <li>Schleicher et al., blinks and saccades as indicators of fatigue (Ergonomics).</li>
+    <li>Dinges, Wierwille and colleagues: PERCLOS as a drowsiness measure. Johns et al.: lid velocity and the amplitude–velocity ratio.</li>
+    <li>Di Stasi and colleagues: saccadic peak velocity and fatigue.</li>
+  </ol>
+</section>
+
+<footer class="col">Drafted with Claude for the NBE lab board. Figures are schematic; the blink in Figure 1 is a model, not a recording.</footer>
+</div>
+</body>
+</html>

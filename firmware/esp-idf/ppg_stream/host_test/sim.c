@@ -32,8 +32,25 @@ static uint32_t g_native;
 static int64_t g_next_frame_us = 1050000;
 static int g_in_cam;
 static int s_dummy_ret(sensor_t *s, int v) { (void)s; (void)v; return 0; }
+#ifdef TEST_CAM_MISS
+// window calls of "CAM MODE=CIF WIN=.. CLK=.." (check_cam.py reads these lines)
+static int s_framesize(sensor_t *s, framesize_t f) { (void)s; fprintf(stderr, "cam: set_framesize %d\n", (int)f); return 0; }
+static int s_set_reg(sensor_t *s, int reg, int mask, int v)
+{ (void)s; fprintf(stderr, "cam: set_reg 0x%x 0x%x 0x%x\n", reg, mask, v); return 0; }
+static int s_res_raw(sensor_t *s, int sx, int sy, int ex, int ey, int ox, int oy, int tx, int ty, int outx, int outy,
+                     _Bool scale, _Bool binning)
+{
+    (void)s; (void)sy; (void)ex; (void)ey; (void)scale; (void)binning;
+    fprintf(stderr, "cam: set_res_raw mode=%d off=%d,%d win=%dx%d out=%dx%d\n", sx, ox, oy, tx, ty, outx, outy);
+    return 0;
+}
+static sensor_t g_sensor = {s_dummy_ret, s_dummy_ret, s_dummy_ret, s_dummy_ret, s_dummy_ret, s_dummy_ret, s_dummy_ret,
+                             s_framesize, s_set_reg, s_res_raw};
+static int g_cam_skipped;  // sensor frames the fake driver "replaced" (never handed out)
+#else
 static sensor_t g_sensor = {s_dummy_ret, s_dummy_ret, s_dummy_ret, s_dummy_ret, s_dummy_ret, s_dummy_ret, s_dummy_ret,
                              NULL, NULL, NULL};  // window calls: not used with PPG_CAM_WINDOW 0
+#endif
 esp_err_t esp_camera_init(const camera_config_t *c) { (void)c; return ESP_OK; }
 sensor_t *esp_camera_sensor_get(void) { return &g_sensor; }
 camera_fb_t *esp_camera_fb_get(void)
@@ -93,9 +110,27 @@ static void advance(TickType_t ms)
         last_tick = g_now_us;
         link_hybrid_test_tick();
     }
+#ifdef TEST_CAM_MISS
+    // 4.0 s: the server switches the camera to a CIF window (over the USB gateway)
+    static int cam_cmd_sent;
+    if (!cam_cmd_sent && g_now_us >= 4000000) {
+        cam_cmd_sent = 1;
+        handle_command("CAM WIN=280 MODE=CIF CLK=1 EXP=200");
+    }
+#endif
     if (!g_in_cam && g_now_us >= g_next_frame_us) {
         g_in_cam = 1;
         g_next_frame_us += 33333;
+#ifdef TEST_CAM_MISS
+        // every 23rd sensor frame never reaches the camera task (the driver replaced it): its
+        // capture time is skipped. Not near the 4.0 s command (the period is re-learnt there).
+        static int k;
+        if (++k % 23 == 0 && (g_now_us < 3800000 || g_now_us > 4600000)) {
+            g_next_frame_us += 33333;
+            g_cam_skipped++;
+            fprintf(stderr, "cam: skipped frame at %lld us\n", (long long)g_now_us);
+        }
+#endif
         camera_test_tick();
         g_in_cam = 0;
     }

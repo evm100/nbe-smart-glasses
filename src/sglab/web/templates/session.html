@@ -119,6 +119,7 @@ details.sec > summary { cursor: pointer; font-weight: 600; font-size: 16px; marg
   <div class="controls">
     <label>Camera <select id="eye-stream">{% for v in videos %}<option>{{ v }}</option>{% endfor %}</select></label>
     <span class="note" id="eye-note"></span>
+    <a id="eye-label-link" href="/sessions/{{ s.session_id | urlencode }}/label" style="margin-left:auto">Label eye frames →</a>
   </div>
   <div id="eye-wait" hidden><div class="note" id="eye-wait-txt">Tracking the eye in every recorded frame…</div><div class="progress"><i id="eye-prog"></i></div></div>
   <div id="eye-body" hidden>
@@ -197,6 +198,11 @@ details.sec > summary { cursor: pointer; font-weight: 600; font-size: 16px; marg
   {% else %}<tr><td colspan="9" class="note">No events were logged in this recording.</td></tr>{% endfor %}
   </tbody>
 </table>
+</div>
+
+<div id="cue-section" hidden>
+  <h2 id="sec-cues">Cued sessions <span class="note">the scripted steps and the exact time of every beep</span></h2>
+  <div class="card scroll" id="cue-runs"></div>
 </div>
 
 <h2 id="sec-notes">Notes &amp; discussion</h2>
@@ -518,6 +524,7 @@ let eye = null, eyeView = 'closure', eyeSeq = 0;
 async function loadEye() {
   if (!$('eye-stream')) return;
   const stream = $('eye-stream').value;
+  $('eye-label-link').href = '/sessions/' + encodeURIComponent({{ s.session_id | tojson }}) + '/label?stream=' + encodeURIComponent(stream);
   const r = await api('eye', {stream});
   if (!r.ok) { let m = 'Eye tracking is not available for this stream.'; try { m = (await r.json()).error || m; } catch (e) {} $('eye-note').textContent = m; return; }
   const d = await r.json();
@@ -564,7 +571,7 @@ async function drawEyeTrace() {
   const r = await api('eye/trace', {stream, t0: a.toFixed(3), t1: b.toFixed(3), max_points: 5000});
   if (mine !== eyeSeq || !r.ok) return;
   const d = await r.json(), inV = e => e.t >= a && e.t <= b;
-  const shapes = eventShapes().concat(d.no_eye.map(([x0, x1]) => ({type: 'rect', x0, x1, yref: 'paper', y0: 0, y1: 1, fillcolor: css('--grid'), line: {width: 0}, layer: 'below'})));
+  const shapes = eventShapes().concat(cueShapes(), d.no_eye.map(([x0, x1]) => ({type: 'rect', x0, x1, yref: 'paper', y0: 0, y1: 1, fillcolor: css('--grid'), line: {width: 0}, layer: 'below'})));
   let traces, yaxis, note;
   const blinks = eye.blinks.filter(inV), shifts = eye.shifts.filter(inV), few = (VIEW[1] - VIEW[0]) <= 600;
   if (eyeView === 'closure') {
@@ -589,8 +596,9 @@ async function drawEyeTrace() {
     note = 'How much the picture changes from frame to frame — the signal the lab’s original MATLAB blink counter uses.';
   }
   $('eye-view-note').textContent = note;
-  await draw('eye-trace', traces, {shapes, yaxis}, {refetch: drawEyeTrace});
-  $('eye-res').innerHTML = (d.decimated ? 'Summarised (highs and lows kept) — zoom in for every frame.' : '<b>Every frame shown.</b>') + (d.no_eye.length ? ' Grey = no eye found in the picture.' : '');
+  await draw('eye-trace', traces, {shapes, yaxis, annotations: cueAnnotations()}, {refetch: drawEyeTrace});
+  $('eye-res').innerHTML = (d.decimated ? 'Summarised (highs and lows kept) — zoom in for every frame.' : '<b>Every frame shown.</b>') + (d.no_eye.length ? ' Grey = no eye found in the picture.' : '') +
+    (CUES ? ' Purple lines = cued-session steps; short purple ticks = beeps (zoom to 2 min or less).' : '');
 }
 if ($('eye-view')) { seg('eye-view', 'v', v => { eyeView = v; drawEyeTrace(); }); $('eye-stream').onchange = () => { eye = null; loadEye(); }; }
 
@@ -612,7 +620,7 @@ async function showFrame(q) {  // q = {i} or {t}; one request in flight, the new
       viewer.i = +r.headers.get('X-Frame-Index'); viewer.t = +r.headers.get('X-Frame-T'); viewer.w = img.naturalWidth || 1;
       const ov = r.headers.get('X-Eye'); viewer.ov = ov ? JSON.parse(ov) : null;
       $('fr-slider').value = viewer.i;
-      $('fr-info').textContent = `${fmtT(viewer.t, 2)} · frame ${viewer.i + 1}/${viewer.n}` + (viewer.ov ? ` · ${viewer.ov.state.replace('_', ' ')}` : '');
+      $('fr-info').textContent = `${fmtT(viewer.t, 2)} · frame ${viewer.i + 1}/${viewer.n}` + (viewer.ov ? ` · ${viewer.ov.state.replace('_', ' ')}` : '') + cueAt(viewer.t);
       drawFrameOverlay();
       if (q.i != null) { CURSOR = viewer.t; if (plots['eye-trace']) { applying = true; Plotly.relayout('eye-trace', {shapes: (plots['eye-trace'].layout.shapes || []).concat(cursorShape())}).catch(() => {}).then(() => { applying = false; }); } }
     }
@@ -643,6 +651,53 @@ if ($('fr-slider')) {
   $('fr-fwd').onclick = () => showFrame({i: Math.min(viewer.i + 1, viewer.n - 1)});
   $('fr-ovl').onchange = drawFrameOverlay;
   window.frameSeekTime = t => { if (viewer.stream) showFrame({t: t.toFixed(3)}); };
+}
+
+// ===================================================================== cued sessions (sglab.cues)
+let CUES = null;   // {runs: [...]} from /api/sessions/{sid}/cues, when the recording had any
+const CUE_RESULT = {done: 'done', skipped: 'skipped', interrupted: 'paused, cut short', aborted: 'stopped'};
+const CUE_RUN = {completed: 'finished', aborted: 'stopped early', partial: 'cut short', running: 'not finished'};
+const cueSteps = () => CUES ? CUES.runs.flatMap(r => r.steps.filter(s => s.t_start != null)) : [];
+const cueMarks = () => CUES ? CUES.runs.flatMap(r => r.entries.filter(e => e.kind === 'cue' && !e.cancelled && e.t_s != null)) : [];
+function cueShapes() {
+  if (!CUES) return [];
+  const c = css('--s5'), sh = cueSteps().map(s => ({type: 'line', x0: s.t_start, x1: s.t_start, yref: 'paper', y0: 0, y1: 1, layer: 'below', line: {color: c, width: 1.5}}));
+  if (VIEW[1] - VIEW[0] <= 120) for (const e of cueMarks()) if (e.t_s >= VIEW[0] - 1 && e.t_s <= VIEW[1] + 1)
+    sh.push({type: 'line', x0: e.t_s, x1: e.t_s, yref: 'paper', y0: 0, y1: 0.14, line: {color: c, width: 2}});
+  return sh;
+}
+function cueAnnotations() {
+  const inV = cueSteps().filter(s => s.t_start >= VIEW[0] && s.t_start <= VIEW[1]);
+  if (!inV.length || inV.length > 10) return [];
+  return inV.map(s => ({x: s.t_start, y: 1, yref: 'paper', xanchor: 'left', yanchor: 'top', showarrow: false, font: {size: 10, color: css('--s5')}, text: ' ' + esc(s.label || s.step_id)}));
+}
+function cueAt(t) {  // frame viewer: which step this frame is in, and how long after the last beep
+  if (!CUES || t == null) return '';
+  const st = cueSteps().filter(s => s.t_start <= t && (s.t_end == null || t < s.t_end)).pop();
+  if (!st) return '';
+  let last = null;
+  for (const e of cueMarks()) if (e.t_s <= t && e.t_s >= st.t_start && (!last || e.t_s > last.t_s)) last = e;
+  return ` · ${st.label || st.step_id}` + (last && t - last.t_s < 10 ? ` · ${(t - last.t_s).toFixed(2)} s after “${last.text || last.action}”` : '');
+}
+async function loadCues() {
+  const r = await api('cues'); if (!r.ok) return;
+  const d = await r.json(); if (!d.runs || !d.runs.length) return;
+  CUES = d;
+  $('cue-runs').innerHTML = d.runs.map(r => {
+    const n = r.entries.filter(e => e.kind === 'cue' && !e.cancelled).length, f = r.clock_fit;
+    return `<div class="controls" style="margin-top:4px"><b>${esc(r.protocol_name)}</b> <span class="pill ${r.status === 'completed' ? 'ok' : 'incomplete'}">${CUE_RUN[r.status] || esc(r.status)}</span>
+      <span class="note">${n} cues${f ? ` · times within ±${Math.max(1, Math.ceil(f.err_ms))} ms of the recording clock` : ''}${r.status_reason ? ' · ' + esc(r.status_reason) : ''}</span></div>
+      <table style="margin-bottom:12px"><thead><tr><th class="num">Start</th><th>Step</th><th>Kind</th><th class="num">Length</th><th class="num">Cues</th><th>Result</th><th></th></tr></thead><tbody>` +
+      r.steps.map(s => `<tr><td class="num">${s.t_start == null ? '–' : fmtT(s.t_start, 1)}</td><td>${esc(s.title || s.step_id)}${s.attempt ? ' <span class="note">(repeated)</span>' : ''}</td>
+        <td>${esc(s.label || '')}${s.negative ? ' <span class="note">· not a blink</span>' : ''}</td>
+        <td class="num">${s.t_start != null && s.t_end != null ? fmtSpan(s.t_end - s.t_start) : '–'}</td>
+        <td class="num">${s.n_cues}${s.n_cues_planned ? ' of ' + s.n_cues_planned : ''}</td><td>${CUE_RESULT[s.status] || esc(s.status)}</td>
+        <td>${s.t_start != null ? `<button class="link" onclick="goTo(${s.t_start})">show</button>` : ''}</td></tr>`).join('') + '</tbody></table>';
+  }).join('') + `<div class="note">Download <a href="/api/sessions/${encodeURIComponent(SID)}/cues?format=csv">every cue as a table (CSV)</a> or
+    <a href="/api/sessions/${encodeURIComponent(SID)}/cues" target="_blank">everything (JSON)</a>. Times are on the recording's clock, the same clock as the camera frames.</div>`;
+  $('cue-section').hidden = false; toc();
+  $('v-jump').insertAdjacentHTML('beforeend', cueSteps().map(s => `<option value="${s.t_start}">${fmtT(s.t_start)} · step: ${esc(s.title || s.step_id)}</option>`).join(''));
+  if (eye) drawEyeTrace();
 }
 
 // ===================================================================== other sensors
@@ -772,7 +827,7 @@ toc();
 // a link can carry the time range: /sessions/<id>#t=120,180  (kept up to date while zooming, so the address bar can be shared)
 const mHash = /t=([\d.]+),([\d.]+)/.exec(location.hash);
 if (mHash && +mHash[2] > +mHash[1]) { VIEW = [+mHash[1], +mHash[2]]; setView(VIEW[0], VIEW[1]); } else setView(FULL[0], FULL[1]);
-drawSignal(); drawHR(); loadEpochs(); loadQuality(); loadModels().then(drawBP); loadEye(); loadOverview(); loadNotes();
+drawSignal(); drawHR(); loadEpochs(); loadQuality(); loadModels().then(drawBP); loadEye(); loadOverview(); loadNotes(); loadCues();
 if (PROCESSING && !/^(done|error)/.test(PROCESSING)) setInterval(async () => {
   const r = await fetch('/api/sessions/' + SID); if (!r.ok) return;
   const p = (await r.json()).processing; if (!p || /^(done|error)/.test(p)) location.reload();
